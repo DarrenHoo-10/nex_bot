@@ -25,7 +25,6 @@ struct ConversationView: View {
     @State private var memoryBaseline: [String: String]?
     @State private var memoryNotice = ""
     @State private var imagePreview: ChatImagePreview?
-    @State private var jobsOpen = false
 
     private var dropHighlight: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.brand, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
@@ -37,7 +36,6 @@ struct ConversationView: View {
     private var bot: Bot? { workspace.bot(botID) }
     private var isActive: Bool { activeState == .key && scenePhase == .active }
     private var pendingApprovals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
-    private var openJobs: [Job] { workspace.state?.openJobs(botID: botID) ?? [] }
 
     /// `version:updated_at` of every memory this agent can see; a change makes the 已更新记忆 pill appear.
     private var memorySignatures: [String: String] {
@@ -117,37 +115,10 @@ struct ConversationView: View {
                     .foregroundStyle(Theme.identityAccent).padding(.horizontal, 12).frame(height: 28)
                     .glass(Capsule(), strong: true, lift: .card).frame(maxWidth: 240)
                 }
-                if !openJobs.isEmpty { jobsPill }
                 RoundGlassButton(symbol: "sidebar.right", label: ui.inspectorVisible ? "收起助手详情" : "助手详情", selected: ui.inspectorVisible) { ui.inspectorVisible.toggle() }
             }
         }
         .padding(.horizontal, 2).frame(height: 64)
-    }
-
-    /// N 项后台任务: the open background jobs with their stage and their own stop.
-    private var jobsPill: some View {
-        Button { jobsOpen.toggle() } label: {
-            Text("\(openJobs.count) 项后台任务").font(.system(size: 11.5)).foregroundStyle(Theme.foreground)
-                .padding(.horizontal, 12).frame(height: 28).glass(Capsule(), strong: true, lift: .card).contentShape(Capsule())
-        }
-        .buttonStyle(.plain).accessibilityLabel("\(openJobs.count) 项后台任务")
-        .popover(isPresented: $jobsOpen, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(openJobs) { job in
-                    HStack(spacing: 10) {
-                        Button { jobsOpen = false; AgentUI.shared.job = JobSheetItem(id: job.id) } label: {
-                            Text(job.title).font(.system(size: 12, weight: .medium)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                        }.buttonStyle(.plain)
-                        Text(job.stageText).font(.system(size: 11)).foregroundStyle(Theme.muted)
-                        Button { Task { try? await workspace.stopJob(job.id) } } label: {
-                            Image(systemName: "stop.fill").font(.system(size: 9)).frame(width: 22, height: 22).contentShape(Rectangle())
-                        }.buttonStyle(.plain).help("停止").accessibilityLabel("停止 \(job.title)")
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                }
-            }
-            .padding(6).frame(width: 300)
-        }
     }
 
     private var noModelBanner: some View {

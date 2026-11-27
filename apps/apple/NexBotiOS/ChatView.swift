@@ -169,21 +169,6 @@ struct ChatView: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                let openJobs = workspace.state?.openJobs(botID: botID) ?? []
-                if !openJobs.isEmpty {
-                    // N 项后台任务: each open job with its stage, its details and its own stop.
-                    Menu {
-                        ForEach(openJobs) { job in
-                            Section("\(job.title) · \(job.stageText)") {
-                                Button("查看详情") { jobSheet = JobSheetItem(id: job.id) }
-                                Button("停止", role: .destructive) { Task { do { try await workspace.stopJob(job.id) } catch { errorText = message(of: error) } } }
-                            }
-                        }
-                    } label: {
-                        Text("\(openJobs.count) 项后台任务").font(.caption.weight(.medium)).padding(.horizontal, 8).frame(height: 28)
-                    }
-                    .accessibilityLabel("\(openJobs.count) 项后台任务")
-                }
                 RoundGlassButton(symbol: "sidebar.right", label: "助手详情", size: 32) { nav.openAgentDetail(botID) }
             }
             ToolbarItem(placement: .principal) { titleView }

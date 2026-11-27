@@ -612,32 +612,30 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(fixture.api).toHaveBeenCalledWith("agents/input", expect.objectContaining({ text: "主对话的问题" }));
   });
 
-  it("lists open jobs by name without stop controls, opens one as its own conversation, and the stop key stops only the main chat", async () => {
+  it("lists open jobs in the right inspector panel without stop controls, opens one as its own conversation, and the stop key stops only the main chat", async () => {
     await show([job(), job({ id: "job-2", title: "导出报告", stage: "question", taskId: "job-task-2" }), job({ id: "job-3", title: "旧任务", stage: "done", endedAt: 5 })], [],
       [{ id: "owner-task", bot_id: "agent", origin: "owner", status: "running" }, { id: "job-task", bot_id: "agent", origin: "job", status: "running" }]);
-    const pill = container.querySelector<HTMLButtonElement>(".jobs-pill")!;
-    expect(pill.textContent).toBe("2 项后台任务");
-    await act(async () => pill.click());
-    const rows = [...container.querySelectorAll(".jobs-popover-row")];
+    // Header stays uncluttered: no background-task pill in the chat header.
+    expect(container.querySelector(".jobs-pill, .jobs-pill-anchor")).toBeNull();
+    const inspector = container.querySelector(".inspector")!;
+    expect([...inspector.querySelectorAll("h2")].map(h => h.textContent)).toContain("后台任务");
+    expect([...inspector.querySelectorAll("h2")].map(h => h.textContent)).not.toEqual(expect.arrayContaining(["正在处理"]));
+    expect(inspector.querySelector(".routine-history")).toBeNull();
+    const rows = [...inspector.querySelectorAll<HTMLButtonElement>(".job-list .job-row")];
     expect(rows.map(row => row.textContent)).toEqual(["整理下载文件夹执行中", "导出报告等待你回答"]);
     expect(rows[1].querySelector("button[aria-label^='停止']")).toBeNull();
+    expect([...inspector.querySelectorAll("button")].map(b => b.textContent)).not.toEqual(expect.arrayContaining(["停止", "停止全部"]));
     await act(async () => container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]')!.click());
     expect(fixture.api).toHaveBeenCalledWith("cancel", { taskId: "owner-task" });
     expect(fixture.api).not.toHaveBeenCalledWith("cancel", { taskId: "job-task" });
-    // The work tab lists neither the running task, open jobs nor recent runs: jobs open from the pill and their chat cards.
-    const inspector = container.querySelector(".inspector")!;
-    expect([...inspector.querySelectorAll("h2")].map(h => h.textContent)).not.toEqual(expect.arrayContaining(["正在处理"]));
-    expect([...inspector.querySelectorAll("h2")].map(h => h.textContent)).not.toEqual(expect.arrayContaining(["后台任务"]));
-    expect(inspector.querySelector(".job-row, .job-list, .routine-history")).toBeNull();
-    expect([...inspector.querySelectorAll("button")].map(b => b.textContent)).not.toEqual(expect.arrayContaining(["停止", "停止全部"]));
-    await act(async () => container.querySelector<HTMLButtonElement>(".jobs-popover-title")!.click());
+    await act(async () => rows[0].click());
     expect(fixture.api).toHaveBeenCalledWith("jobs/detail?id=job-1", undefined, expect.any(AbortSignal));
     expect(container.querySelector(".job-chat-bar")).not.toBeNull();
-    expect(container.querySelector(".jobs-pill-anchor")).toBeNull();
+    expect(inspector.querySelector('.job-row[aria-current="true"]')?.textContent).toBe("整理下载文件夹执行中");
     expect(container.querySelector('textarea[aria-label="发送给子代理的消息"]')).not.toBeNull();
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>(".job-chat-back")!.click());
-    expect(container.querySelector(".jobs-pill")?.textContent).toBe("2 项后台任务");
+    expect([...inspector.querySelectorAll(".job-list .job-row")].map(row => row.textContent)).toEqual(["整理下载文件夹执行中", "导出报告等待你回答"]);
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).not.toBeNull();
     expect(container.querySelector('.contact-item[data-working="true"]')).not.toBeNull();
   });

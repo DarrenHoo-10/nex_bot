@@ -731,6 +731,84 @@
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
+  .rk-workspace .assistant-inspector-toggle[data-jobs] {
+    position: relative;
+  }
+  .rk-workspace .assistant-inspector-toggle[data-jobs]::after {
+    content: "";
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--brand);
+    box-shadow: 0 0 0 2px var(--card);
+    pointer-events: none;
+  }
+  .rk-workspace .job-list {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 18px;
+  }
+  .rk-workspace .job-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 13px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--card);
+    color: var(--foreground);
+    box-shadow: var(--surface-shadow);
+    text-align: left;
+    transition: border-color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
+  }
+  .rk-workspace .job-row:hover {
+    border-color: var(--border-hover);
+    background: var(--secondary);
+  }
+  .rk-workspace .job-row.is-active {
+    border-color: color-mix(in srgb, var(--brand) 48%, transparent);
+    background: var(--brand-soft);
+  }
+  .rk-workspace .job-row-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .rk-workspace .job-row .job-entry-title {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .rk-workspace .job-row:hover .job-entry-title {
+    color: var(--brand-ink);
+  }
+  .rk-workspace .job-row-progress {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--muted-foreground);
+  }
+  .rk-workspace .job-row .job-stage {
+    font-size: 11px;
+    font-weight: 550;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .rk-workspace .job-row .job-stage:is(.approval, .question, .review) {
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+    color: var(--warning-ink);
+  }
   .rk-workspace .routine-list {
     border-radius: var(--radius-lg);
     background: transparent;
@@ -1607,29 +1685,215 @@
     box-shadow: var(--shadow-float);
   }
   /* A single stable top-layer frame for the create form and its scrollable avatar catalog. */
-  .rk-workspace .create-bot-dialog {
-    width: min(460px, calc(100% - 32px));
-    max-height: calc(100dvh - 32px);
-  }
-  .create-bot-dialog :is(form:not([hidden]), .create-bot-picker) {
+  .create-bot-dialog[open] {
     display: flex;
     flex-direction: column;
-    height: min(340px, max(140px, calc(100dvh - 150px)));
   }
-  .create-bot-dialog :is(.create-bot-fields, .identity-options) {
+  .create-bot-dialog {
+    margin: auto;
+    width: min(460px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - 32px);
+    padding: 0;
+    overflow: hidden;
+    border-radius: 22px;
+    border: 1px solid var(--border-strong);
+    background: var(--card);
+    color: var(--foreground);
+    box-shadow: var(--shadow-float);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .create-bot-dialog::backdrop {
+    background: var(--overlay);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .create-bot-header {
+    flex: none;
+    padding: 18px 18px 14px 22px;
+    border-bottom: 1px solid var(--border);
+  }
+  .create-bot-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .create-bot-form:not([hidden]) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .create-bot-fields {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    scrollbar-gutter: stable;
-    padding: 3px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 18px 22px 22px;
   }
-  .rk-workspace .create-bot-dialog .create-bot-avatar {
-    display: inline-flex;
-    gap: 8px;
+  .create-bot-dialog .create-bot-avatar {
+    display: flex;
     align-items: center;
-    min-height: 44px;
-    margin-bottom: 10px;
+    gap: 14px;
+    width: 100%;
+    padding: 10px 14px 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--secondary);
+    color: var(--foreground);
+    text-align: left;
+    transition: background-color 0.14s ease, border-color 0.14s ease;
+  }
+  .create-bot-dialog .create-bot-avatar:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--border-hover);
+  }
+  .create-bot-avatar-preview {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--brand-soft);
+    color: var(--brand);
+    overflow: hidden;
+  }
+  .create-bot-avatar-preview.has-avatar {
+    background: transparent;
+    overflow: visible;
+  }
+  .create-bot-avatar-label {
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 550;
+  }
+  .create-bot-avatar-chevron {
+    flex: none;
+    color: var(--muted-foreground);
+  }
+  .create-bot-dialog .field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 550;
+    line-height: 1.4;
+    color: var(--foreground);
+  }
+  .create-bot-dialog .field input,
+  .create-bot-dialog .field textarea {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background: var(--background);
+    color: var(--foreground);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.55;
+    transition: border-color 0.14s ease, box-shadow 0.14s ease, background-color 0.14s ease;
+  }
+  .create-bot-dialog .field input {
+    height: 42px;
+    padding: 0 13px;
+  }
+  .create-bot-dialog .field textarea {
+    min-height: 108px;
+    padding: 10px 13px;
+    resize: vertical;
+  }
+  .create-bot-dialog .field input::placeholder,
+  .create-bot-dialog .field textarea::placeholder {
+    color: var(--muted-foreground);
+    opacity: 0.72;
+  }
+  .create-bot-dialog .field input:focus,
+  .create-bot-dialog .field textarea:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-soft);
+    outline: none;
+  }
+  .create-bot-dialog .identity-error {
+    margin: 0;
+    padding: 9px 12px;
+    border-radius: 10px;
+    background: rgba(220, 38, 38, 0.10);
+    color: var(--destructive);
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+  .create-bot-dialog .actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+  }
+  .create-bot-dialog .create-bot-actions {
+    margin-top: 4px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .create-bot-dialog .actions button {
+    min-height: 38px;
+    padding: 0 18px;
+    border-radius: 11px;
+    font-size: 13.5px;
+    font-weight: 550;
+  }
+  .create-bot-dialog .actions button:not(.primary):not(.danger) {
+    border: 1px solid var(--border-strong);
+    background: var(--background);
+    color: var(--foreground);
+  }
+  .create-bot-dialog .actions button:not(.primary):not(.danger):hover:not(:disabled) {
+    background: var(--secondary);
+    border-color: var(--border-hover);
+  }
+  .create-bot-dialog .actions button.primary {
+    border: 1px solid transparent;
+    background: var(--brand);
+    color: #ffffff;
+    box-shadow: 0 1px 2px rgba(30, 64, 175, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.20);
+  }
+  .create-bot-dialog .actions button.primary:hover:not(:disabled) {
+    background: var(--brand-hover);
+  }
+  .create-bot-dialog .actions button.primary:active:not(:disabled) {
+    background: var(--brand-active);
+  }
+  .create-bot-picker {
+    display: flex;
+    flex-direction: column;
+    height: min(460px, calc(100dvh - 140px));
+    min-height: 0;
+    overflow: hidden;
+  }
+  .create-bot-picker .identity-options {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 16px 22px;
+  }
+  .create-bot-picker .graphic-picker-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .create-bot-picker-actions {
+    flex: none;
+    margin-top: 0;
+    padding: 14px 22px;
+    border-top: 1px solid var(--border);
+    background: var(--card);
   }
   .rk-workspace .modal .modal-heading {
     margin-bottom: 16px;
@@ -1805,7 +2069,90 @@
   }
 
   /* ---------- 9. Mobile Viewport Polish ---------- */
+  @media (max-width: 1040px) {
+    .rk-workspace .inspector.ds-drawer {
+      background: var(--drawer-surface);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
   @media (max-width: 720px) {
+    .rk-workspace .contact-sidebar {
+      background: var(--drawer-surface);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+    html[data-platform="android"] .rk-workspace .contact-sidebar.is-open {
+      inset: 0;
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .rk-workspace .modal-backdrop {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+    .create-bot-dialog {
+      position: fixed;
+      inset: 0;
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      max-width: none;
+      max-height: none;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+      contain: layout style;
+    }
+    .create-bot-dialog::backdrop {
+      background: var(--card, #ffffff);
+    }
+    .create-bot-dialog[data-dark="1"]::backdrop {
+      background: var(--card, #172234);
+    }
+    .create-bot-header {
+      min-height: 56px;
+      padding: 10px 14px 10px 20px;
+    }
+    .create-bot-fields {
+      padding: 16px 20px 24px;
+      gap: 14px;
+    }
+    .create-bot-dialog .field input {
+      height: 44px;
+      font-size: 15px;
+    }
+    .create-bot-dialog .field textarea {
+      min-height: 104px;
+      font-size: 15px;
+      resize: none;
+    }
+    .create-bot-dialog .create-bot-actions {
+      margin-top: 6px;
+      padding-top: 14px;
+      border-top: 0;
+    }
+    .create-bot-dialog .actions button {
+      flex: 1;
+      min-height: 44px;
+      border-radius: 12px;
+      font-size: 14.5px;
+    }
+    .create-bot-picker {
+      flex: 1;
+      height: auto;
+    }
+    .create-bot-picker .identity-options {
+      padding: 14px 18px;
+    }
+    .create-bot-picker .graphic-picker-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .create-bot-picker-actions {
+      padding: 12px 20px max(12px, env(safe-area-inset-bottom));
+    }
     .rk-workspace .transcript {
       scrollbar-width: none;
     }

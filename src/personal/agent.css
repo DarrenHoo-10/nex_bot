@@ -1781,8 +1781,8 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
 .job-stage:is(.approval, .question, .review) { --job-status-ink: light-dark(#925b1e, #efba80); }
 .job-stage:is(.blocked, .failed) { --job-status-ink: light-dark(#a64643, #f2a5a1); }
 .job-stage.done { --job-status-ink: light-dark(#327663, #91cdb9); }
-.job-card-title, .job-entry-title, .jobs-popover-title { border: 0; background: transparent; padding: 0; color: inherit; font-weight: 600; text-align: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-.job-card-title:hover, .job-entry-title:hover, .jobs-popover-title:hover { color: var(--identity-accent, #4d6bfe); }
+.job-card-title, .job-entry-title { border: 0; background: transparent; padding: 0; color: inherit; font-weight: 600; text-align: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.job-card-title:hover, .job-entry-title:hover { color: var(--identity-accent, #4d6bfe); }
 .job-stage { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--identity-accent, #4d6bfe) 12%, transparent); color: var(--identity-accent, #4d6bfe); font-size: 11px; }
 .job-stage.blocked, .job-stage.failed { background: color-mix(in srgb, var(--destructive, #dc2626) 12%, transparent); color: var(--destructive, #dc2626); }
 .job-stage.done, .job-stage.dropped, .job-stage.stopped { background: color-mix(in srgb, var(--muted-foreground, #647287) 12%, transparent); color: var(--muted-foreground, #647287); }
@@ -1797,12 +1797,6 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
 .job-card-detail p { margin: 6px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .job-reply-label { font-size: 11px; color: var(--muted-foreground, var(--bt-fg-3)); margin-bottom: 3px; text-align: right; }
 .reply-job-bar strong { color: var(--identity-accent, #4d6bfe); }
-.jobs-pill-anchor { position: relative; }
-.jobs-pill { border: 0; padding: 5px 12px; border-radius: 999px; font-size: 11.5px; color: var(--foreground, var(--bt-fg-2)); white-space: nowrap; }
-.jobs-popover { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 260px; max-width: 360px; padding: 6px; border-radius: 14px; background: var(--card, var(--bt-card)); color: var(--foreground, var(--bt-fg)); box-shadow: 0 8px 28px rgba(15, 23, 42, 0.16); }
-.jobs-popover-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12px; }
-.jobs-popover-title { flex: 1; font-weight: 500; }
-.jobs-popover-row > button:last-child { border: 0; background: transparent; padding: 3px; color: var(--muted-foreground, var(--bt-fg-3)); }
 .job-chat-bar { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0 auto; padding: 4px max(24px, calc((100% - 780px) / 2)) 6px; width: 100%; box-sizing: border-box; }
 .job-chat-bar strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .job-chat-back { flex: none; display: inline-flex; align-items: center; gap: 2px; border: 0; background: transparent; padding: 4px 8px 4px 2px; border-radius: 8px; color: var(--muted-foreground, #647287); font-size: 12.5px; cursor: pointer; }

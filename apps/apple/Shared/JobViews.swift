@@ -233,5 +233,55 @@ struct JobDetailView: View {
     }
 }
 
+/// An open background job row in the assistant's 工作 panel (Mac inspector / iOS detail).
+struct JobListEntry: View {
+    let job: Job
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(job.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.foreground)
+                        .lineLimit(1)
+                    if let progress = job.progress {
+                        Text(progress)
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(job.stageText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(jobStageInk(job.stage))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(jobStageInk(job.stage).opacity(0.12), in: Capsule())
+                    .fixedSize()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(job.title)，\(job.stageText)")
+        .accessibilityHint("查看执行详情")
+    }
+}
+
+func jobStageInk(_ stage: String) -> Color {
+    switch stage {
+    case "running", "queued": Theme.dynamic(light: 0x3767a3, dark: 0x9ec1ee)
+    case "approval", "question", "review": Theme.dynamic(light: 0x925b1e, dark: 0xefba80)
+    case "blocked", "failed": Theme.dynamic(light: 0xa64643, dark: 0xf2a5a1)
+    case "done": Theme.dynamic(light: 0x327663, dark: 0x91cdb9)
+    default: Theme.muted
+    }
+}
+
 /// Opens a job's details as a sheet by id.
 struct JobSheetItem: Identifiable, Hashable { let id: String }

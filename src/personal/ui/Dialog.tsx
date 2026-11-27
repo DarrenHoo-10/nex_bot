@@ -11,6 +11,10 @@ export interface DialogProps {
   children?: ReactNode;
   busy?: boolean;
   className?: string;
+  variant?: "modal" | "sheet";
+  headerStart?: ReactNode;
+  headerClassName?: string;
+  bodyClassName?: string;
 }
 
 /** Unified native modal dialog with NexBot glass surface and keyboard/backdrop handling. */
@@ -22,6 +26,10 @@ export function Dialog({
   children,
   busy = false,
   className,
+  variant = "modal",
+  headerStart,
+  headerClassName,
+  bodyClassName,
 }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -62,17 +70,24 @@ export function Dialog({
       onClick={(event) => {
         if (event.target === event.currentTarget && !busy) onClose();
       }}
-      className={cn(
-        "m-auto w-[min(440px,calc(100vw-32px))] rounded-[var(--radius-xl)] border border-[var(--glass-edge)] bg-[var(--popover)] p-6 text-[var(--foreground)] shadow-[var(--shadow-float)] backdrop-blur-xl backdrop:bg-[var(--overlay)] backdrop:backdrop-blur-[3px]",
-        className,
-      )}
+      className={
+        variant === "sheet"
+          ? cn(className)
+          : cn(
+              "m-auto w-[min(440px,calc(100vw-32px))] rounded-[var(--radius-xl)] border border-[var(--glass-edge)] bg-[var(--popover)] p-6 text-[var(--foreground)] shadow-[var(--shadow-float)] backdrop-blur-xl backdrop:bg-[var(--overlay)] backdrop:backdrop-blur-[3px]",
+              className,
+            )
+      }
     >
-      <div className="flex items-start justify-between gap-3">
-        <h2 id={titleId} className="m-0 text-[18px] font-semibold leading-snug tracking-[-0.02em] text-[var(--foreground)]">
-          {title}
-        </h2>
-        <Button variant="icon" size="sm" aria-label="关闭弹窗" disabled={busy} onClick={onClose}>
-          <X size={16} />
+      <div className={cn("flex items-center justify-between gap-3", headerClassName)}>
+        <div className="flex min-w-0 items-center gap-2">
+          {headerStart}
+          <h2 id={titleId} className="m-0 truncate text-[18px] font-semibold leading-snug tracking-[-0.02em] text-[var(--foreground)]">
+            {title}
+          </h2>
+        </div>
+        <Button variant="icon" size={variant === "sheet" ? "md" : "sm"} aria-label="关闭弹窗" disabled={busy} onClick={onClose}>
+          <X size={17} />
         </Button>
       </div>
       {description ? (
@@ -80,7 +95,7 @@ export function Dialog({
           {description}
         </p>
       ) : null}
-      {children ? <div className="mt-5">{children}</div> : null}
+      {children ? <div className={cn(variant === "sheet" ? undefined : "mt-5", bodyClassName)}>{children}</div> : null}
     </dialog>
   );
 }

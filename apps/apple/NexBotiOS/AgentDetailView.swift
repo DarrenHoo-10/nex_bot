@@ -12,12 +12,13 @@ struct AgentDetailView: View {
     @State private var busyTask: String?
 
     enum Sheet: Identifiable {
-        case avatar, routine(Routine), occurrence(RoutineOccurrence)
+        case avatar, routine(Routine), occurrence(RoutineOccurrence), job(String)
         var id: String {
             switch self {
             case .occurrence(let o): "occurrence-\(o.id)"
             case .avatar: "avatar"
             case .routine(let r): "routine-\(r.id)"
+            case .job(let id): "job-\(id)"
             }
         }
     }
@@ -52,6 +53,7 @@ struct AgentDetailView: View {
             case .occurrence(let o): RoutineOccurrenceDetailView(workspace: workspace, occurrence: o)
             case .avatar: AvatarPickerSheet(workspace: workspace, botID: botID)
             case .routine(let routine): RoutinePlanDetailView(workspace: workspace, routine: routine)
+            case .job(let id): JobDetailView(workspace: workspace, jobID: id)
             }
         }
         .errorAlert($errorText)
@@ -139,6 +141,21 @@ struct AgentDetailView: View {
         let state = workspace.state
         if let preview = PreviewCenter.shared.items[botID] {
             PreviewCard(item: preview) { PreviewCenter.shared.items[botID] = nil }
+        }
+
+        let openJobs = state?.openJobs(botID: botID) ?? []
+        if !openJobs.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                title("后台任务")
+                VStack(spacing: 0) {
+                    ForEach(Array(openJobs.enumerated()), id: \.element.id) { index, job in
+                        if index > 0 { Divider().overlay(Theme.border).padding(.leading, 14) }
+                        JobListEntry(job: job) { sheet = .job(job.id) }
+                    }
+                }
+                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .accessibilityLabel("后台任务列表")
+            }
         }
 
         VStack(alignment: .leading, spacing: 0) {

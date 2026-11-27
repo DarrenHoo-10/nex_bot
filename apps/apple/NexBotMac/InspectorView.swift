@@ -119,15 +119,32 @@ struct InspectorWorkTab: View {
     @State private var selectedOccurrence: RoutineOccurrence?
     @State private var selectedRoutine: Routine?
 
-    // The running task, background jobs and recent results are not listed here: the composer stops work,
-    // jobs open from the chat, and routine results from their row.
+    private var openJobs: [Job] { workspace.state?.openJobs(botID: botID) ?? [] }
+
+    // Open background jobs and scheduled routines live in the work tab; the running chat task stops from the composer.
     var body: some View {
         if let item = AgentUI.shared.preview, AgentUI.shared.previewBotID == botID { PreviewCard(item: item) { AgentUI.shared.preview = nil } }
+        if !openJobs.isEmpty { jobs }
         routines
             .onAppear { workspace.setResourceVisible("work", true) }
             .onDisappear { workspace.setResourceVisible("work", false) }
             .sheet(item: $selectedRoutine) { RoutinePlanDetailView(workspace: workspace, routine: $0) }
             .sheet(item: $selectedOccurrence) { RoutineOccurrenceDetailView(workspace: workspace, occurrence: $0) }
+    }
+
+    private var jobs: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            InspectorSectionTitle(title: "后台任务")
+            VStack(spacing: 0) {
+                ForEach(Array(openJobs.enumerated()), id: \.element.id) { index, job in
+                    if index > 0 { Divider().overlay(Theme.border).padding(.leading, 14) }
+                    JobListEntry(job: job) { AgentUI.shared.job = JobSheetItem(id: job.id) }
+                }
+            }
+            .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14))
+            .accessibilityLabel("后台任务列表")
+        }
+        .padding(.bottom, 6)
     }
 
     private var routines: some View {

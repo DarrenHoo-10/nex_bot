@@ -251,15 +251,7 @@ export function AgentDesktop() {
   const [modelChooserOpen, setModelChooserOpen] = useState(false);
   const [quote, setQuote] = useState<{ author: string; text: string }>(), [copiedId, setCopiedId] = useState(""), [exported, setExported] = useState(false);
   // A reply to a background job goes straight to that job, not to the main chat.
-  const [replyJob, setReplyJob] = useState<{ id: string; title: string }>(), [jobsOpen, setJobsOpen] = useState(false), [jobView, setJobView] = useState<string>();
-  const jobsAnchor = useRef<HTMLDivElement>(null);
-  // the background-task list closes on a press anywhere outside the pill and the list
-  useEffect(() => {
-    if (!jobsOpen) return;
-    const outside = (event: PointerEvent) => { if (!jobsAnchor.current?.contains(event.target as Node)) setJobsOpen(false); };
-    document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
-  }, [jobsOpen]);
+  const [replyJob, setReplyJob] = useState<{ id: string; title: string }>(), [jobView, setJobView] = useState<string>();
   const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -584,7 +576,6 @@ export function AgentDesktop() {
       setShowScrollPill(false);
       setQuote(undefined);
       setReplyJob(undefined);
-      setJobsOpen(false);
       setJobView(undefined);
       setMemoryNotice("");
       setPreview(undefined);
@@ -772,7 +763,7 @@ export function AgentDesktop() {
   const viewRoutine = (routine: RecordRow) => setDialog(<RoutineDetail routine={routine} latest={state?.occurrences.find((o) => o.routine_id === routine.id)} close={closeDialog} showResult={(id) => openOccurrence(id)} disable={async () => { await api("routines/toggle", { id: routine.id, version: routine.version, enabled: false }); await reload(); closeDialog(); }} remove={async () => { await api("routines/delete", { id: routine.id, version: routine.version }); await reload(); closeDialog(); }}/>);
   const openOccurrence = (id: string) => setDialog(<RoutineOccurrenceDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>);
   // A job opens as its own conversation in place of the main chat; on a narrow window the profile drawer closes for it.
-  const openJobDetail = useCallback((id: string) => { setJobsOpen(false); setJobView(id); if (!wide) setDetail(false); }, [wide]);
+  const openJobDetail = useCallback((id: string) => { setJobView(id); if (!wide) setDetail(false); }, [wide]);
   const stopJob = useCallback((job: Job) => void run(() => api("jobs/stop", { jobId: job.id })), [run]);
   // The card's acceptance and revision are the todo panel's own versioned actions.
   const jobActions = useMemo<JobCardActions>(() => ({
@@ -883,7 +874,13 @@ export function AgentDesktop() {
   void lookRevision;
 
   const navigate = (target: string) => {
-    if (target === "todo" || target === "agent" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
+    if (target === "agent") {
+      setPage("agent");
+      setSidebarOpen(!wide);
+      if (!wide) setDetail(false);
+      return;
+    }
+    if (target === "todo" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
     else openSettings();
   };
   const renderSidebar = (agent?: AgentSidebarSlot) => <ContactSidebar agent={agent} onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
@@ -910,14 +907,9 @@ export function AgentDesktop() {
             </AssistantSwitcher>
           : <div className="contact-heading who"><strong>{page === "settings" ? "设置" : "你的 Agent"}</strong></div>}
         <div className="header-actions">
-          {page === "agent" && bot && !jobView && openJobs.length > 0 ? <div className="jobs-pill-anchor" ref={jobsAnchor}>
-            <button type="button" className="jobs-pill glass" aria-expanded={jobsOpen} aria-haspopup="dialog" onClick={() => setJobsOpen((open) => !open)}>{openJobs.length} 项后台任务</button>
-            {jobsOpen ? <div className="jobs-popover glass" role="dialog" aria-label="后台任务" onKeyDown={(event) => { if (event.key === "Escape") setJobsOpen(false); }}>
-              {openJobs.map((job) => <div className="jobs-popover-row" key={job.id}><button type="button" className="jobs-popover-title" onClick={() => openJobDetail(job.id)}>{job.title}</button><span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span></div>)}
-            </div> : null}
-          </div> : null}
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
           {page === "agent" && bot ? <button type="button" className="bt-round glass assistant-inspector-toggle"
+            data-jobs={openJobs.length > 0 && !panelOpen ? openJobs.length : undefined}
             aria-label={panelOpen ? "收起助手详情" : "助手详情"} title={panelOpen ? "收起助手详情" : "打开助手详情"}
             aria-expanded={panelOpen} aria-controls="assistant-inspector" onClick={() => setDetail(!detail)}><PanelRight size={18} aria-hidden="true"/></button> : null}
         </div>
@@ -1040,6 +1032,18 @@ export function AgentDesktop() {
         {preview && tab === "profile" ? <section className="preview-card" aria-label="内容预览"><div className="preview-header"><div><strong>{preview.kind === "file" ? preview.title : toolLabels[preview.title] ?? preview.title}</strong><small>{preview.kind === "file" ? `${preview.path ?? preview.title}${preview.size !== undefined ? ` · ${preview.size} B` : ""}` : `${statuses[preview.status ?? ""] ?? preview.status ?? ""}${preview.createdAt ? ` · ${formatTime(preview.createdAt)}` : ""}`}</small></div><div className="preview-actions"><button type="button" onClick={() => copyText("preview", preview.content)}>{copiedId === "preview" ? "已复制" : "复制"}</button><button type="button" aria-label="关闭预览" onClick={() => setPreview(undefined)}><X size={14}/></button></div></div>{preview.arguments ? <details><summary>调用参数</summary><pre>{preview.arguments}</pre></details> : null}<pre>{preview.content || "暂无内容"}</pre></section> : null}
 
         {tab === "profile" ? <>
+          {openJobs.length > 0 ? <>
+            <h2>后台任务</h2>
+            <div className="job-list" aria-label="后台任务列表">
+              {openJobs.map((job) => <button type="button" className={`job-row ${jobView === job.id ? "is-active" : ""}`} key={job.id} aria-current={jobView === job.id ? "true" : undefined} onClick={() => openJobDetail(job.id)}>
+                <span className="job-row-main">
+                  <strong className="job-entry-title">{job.title}</strong>
+                  {job.progress ? <span className="job-row-progress">{job.progress}</span> : null}
+                </span>
+                <span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span>
+              </button>)}
+            </div>
+          </> : null}
 
           <h2>定时任务</h2>
           {routines.length ? <div className="routine-list" aria-label="定时任务列表">
