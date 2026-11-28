@@ -4,17 +4,18 @@ import XCTest
 // Models, frames, helpers and the HTTP client of Agent mode.
 
 func cliSessionJSON(_ key: String = "d1:claude:s1", device: String = "d1", cwd: String = "/work/app", state: String = "idle", online: Bool = true,
-                    hidden: Bool = false, liveIn: String? = "nexbot", terminal: String? = "term-1", at: Int = 1000, title: String = "修复登录") -> [String: Any] {
+                    hidden: Bool = false, archived: Bool = false, liveIn: String? = "nexbot", terminal: String? = "term-1", at: Int = 1000, title: String = "修复登录") -> [String: Any] {
     var s: [String: Any] = ["key": key, "deviceId": device, "hidden": hidden, "online": online, "engine": "claude", "nativeId": "s1", "configDir": "",
                             "cwd": cwd, "title": title, "state": state, "lastActivityAt": at]
+    if archived { s["archived"] = true }
     if let liveIn { s["liveIn"] = liveIn }
     if let terminal { s["terminal"] = terminal }
     return s
 }
 
 func cliSession(_ key: String = "d1:claude:s1", device: String = "d1", cwd: String = "/work/app", state: CliSessionState = .idle, online: Bool = true,
-                hidden: Bool = false, liveIn: CliLiveIn? = .nexbot, terminal: String? = "term-1", at: Int = 1000, engine: CliEngine = .claude, title: String = "修复登录") -> CliSession {
-    CliSession(key: key, deviceId: device, hidden: hidden, online: online, engine: engine, nativeId: "s1", cwd: cwd, title: title, state: state,
+                hidden: Bool = false, archived: Bool = false, liveIn: CliLiveIn? = .nexbot, terminal: String? = "term-1", at: Int = 1000, engine: CliEngine = .claude, title: String = "修复登录") -> CliSession {
+    CliSession(key: key, deviceId: device, hidden: hidden, archived: archived, online: online, engine: engine, nativeId: "s1", cwd: cwd, title: title, state: state,
                liveIn: liveIn, terminal: terminal, lastActivityAt: at)
 }
 
@@ -626,5 +627,35 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertNil(StubCore().client(token: nil).cliStreamRequest())
         let local = CoreClient(origin: try! CoreOrigin("http://192.168.1.5:3000"), token: "t").cliStreamRequest()
         XCTAssertEqual(local?.url?.absoluteString, "ws://192.168.1.5:3000/api/cli-agents/stream")
+    }
+
+    func testArchivedSessionsAndManageRoutes() async throws {
+        let decoded = try decode(CliSession.self, cliSessionJSON("d1:codex:arch", archived: true))
+        XCTAssertTrue(decoded.archived)
+        XCTAssertTrue(CliSessions.isArchived(decoded))
+        let active = cliSession("d1:codex:act", state: .waiting)
+        let archivedWaiting = cliSession("d1:codex:arch", state: .waiting, archived: true)
+        XCTAssertEqual(CliSessions.waitingCount([active, archivedWaiting]), 1)
+        XCTAssertEqual(CliSessions.hiddenCount([active, archivedWaiting]), 1)
+        let groups = CliSessions.group(devices: [CliDevice(id: "d1", name: "Office", online: true)], sessions: [active, archivedWaiting])
+        XCTAssertEqual(groups[0].count, 1)
+
+        let core = StubCore()
+        core.handle { r in
+            switch (r.method, r.path) {
+            case ("POST", "/api/cli-agents/sessions/archive"),
+                 ("POST", "/api/cli-agents/sessions/restore"),
+                 ("POST", "/api/cli-agents/sessions/delete"):
+                return .json(["session": ["id": "wb-1"]])
+            default: return .json(["error": "unhandled"], status: 404)
+            }
+        }
+        let client = core.client(token: "tok")
+        try await client.cliArchiveSession(key: "d1:codex:act", archived: true)
+        try await client.cliArchiveSession(key: "d1:codex:act", archived: false)
+        try await client.cliDeleteSession(key: "d1:codex:act")
+        XCTAssertEqual(core.recorded("/api/cli-agents/sessions/archive").first?.json["key"] as? String, "d1:codex:act")
+        XCTAssertEqual(core.recorded("/api/cli-agents/sessions/restore").first?.json["key"] as? String, "d1:codex:act")
+        XCTAssertEqual(core.recorded("/api/cli-agents/sessions/delete").first?.json["key"] as? String, "d1:codex:act")
     }
 }

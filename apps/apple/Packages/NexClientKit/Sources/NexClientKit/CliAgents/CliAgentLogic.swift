@@ -96,12 +96,15 @@ public enum CliSessions {
         return t.isEmpty ? "\(s.engine.label) 会话" : t
     }
 
+    /// Whether a session is natively archived or carries the legacy hidden flag.
+    public static func isArchived(_ s: CliSession) -> Bool { s.archived || s.hidden }
+
     /// Computer, then folder, then session. A computer without sessions stays so a new session can start on it.
     public static func group(devices: [CliDevice], sessions: [CliSession], showHidden: Bool = false) -> [CliDeviceGroup] {
         var known: [String: CliDevice] = [:]
         var order: [String] = []
         for d in devices where known[d.id] == nil { known[d.id] = d; order.append(d.id) }
-        let visible = sessions.filter { showHidden || !$0.hidden }
+        let visible = sessions.filter { showHidden || !isArchived($0) }
         for s in visible where known[s.deviceId] == nil {
             known[s.deviceId] = CliDevice(id: s.deviceId, name: s.deviceId, online: s.online)
             order.append(s.deviceId)
@@ -140,12 +143,12 @@ public enum CliSessions {
         }
     }
 
-    public static func hiddenCount(_ sessions: [CliSession]) -> Int { sessions.filter(\.hidden).count }
+    public static func hiddenCount(_ sessions: [CliSession]) -> Int { sessions.filter(isArchived).count }
 
     /// Running or waiting sessions on every computer, newest first: what the list pins above the projects.
     public static func active(_ sessions: [CliSession], pending: [CliSessionKey: Int] = [:]) -> [CliSession] {
         sessions.filter { s in
-            guard !s.hidden else { return false }
+            guard !isArchived(s) else { return false }
             let shown = asked(s, pending: pending[s.key] ?? 0)
             return shown.online && (shown.state == .running || shown.state == .waiting)
         }.sorted { $0.lastActivityAt > $1.lastActivityAt }
@@ -172,7 +175,7 @@ public enum CliSessions {
 
     /// Sessions waiting for the user: waiting by their own state, or holding a pending request (`asked` holds their keys).
     public static func waitingCount(_ sessions: [CliSession], asked: Set<String> = []) -> Int {
-        sessions.filter { $0.online && !$0.hidden && ($0.state == .waiting || asked.contains($0.key)) }.count
+        sessions.filter { $0.online && !isArchived($0) && ($0.state == .waiting || asked.contains($0.key)) }.count
     }
 
     /// A session that holds a pending request reads as waiting whatever its file says.
@@ -744,7 +747,7 @@ public enum CliNotify {
     /// Sessions waiting now that were not before. Nothing on the first list (`previous` nil).
     public static func newlyWaiting(previous: [CliSessionKey: CliSessionState]?, sessions: [CliSession]) -> [CliSession] {
         guard let previous else { return [] }
-        return sessions.filter { $0.online && !$0.hidden && $0.state == .waiting && previous[$0.key] != .waiting }
+        return sessions.filter { $0.online && !CliSessions.isArchived($0) && $0.state == .waiting && previous[$0.key] != .waiting }
     }
 
     public static func states(_ sessions: [CliSession]) -> [CliSessionKey: CliSessionState] {

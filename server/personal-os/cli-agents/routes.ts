@@ -154,10 +154,10 @@ export class CliAgentRoutes {
         case "/api/cli-agents/queue/steer": return await this.queueSteer(data);
         case "/api/cli-agents/queue/resume": return await this.queueResume(request, data);
         case "/api/cli-agents/sessions/branch": return await this.branchSession(request, data);
-        case "/api/cli-agents/sessions/rename": return await this.sessionUpdate(data, "rename");
-        case "/api/cli-agents/sessions/archive": return await this.sessionUpdate(data, "archive");
-        case "/api/cli-agents/sessions/restore": return await this.sessionUpdate(data, "restore");
-        case "/api/cli-agents/sessions/delete": return await this.sessionUpdate(data, "delete");
+        case "/api/cli-agents/sessions/rename": return await this.sessionUpdate(request, data, "rename");
+        case "/api/cli-agents/sessions/archive": return await this.sessionUpdate(request, data, "archive");
+        case "/api/cli-agents/sessions/restore": return await this.sessionUpdate(request, data, "restore");
+        case "/api/cli-agents/sessions/delete": return await this.sessionUpdate(request, data, "delete");
         case "/api/cli-agents/notes": return this.createNote(request, data);
         case "/api/cli-agents/notes/update": return this.updateNote(data);
         case "/api/cli-agents/notes/delete": return this.deleteNote(data);
@@ -251,7 +251,7 @@ export class CliAgentRoutes {
     return { status: 200, body: { id: row.id, parentId: row.parent_id, version: row.version } };
   }
 
-  private async sessionUpdate(data: Record<string, unknown>, action: "rename" | "archive" | "restore" | "delete"): Promise<CliRouteResult> {
+  private async sessionUpdate(request: CliRouteRequest, data: Record<string, unknown>, action: "rename" | "archive" | "restore" | "delete"): Promise<CliRouteResult> {
     const workbench = this.extras.workbench;
     if (!workbench) return cliErrorResult("not_found");
     // A logical id carries the version the client saw. A native key is enough
@@ -263,21 +263,37 @@ export class CliAgentRoutes {
     const expected = data.expectedVersion;
     if (expected !== undefined && (typeof expected !== "number" || !Number.isSafeInteger(expected) || expected < 0)) return cliErrorResult("invalid");
     if (!key && expected === undefined) return cliErrorResult("invalid");
-    const current = workbench.resolve(ref);
-    const id = String(current.id);
-    const version = typeof expected === "number" ? expected : Number(current.version);
-    let row;
-    switch (action) {
-      case "rename": {
-        const title = data.title;
-        if (typeof title !== "string" || !title.trim() || title.trim().length > 200) return cliErrorResult("invalid");
-        row = workbench.rename(id, title.trim(), version);
-        break;
-      }
-      case "archive": row = workbench.setArchived(id, true, version); break;
-      case "restore": row = workbench.setArchived(id, false, version); break;
-      case "delete": row = workbench.remove(id, version); break;
+    if (action === "rename") {
+      const title = data.title;
+      if (typeof title !== "string" || !title.trim() || title.trim().length > 200) return cliErrorResult("invalid");
+      const current = workbench.resolve(ref);
+      const row = workbench.rename(String(current.id), title.trim(), typeof expected === "number" ? expected : Number(current.version));
+      return { status: 200, body: { session: workbench.viewOf(row) } };
     }
+    const existing = workbench.find(ref);
+    if (!existing && !key) return cliErrorResult("not_found");
+    if (existing && expected !== undefined && Number(existing.version) !== expected) return cliErrorResult("conflict");
+    const sessionKey = existing?.session_key ? String(existing.session_key) : key;
+    if (sessionKey) {
+      if (!existing && !this.hub.session(sessionKey)) return cliErrorResult("not_found");
+      this.store.audit(`cli.${action}`, "cli_session", sessionKey, { sessionId: request.sessionId });
+      if (action === "archive") await this.hub.archive(request.sessionId, sessionKey, true);
+      else if (action === "restore") await this.hub.archive(request.sessionId, sessionKey, false);
+      else await this.hub.deleteSession(request.sessionId, sessionKey);
+    }
+    if (action === "delete") {
+      if (!existing) return { status: 200, body: { session: null, deleted: true } };
+      const latest = workbench.find(String(existing.id));
+      if (!latest) return { status: 200, body: { session: null, deleted: true } };
+      const row = workbench.remove(String(latest.id), Number(latest.version));
+      return { status: 200, body: { session: workbench.viewOf(row) } };
+    }
+    const wantArchived = action === "archive";
+    const current = existing ? (workbench.find(String(existing.id)) ?? existing) : workbench.resolve(ref);
+    if ((current.archived === 1) === wantArchived) {
+      return { status: 200, body: { session: workbench.viewOf(current) } };
+    }
+    const row = workbench.setArchived(String(current.id), wantArchived, Number(current.version));
     return { status: 200, body: { session: workbench.viewOf(row) } };
   }
 

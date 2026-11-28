@@ -229,7 +229,7 @@ const byRecent = (a: CliSessionView, b: CliSessionView) => b.lastActivityAt - a.
  * so a new session can be started on it. Hidden rows only appear on request. */
 export function groupSessions(devices: readonly CliDeviceView[], sessions: readonly CliSessionView[], showHidden = false): DeviceGroup[] {
   const known = new Map<string, CliDeviceView>(devices.map((device) => [device.id, device]));
-  const visible = sessions.filter((session) => showHidden || !session.hidden);
+  const visible = sessions.filter((session) => showHidden || (!session.hidden && !session.archived));
   for (const session of visible) {
     if (!known.has(session.deviceId)) known.set(session.deviceId, { id: session.deviceId, name: session.deviceId, online: session.online, cliAgents: null });
   }
@@ -244,7 +244,7 @@ export function groupSessions(devices: readonly CliDeviceView[], sessions: reado
 }
 
 export function hiddenCount(sessions: readonly CliSessionView[]): number {
-  return sessions.filter((session) => session.hidden).length;
+  return sessions.filter((session) => session.hidden || session.archived === true).length;
 }
 
 /** Most recently used folders on a computer, for the new-session dialog. */
@@ -273,7 +273,7 @@ export function deviceBlocker(device: CliDeviceView | undefined, engine?: CliEng
 
 /** Sessions waiting for the user: waiting by their own state, or holding a pending request (`asked` holds their keys). */
 export function waitingCount(sessions: readonly CliSessionView[], asked?: ReadonlySet<string>): number {
-  return sessions.filter((session) => session.online && !session.hidden && (session.state === "waiting" || !!asked?.has(session.key))).length;
+  return sessions.filter((session) => session.online && !session.hidden && !session.archived && (session.state === "waiting" || !!asked?.has(session.key))).length;
 }
 
 /** A session that holds a pending request reads as waiting whatever its file says. */

@@ -5,12 +5,12 @@
 // Never reads `*.key` files (inbox tokens): scanning only notes where a live
 // session's inbox is. `inbox.ts` opens the one key of the session it sends to, at
 // send time. The module keeps no timers; the SessionDiscovery owns the schedule.
-import { open, readdir, stat } from "node:fs/promises";
+import { cp, mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, unwrapPastedContent, type CliLiveIn, type CliSessionState } from "../../../shared/cli-agents.ts";
+import { CLI_LIMITS, MAX_SESSIONS, isCliNativeId, unwrapPastedContent, type CliLiveIn, type CliSessionState } from "../../../shared/cli-agents.ts";
 import { claudeUsed, claudeWindow } from "./context-usage.ts";
-import { desktopHides, EMPTY_DESKTOP_INDEX, type DesktopIndex, type DesktopSessionState } from "./claude-desktop.ts";
+import { deleteClaudeDesktopEntries, desktopHides, EMPTY_DESKTOP_INDEX, setClaudeDesktopArchived, type DesktopIndex, type DesktopSessionState } from "./claude-desktop.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { isPidAlive, processStartTimes, sameProcessStart, type ProcessStartOptions } from "./liveness.ts";
 
@@ -235,6 +235,8 @@ export interface ClaudeHistoryEntry {
   forkedFrom?: string;
   /** tokens the last main-thread request carried */
   contextUsed?: number;
+  /** true when read from `<configDir>/archived-projects/` */
+  archived?: boolean;
 }
 
 /** A claude an SDK runs (`sdk-ts`, `sdk-py`, `sdk-cli`): while it runs it belongs to
@@ -274,61 +276,71 @@ export interface ScanHistoryOptions {
   historyDays?: number;
 }
 
-/** Transcripts under `projects/*` modified within HISTORY_DAYS, newest first,
- * at most MAX_SESSIONS, plus any `include`d session ids. Files whose
- * (size, mtimeMs) did not change are not read again. */
+/** Transcripts under `projects/*` (and archived transcripts under `archived-projects/*`),
+ * newest first, at most MAX_SESSIONS, plus any `include`d session ids. When
+ * `historyDays` is omitted there is no age cutoff. Files whose (size, mtimeMs)
+ * did not change are not read again. */
 export async function scanHistory(configDir: string, options: ScanHistoryOptions = {}): Promise<ClaudeHistoryEntry[]> {
   const now = options.now ?? Date.now();
   const cache = options.cache ?? defaultCache;
-  const cutoff = now - (options.historyDays ?? HISTORY_DAYS) * DAY_MS;
+  const cutoff = options.historyDays === undefined ? Number.NEGATIVE_INFINITY : now - options.historyDays * DAY_MS;
   const max = options.maxSessions ?? MAX_SESSIONS;
   const projects = path.join(configDir, "projects");
-  let dirs: string[];
-  try {
-    dirs = (await readdir(projects, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => path.join(projects, d.name));
-  } catch {
-    return [];
-  }
-  type Candidate = { file: string; sessionId: string; size: number; mtimeMs: number; bornMs: number };
+  const archivedProjects = path.join(configDir, "archived-projects");
+  type Candidate = { file: string; sessionId: string; size: number; mtimeMs: number; bornMs: number; archived: boolean };
   const found: Candidate[] = [];
+  const archivedFound: Candidate[] = [];
   const include = new Set(options.include ?? []);
   const wanted: Candidate[] = [];
-  for (let i = 0; i < dirs.length; i += 16) {
-    await Promise.all(
-      dirs.slice(i, i + 16).map(async (dir) => {
-        let names: string[];
-        try {
-          names = await readdir(dir);
-        } catch {
-          return;
-        }
-        for (const name of names) {
-          // top-level files only: `<sessionId>/subagents/*.jsonl` lives one level deeper
-          if (!name.endsWith(".jsonl")) continue;
-          const sessionId = name.slice(0, -6);
-          if (!isCliNativeId(sessionId)) continue;
-          const file = path.join(dir, name);
-          let info;
+  const scanRoot = async (rootDir: string, archived: boolean): Promise<void> => {
+    let dirs: string[];
+    try {
+      dirs = (await readdir(rootDir, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => path.join(rootDir, d.name));
+    } catch {
+      return;
+    }
+    for (let i = 0; i < dirs.length; i += 16) {
+      await Promise.all(
+        dirs.slice(i, i + 16).map(async (dir) => {
+          let names: string[];
           try {
-            info = await stat(file);
+            names = await readdir(dir);
           } catch {
-            continue;
+            return;
           }
-          if (!info.isFile()) continue;
-          const entry = { file, sessionId, size: info.size, mtimeMs: info.mtimeMs, bornMs: info.birthtimeMs > 0 ? info.birthtimeMs : info.mtimeMs };
-          if (info.mtimeMs >= cutoff) found.push(entry);
-          else if (include.has(sessionId)) wanted.push(entry);
-        }
-      }),
-    );
-  }
+          for (const name of names) {
+            // top-level files only: `<sessionId>/subagents/*.jsonl` lives one level deeper
+            if (!name.endsWith(".jsonl")) continue;
+            const sessionId = name.slice(0, -6);
+            if (!isCliNativeId(sessionId)) continue;
+            const file = path.join(dir, name);
+            let info;
+            try {
+              info = await stat(file);
+            } catch {
+              continue;
+            }
+            if (!info.isFile()) continue;
+            const entry: Candidate = { file, sessionId, size: info.size, mtimeMs: info.mtimeMs, bornMs: info.birthtimeMs > 0 ? info.birthtimeMs : info.mtimeMs, archived };
+            if (archived) archivedFound.push(entry);
+            else if (info.mtimeMs >= cutoff) found.push(entry);
+            else if (include.has(sessionId)) wanted.push(entry);
+          }
+        }),
+      );
+    }
+  };
+  await Promise.all([scanRoot(projects, false), scanRoot(archivedProjects, true)]);
   found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  archivedFound.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const load = async (f: Candidate): Promise<ClaudeHistoryEntry | null> => {
     const cached = cache.get(f.file);
-    if (cached && cached.size === f.size && cached.mtimeMs === f.mtimeMs) return cached.entry;
+    if (cached && cached.size === f.size && cached.mtimeMs === f.mtimeMs) {
+      return cached.entry ? { ...cached.entry, ...(f.archived ? { archived: true } : {}) } : null;
+    }
     const entry = await parseTranscriptEdges(f.file, f.sessionId, f.size, f.mtimeMs, f.bornMs);
     cache.set(f.file, { size: f.size, mtimeMs: f.mtimeMs, entry });
-    return entry;
+    return entry ? { ...entry, ...(f.archived ? { archived: true } : {}) } : null;
   };
   // Newest first, until `max` sessions that count: sidechain and SDK transcripts
   // are parsed (once, then cached as excluded) but never use up the cap, so a
@@ -365,7 +377,20 @@ export async function scanHistory(configDir: string, options: ScanHistoryOptions
       }
     });
   }
-  for (const key of cache.keys()) if (!visited.has(key) && key.startsWith(projects)) cache.delete(key);
+  // archived CLI transcripts fill up to `max` total without evicting active sessions
+  for (let i = 0; i < archivedFound.length && out.length < max; i += 8) {
+    const batch = archivedFound.slice(i, i + 8);
+    const entries = await Promise.all(batch.map(load));
+    batch.forEach((f, j) => {
+      visited.add(f.file);
+      const entry = entries[j];
+      if (entry && !ids.has(f.sessionId) && out.length < max) {
+        out.push(entry);
+        ids.add(f.sessionId);
+      }
+    });
+  }
+  for (const key of cache.keys()) if (!visited.has(key) && (key.startsWith(projects) || key.startsWith(archivedProjects))) cache.delete(key);
   return out;
 }
 
@@ -527,14 +552,17 @@ export function mergeClaude(
       listed,
       mtimeOf: (id) => mtimes.get(id),
     });
-    if (hidden) continue;
+    if (hidden === "earlier" || hidden === "deleted") continue;
+    // Prior transcripts of an archived desktop session stay hidden; only the session's current transcript is shown as archived.
+    if (hidden === "archived" && !desktop.sessions.has(entry.sessionId)) continue;
+    const archived = !liveRow && (hidden === "archived" || entry.archived === true);
     kept.push(entry);
-    rows.push(row(configDir, entry.sessionId, entry, liveRow, desktop.sessions.get(entry.sessionId)));
+    rows.push(row(configDir, entry.sessionId, entry, liveRow, desktop.sessions.get(entry.sessionId), archived));
   }
   for (const l of liveById.values()) {
     if (seen.has(l.sessionId)) continue;
     seen.add(l.sessionId);
-    rows.push(row(configDir, l.sessionId, undefined, l, desktop.sessions.get(l.sessionId)));
+    rows.push(row(configDir, l.sessionId, undefined, l, desktop.sessions.get(l.sessionId), false));
   }
   const visible = new Set(rows.map((r) => r.nativeId));
   const { forks, sides } = claudeLineage(kept, visible, desktop);
@@ -586,7 +614,14 @@ export function claudeLineage(
   return { forks: parents, sides };
 }
 
-function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined, sidebar?: DesktopSessionState): LocalSession {
+function row(
+  rawConfigDir: string,
+  sessionId: string,
+  entry: ClaudeHistoryEntry | undefined,
+  live: LiveClaudeSession | undefined,
+  sidebar?: DesktopSessionState,
+  archived = false,
+): LocalSession {
   const configDir = clipUnits(rawConfigDir, CLI_LIMITS.configDir);
   const base = entry?.lastTimestamp ?? entry?.mtimeMs ?? 0;
   const result: LocalSession = {
@@ -599,6 +634,7 @@ function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry 
     lastActivityAt: Math.max(0, Math.round(live ? Math.max(base, live.updatedAt) : base)),
     transcript: entry?.transcript ?? "",
   };
+  if (archived) result.archived = true;
   if (entry?.gitBranch) result.gitBranch = clipUnits(entry.gitBranch, CLI_LIMITS.gitBranch);
   if (live?.waitingFor) result.waitingFor = live.waitingFor;
   if (live?.liveIn) result.liveIn = live.liveIn;
@@ -612,4 +648,98 @@ function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry 
   const version = live?.version ?? entry?.version;
   if (version) result.cliVersion = clipUnits(version, CLI_LIMITS.cliVersion);
   return result;
+}
+
+async function movePath(src: string, dst: string): Promise<void> {
+  await mkdir(path.dirname(dst), { recursive: true });
+  try {
+    await rename(src, dst);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    await cp(src, dst, { recursive: true, force: true });
+    await rm(src, { recursive: true, force: true });
+  }
+}
+
+async function findClaudeTranscripts(rootDir: string, sessionId: string): Promise<Array<{ projectDir: string; file: string; subdir: string }>> {
+  const matches: Array<{ projectDir: string; file: string; subdir: string }> = [];
+  let dirs: string[];
+  try {
+    dirs = (await readdir(rootDir, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return matches;
+  }
+  for (const projectDir of dirs) {
+    const file = path.join(rootDir, projectDir, `${sessionId}.jsonl`);
+    const info = await stat(file).catch(() => null);
+    if (info?.isFile()) {
+      matches.push({ projectDir, file, subdir: path.join(rootDir, projectDir, sessionId) });
+    }
+  }
+  return matches;
+}
+
+/** Natively archives or restores a Claude Code session. For Claude Desktop sessions this toggles
+ * `isArchived` in `local_<uuid>.json`; for pure CLI sessions it moves the transcript between
+ * `<configDir>/projects/<project>/` and `<configDir>/archived-projects/<project>/` so `claude --resume`
+ * genuinely hides/restores it. */
+export async function archiveClaudeSession(
+  configDir: string,
+  sessionId: string,
+  archived: boolean,
+  desktopRoots: readonly string[] = [],
+): Promise<boolean> {
+  if (!isCliNativeId(sessionId)) return false;
+  const projects = path.join(configDir, "projects");
+  const archivedProjects = path.join(configDir, "archived-projects");
+  const desktopHit = desktopRoots.length ? await setClaudeDesktopArchived(desktopRoots, sessionId, archived) : false;
+  if (desktopHit) {
+    if (!archived) {
+      const moved = await findClaudeTranscripts(archivedProjects, sessionId);
+      for (const m of moved) {
+        await movePath(m.file, path.join(projects, m.projectDir, `${sessionId}.jsonl`));
+        if ((await stat(m.subdir).catch(() => null))?.isDirectory()) {
+          await movePath(m.subdir, path.join(projects, m.projectDir, sessionId));
+        }
+        defaultCache.delete(m.file);
+      }
+    }
+    return true;
+  }
+  const fromRoot = archived ? projects : archivedProjects;
+  const toRoot = archived ? archivedProjects : projects;
+  const hits = await findClaudeTranscripts(fromRoot, sessionId);
+  if (hits.length) {
+    for (const m of hits) {
+      await movePath(m.file, path.join(toRoot, m.projectDir, `${sessionId}.jsonl`));
+      if ((await stat(m.subdir).catch(() => null))?.isDirectory()) {
+        await movePath(m.subdir, path.join(toRoot, m.projectDir, sessionId));
+      }
+      defaultCache.delete(m.file);
+    }
+    return true;
+  }
+  // Idempotent when already in the requested state.
+  const already = await findClaudeTranscripts(toRoot, sessionId);
+  return already.length > 0;
+}
+
+/** Permanently deletes a Claude Code / Claude Desktop session's native transcript and sidebar entry. */
+export async function deleteClaudeSession(
+  configDir: string,
+  sessionId: string,
+  desktopRoots: readonly string[] = [],
+): Promise<boolean> {
+  if (!isCliNativeId(sessionId)) return false;
+  let removed = desktopRoots.length ? await deleteClaudeDesktopEntries(desktopRoots, sessionId) : false;
+  for (const rootDir of [path.join(configDir, "projects"), path.join(configDir, "archived-projects")]) {
+    const hits = await findClaudeTranscripts(rootDir, sessionId);
+    for (const m of hits) {
+      await rm(m.file, { force: true });
+      await rm(m.subdir, { recursive: true, force: true });
+      defaultCache.delete(m.file);
+      removed = true;
+    }
+  }
+  return removed;
 }

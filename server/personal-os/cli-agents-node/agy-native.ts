@@ -1,16 +1,16 @@
 // The official CLI and its ACP server share the same on-device conversations.
 // Discover metadata here, and open transcript content only for a read/watch/search.
-import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { CLI_LIMITS, isCliModel, type CliItem } from "../../../shared/cli-agents.ts";
+import { CLI_LIMITS, MAX_SESSIONS, isCliModel, type CliItem } from "../../../shared/cli-agents.ts";
 import { buildAssistantItem, buildNoticeItem, buildThinkingItem, buildToolItem, buildUserItem, clipUnits, type LocalSession } from "./items.ts";
 import { defaultRunner, type CommandRunner } from "./liveness.ts";
 
-const RECENT = 120;
+const RECENT = MAX_SESSIONS;
 const TOOL_NAME_LIMIT = 120;
 const SAFE_NATIVE_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const NON_WRITERS = new Set(["models", "agents", "agent", "install", "update", "changelog", "help", "mcp", "mic-serve", "plugin", "plugins", "--help", "-h", "--version"]);
@@ -153,16 +153,101 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform, des
     const lastActivityAt = timestamp(id) || (transcript ? Math.trunc((await lstat(transcript).catch(() => null))?.mtimeMs ?? 0) : 0);
     const working = !summary?.killed && (summary?.status === "CASCADE_RUN_STATUS_RUNNING" || Boolean(summary?.not_fully_idle));
     if (!transcript && !working && !lastActivityAt) return null;
+    const archived = await isAgyArchived(dir, id);
     return {
       working,
       row: {
         engine: "agy", nativeId: id, cwd: cwd ?? "", configDir: dir, transcript, state: "stopped",
         title: clipUnits(agyString(summary?.title ?? fallback.Title) || path.basename(cwd ?? "") || "Antigravity", CLI_LIMITS.title),
         lastActivityAt,
+        ...(archived && !working ? { archived: true } : {}),
       },
     };
   }));
   return rows.filter((row): row is AgyNativeSession => row !== null);
+}
+
+/** Reads `annotations/<id>.pbtxt` to check whether Antigravity has archived this conversation. */
+export async function isAgyArchived(dir: string, id: string): Promise<boolean> {
+  if (!isAgyId(id)) return false;
+  try {
+    const raw = await readFile(path.join(dir, "annotations", `${id}.pbtxt`), "utf8");
+    return /\barchived\s*:\s*true\b/i.test(raw);
+  } catch {
+    return false;
+  }
+}
+
+/** Updates `archived` in `annotations/<id>.pbtxt` natively so Antigravity Desktop / CLI stay in sync. */
+export async function setAgyArchived(dir: string, id: string, archived: boolean): Promise<void> {
+  if (!isAgyId(id)) throw new Error("invalid Antigravity conversation id");
+  const annDir = path.join(dir, "annotations");
+  const file = path.join(annDir, `${id}.pbtxt`);
+  let raw = "";
+  try {
+    raw = await readFile(file, "utf8");
+  } catch {
+    raw = "";
+  }
+  const cleaned = raw
+    .replace(/\barchived\s*:\s*(?:true|false)\b/gi, "")
+    .replace(/\barchival_status_timestamp\s*:\s*\{[^}]*\}/gi, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+  const next = archived
+    ? [
+      `archived:true`,
+      `archival_status_timestamp:{seconds:${Math.floor(Date.now() / 1000)}}`,
+      cleaned,
+    ].filter(Boolean).join("\n") + "\n"
+    : (cleaned ? cleaned + "\n" : "");
+  await mkdir(annDir, { recursive: true });
+  const tmp = `${file}.nexbot-${process.pid}-${Date.now()}.tmp`;
+  await writeFile(tmp, next, "utf8");
+  await rename(tmp, file);
+}
+
+/** Permanently deletes a local Antigravity conversation (transcript, protobuf, annotations, summary row & cache entries). */
+export async function deleteAgyConversation(dir: string, id: string): Promise<void> {
+  if (!isAgyId(id)) throw new Error("invalid Antigravity conversation id");
+  await Promise.all([
+    rm(path.join(dir, "conversations", `${id}.pb`), { force: true }),
+    rm(path.join(dir, "annotations", `${id}.pbtxt`), { force: true }),
+    rm(path.join(dir, "brain", id), { recursive: true, force: true }),
+  ]);
+  const dbPath = path.join(dir, "conversation_summaries.db");
+  if ((await lstat(dbPath).catch(() => null))?.isFile()) {
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(dbPath);
+      db.exec("PRAGMA busy_timeout = 5000");
+      db.prepare("DELETE FROM conversation_summaries WHERE conversation_id = ?").run(id);
+    } catch {
+      // Ignore if SQLite summary row does not exist or DB schema differs.
+    } finally {
+      db?.close();
+    }
+  }
+  const metaFile = path.join(dir, "cache", "conversation_metadata.json");
+  const meta = await agyJson(metaFile);
+  if (meta.conversations && typeof meta.conversations === "object" && !Array.isArray(meta.conversations) && id in (meta.conversations as AgyRecord)) {
+    const nextConvs = { ...(meta.conversations as AgyRecord) };
+    delete nextConvs[id];
+    const tmp = `${metaFile}.nexbot-${process.pid}-${Date.now()}.tmp`;
+    await writeFile(tmp, JSON.stringify({ ...meta, conversations: nextConvs }), "utf8");
+    await rename(tmp, metaFile);
+  }
+  const lastFile = path.join(dir, "cache", "last_conversations.json");
+  const last = await agyJson(lastFile);
+  const matchingKeys = Object.entries(last).filter(([, value]) => value === id).map(([k]) => k);
+  if (matchingKeys.length) {
+    const nextLast = { ...last };
+    for (const k of matchingKeys) delete nextLast[k];
+    const tmp = `${lastFile}.nexbot-${process.pid}-${Date.now()}.tmp`;
+    await writeFile(tmp, JSON.stringify(nextLast), "utf8");
+    await rename(tmp, lastFile);
+  }
 }
 
 export interface AgyWriters { sessions: Set<string>; unknown: boolean }

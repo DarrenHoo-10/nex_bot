@@ -25,7 +25,7 @@
 // Read-only: only these session files are read, never the app's config file
 // (it holds credentials). A file is parsed again only when its (size, mtime)
 // changed.
-import { open, readdir, stat } from "node:fs/promises";
+import { open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isCliNativeId } from "../../../shared/cli-agents.ts";
@@ -337,4 +337,58 @@ async function sessionFiles(store: string): Promise<{ sessions: string[]; delete
     }
   }
   return { sessions, deleted };
+}
+
+/** Finds all Claude Desktop `local_*.json` entry files whose `cliSessionId` matches `cliSessionId`. */
+async function findDesktopEntries(roots: readonly string[], cliSessionId: string): Promise<Array<{ file: string; raw: Rec }>> {
+  const matches: Array<{ file: string; raw: Rec }> = [];
+  for (const root of roots) {
+    let listing: { sessions: string[]; deleted: string[] };
+    try {
+      listing = await sessionFiles(path.join(root, "claude-code-sessions"));
+    } catch {
+      continue;
+    }
+    for (const file of listing.sessions) {
+      try {
+        const text = await readFile(file, "utf8");
+        const parsed = JSON.parse(text) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+        const rec = parsed as Rec;
+        if (rec.cliSessionId === cliSessionId) matches.push({ file, raw: rec });
+      } catch {
+        // unreadable entry
+      }
+    }
+  }
+  return matches;
+}
+
+/** Updates `isArchived` on matching Claude Desktop sidebar entries. Returns true if any entry existed. */
+export async function setClaudeDesktopArchived(roots: readonly string[], cliSessionId: string, archived: boolean): Promise<boolean> {
+  const entries = await findDesktopEntries(roots, cliSessionId);
+  if (!entries.length) return false;
+  for (const { file, raw } of entries) {
+    const next = { ...raw, isArchived: archived };
+    const tmp = `${file}.nexbot-${process.pid}-${Date.now()}.tmp`;
+    await writeFile(tmp, JSON.stringify(next, null, 2), "utf8");
+    await rename(tmp, file);
+  }
+  return true;
+}
+
+/** Deletes matching Claude Desktop sidebar entries and writes `deleted_<id>` markers so the app never resurrects them. */
+export async function deleteClaudeDesktopEntries(roots: readonly string[], cliSessionId: string): Promise<boolean> {
+  const entries = await findDesktopEntries(roots, cliSessionId);
+  if (!entries.length) return false;
+  for (const { file, raw } of entries) {
+    const dir = path.dirname(file);
+    const localId = typeof raw.sessionId === "string" && raw.sessionId ? raw.sessionId : `local_${cliSessionId}`;
+    await writeFile(path.join(dir, `deleted_${cliSessionId}`), "", "utf8").catch(() => {});
+    if (localId !== `local_${cliSessionId}`) {
+      await writeFile(path.join(dir, `deleted_${localId.replace(/^local_/, "")}`), "", "utf8").catch(() => {});
+    }
+    await rm(file, { force: true });
+  }
+  return true;
 }

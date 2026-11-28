@@ -66,21 +66,23 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public var context: CliContextUsage?
     /// Epoch milliseconds.
     public var lastActivityAt: Int
+    /// True when the native harness has archived this session.
+    public var archived: Bool
     public var writerUnknown: Bool
     public var id: String { key }
 
-    public init(key: CliSessionKey, deviceId: String, hidden: Bool = false, online: Bool = true, engine: CliEngine = .claude, nativeId: String,
+    public init(key: CliSessionKey, deviceId: String, hidden: Bool = false, archived: Bool = false, online: Bool = true, engine: CliEngine = .claude, nativeId: String,
                 configDir: String = "", cwd: String, title: String = "", gitBranch: String? = nil, state: CliSessionState = .idle,
                 waitingFor: String? = nil, liveIn: CliLiveIn? = nil, terminal: String? = nil, model: String? = nil, cliVersion: String? = nil,
                 lastActivityAt: Int = 0, writerUnknown: Bool = false, repoRoot: String? = nil, context: CliContextUsage? = nil, sendVia: String? = nil) {
-        self.key = key; self.deviceId = deviceId; self.hidden = hidden; self.online = online; self.engine = engine; self.nativeId = nativeId
+        self.key = key; self.deviceId = deviceId; self.hidden = hidden; self.archived = archived; self.online = online; self.engine = engine; self.nativeId = nativeId
         self.configDir = configDir; self.cwd = cwd; self.title = title; self.gitBranch = gitBranch; self.state = state; self.waitingFor = waitingFor
         self.liveIn = liveIn; self.terminal = terminal; self.model = model; self.cliVersion = cliVersion; self.lastActivityAt = lastActivityAt
         self.writerUnknown = writerUnknown; self.repoRoot = repoRoot; self.context = context; self.sendVia = sendVia
     }
 
     enum CodingKeys: String, CodingKey {
-        case key, deviceId, hidden, online, engine, nativeId, configDir, cwd, title, gitBranch, state, waitingFor, liveIn, terminal, model
+        case key, deviceId, hidden, archived, online, engine, nativeId, configDir, cwd, title, gitBranch, state, waitingFor, liveIn, terminal, model
         case cliVersion, lastActivityAt, writerUnknown, repoRoot, context, sendVia
     }
 
@@ -89,6 +91,7 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
         key = try c.decode(String.self, forKey: .key)
         deviceId = try c.decode(String.self, forKey: .deviceId)
         hidden = try c.decode(Bool.self, forKey: .hidden)
+        archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
         online = try c.decode(Bool.self, forKey: .online)
         engine = try c.decode(CliEngine.self, forKey: .engine)
         nativeId = try c.decode(String.self, forKey: .nativeId)

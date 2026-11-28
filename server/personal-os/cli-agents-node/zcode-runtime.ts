@@ -10,7 +10,6 @@ import {
   CLI_EFFORTS,
   CLI_LIMITS,
   CLI_MODEL_LIMITS,
-  HISTORY_DAYS,
   MAX_SESSIONS,
   PAGE_SIZE,
   SUMMARY_MAX,
@@ -69,7 +68,6 @@ import {
   type ZcodeSessionRow,
 } from "./zcode.ts";
 
-const DAY_MS = 86_400_000;
 const IDLE_MS = 5 * 60_000;
 const REQUEST_MS = 5 * 60_000;
 const CANCEL_GRACE_MS = 6000;
@@ -456,12 +454,10 @@ export class ZcodeRuntime {
 
   rows(): LocalSession[] {
     if (!this.enabled) return [];
-    const cutoff = Date.now() - HISTORY_DAYS * DAY_MS;
     const rows = new Map<string, LocalSession>();
     const host = this.options.host;
 
     for (const [id, { home, row }] of this.native) {
-      if (!row.running && row.timeUpdated < cutoff) continue;
       const meta = row.model ? this.modelMeta.get(row.model) : undefined;
       const context = row.context
         ? { used: row.context.used, ...(row.context.window ?? meta?.contextWindow ? { window: row.context.window ?? meta?.contextWindow } : {}) }
@@ -474,6 +470,8 @@ export class ZcodeRuntime {
         title: row.title,
         state: row.running ? "running" : "stopped",
         ...(row.running ? { liveIn: "desktop" as const } : {}),
+        ...(row.archived && !row.running ? { archived: true } : {}),
+        ...(row.parentId && isCliNativeId(row.parentId) ? { forkOf: row.parentId } : {}),
         lastActivityAt: row.timeUpdated,
         transcript: "",
         ...(row.version ? { cliVersion: row.version } : {}),
@@ -629,6 +627,42 @@ export class ZcodeRuntime {
     }
     this.options.changed();
     this.armServerIdle();
+  }
+
+  /** Natively archives or restores a ZCode session in `db.sqlite` and `tasks-index.sqlite`. */
+  async archiveSession(id: string, archived: boolean): Promise<void> {
+    const managed = this.sessions.get(id);
+    if (archived) {
+      if (managed?.active) throw new ZcodeError("busy", "会话正在运行，请先停止后再归档");
+      if (managed) await this.releaseSession(managed);
+    }
+    let updated = false;
+    for (const db of this.dbs) {
+      if (db.setArchived(id, archived)) updated = true;
+    }
+    if (!updated) throw new ZcodeError("not_found", "找不到 ZCode 会话");
+    await this.scan();
+    this.options.changed();
+  }
+
+  /** Permanently marks a ZCode session deleted in `db.sqlite` and `tasks-index.sqlite`. */
+  async deleteSession(id: string): Promise<void> {
+    const managed = this.sessions.get(id);
+    if (managed?.active) throw new ZcodeError("busy", "会话正在运行，请先停止后再删除");
+    if (managed) await this.releaseSession(managed);
+    const ignorePids = this.ownPids();
+    for (const db of this.dbs) {
+      if (db.isRunningExternally(id, ignorePids)) {
+        throw new ZcodeError("open_elsewhere", "会话正在 ZCode 中运行，请先关闭后再删除");
+      }
+    }
+    let deleted = false;
+    for (const db of this.dbs) {
+      if (db.deleteSession(id)) deleted = true;
+    }
+    if (!deleted) throw new ZcodeError("not_found", "找不到 ZCode 会话");
+    await this.scan();
+    this.options.changed();
   }
 
   // -------------------------------------------------------------------------

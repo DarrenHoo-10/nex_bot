@@ -209,6 +209,8 @@ export class CliAgentHub {
   private readonly placement = new Map<string, { repoRoot?: string; forkOf?: string; sideOf?: string }>();
   /** what each session's last request carried; it changes every turn, so it is kept here and not in the table */
   private readonly contexts = new Map<string, CliContextUsage>();
+  /** sessions reported as natively archived by their harness; kept across brief disconnects and cleared on revoke/remove */
+  private readonly archivedKeys = new Set<string>();
   private readonly pending = new Map<string, Pending>();
   private readonly busyKeys = new Set<string>();
   private readonly startRequests = new Map<string, {
@@ -330,6 +332,7 @@ export class CliAgentHub {
     if (this.closed) return;
     this.deviceOffline(deviceId);
     this.lastCaps.delete(deviceId);
+    for (const key of [...this.archivedKeys]) if (key.startsWith(deviceId + ":")) this.archivedKeys.delete(key);
     const removes = this.store.all("SELECT key FROM cli_agent_sessions WHERE device_id=?", deviceId).map((row) => asKey(String(row.key)));
     for (const key of [...this.lastTurns.keys()]) if (key.startsWith(deviceId + ":")) this.lastTurns.delete(key);
     for (const row of this.store.all("SELECT DISTINCT session_key FROM cli_agent_requests WHERE substr(session_key,1,?)=? AND status='pending'", deviceId.length + 1, deviceId + ":")) {
@@ -446,12 +449,15 @@ export class CliAgentHub {
         const context = this.contexts.get(key);
         const contextChanged = context?.used !== wire.context?.used || context?.window !== wire.context?.window;
         if (wire.context) this.contexts.set(key, wire.context); else this.contexts.delete(key);
+        const archived = wire.archived === true;
+        const archivedChanged = archived !== this.archivedKeys.has(key);
+        if (archived) this.archivedKeys.add(key); else this.archivedKeys.delete(key);
         const values = this.columnsOf(deviceId, wire);
         const previous = existing.get(key);
         if (!previous) {
           this.store.insert("cli_agent_sessions", { key, ...values, hidden: 0, first_seen_at: now(), updated_at: now() });
           upserts.push(key);
-        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged || viaChanged || placeChanged || contextChanged) {
+        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged || viaChanged || placeChanged || contextChanged || archivedChanged) {
           this.store.run(
             `UPDATE cli_agent_sessions SET ${SESSION_COLUMNS.map((column) => `${column}=?`).join(",")},updated_at=? WHERE key=?`,
             ...SESSION_COLUMNS.map((column) => values[column]), now(), key,
@@ -466,7 +472,7 @@ export class CliAgentHub {
         const key = cliKey(deviceId, ref);
         if (existing.has(key) && !removes.includes(asKey(key))) removes.push(asKey(key));
       }
-      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); this.sendVia.delete(key); this.placement.delete(key); this.contexts.delete(key); }
+      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); this.sendVia.delete(key); this.placement.delete(key); this.contexts.delete(key); this.archivedKeys.delete(key); }
     });
     for (const key of removes) { this.lastTurns.delete(key); this.resolveRequests(key, "gone"); }
     const views = upserts.map((key) => this.viewOf(key)).filter((view): view is CliSessionView => view !== null);
@@ -1028,6 +1034,45 @@ export class CliAgentHub {
     if (caps && !hasCliFeature(caps, feature)) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
   }
 
+  hasFeature(deviceId: string, feature: CliFeature): boolean {
+    return hasCliFeature(this.caps.get(deviceId), feature);
+  }
+
+  /** Natively archives or restores (unarchives) a session on its computer. */
+  async archive(actor: string, key: string, archived: boolean): Promise<void> {
+    const parsed = this.requireKey(key);
+    if (!this.caps.has(parsed.deviceId)) throw new CliOpError("device_offline");
+    this.requireFeature(parsed.deviceId, "sessionManage");
+    await this.op(actor, parsed.deviceId, key, "archive", { ref: parsed.ref, archived });
+    if (archived) this.archivedKeys.add(key);
+    else {
+      this.archivedKeys.delete(key);
+      this.store.run("UPDATE cli_agent_sessions SET hidden=0 WHERE key=?", key);
+    }
+    const view = this.viewOf(key);
+    if (view) this.emitList({ upserts: [view], removes: [] });
+    this.refreshSummary();
+  }
+
+  /** Permanently deletes a native session on its computer and drops it from Core's list. */
+  async deleteSession(actor: string, key: string): Promise<void> {
+    const parsed = this.requireKey(key);
+    if (!this.caps.has(parsed.deviceId)) throw new CliOpError("device_offline");
+    this.requireFeature(parsed.deviceId, "sessionManage");
+    await this.op(actor, parsed.deviceId, key, "delete", { ref: parsed.ref });
+    const existed = !!this.sessionRow(key);
+    this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key);
+    this.writerUnknown.delete(key);
+    this.sendVia.delete(key);
+    this.placement.delete(key);
+    this.contexts.delete(key);
+    this.archivedKeys.delete(key);
+    this.lastTurns.delete(key);
+    this.resolveRequests(key, "gone");
+    if (existed) this.emitList({ upserts: [], removes: [asKey(key)] });
+    this.refreshSummary();
+  }
+
   async skills(actor: string, deviceId: string, args: CliOpArgs["skills"]) {
     this.requireFeature(deviceId, "skills");
     return this.op(actor, deviceId, args.ref ? cliKey(deviceId, args.ref) : null, "skills", args);
@@ -1206,6 +1251,7 @@ export class CliAgentHub {
     if (place?.forkOf) view.forkOf = place.forkOf;
     if (place?.sideOf) view.sideOf = place.sideOf;
     if (this.writerUnknown.has(key)) view.writerUnknown = true;
+    if (this.archivedKeys.has(key)) view.archived = true;
     const context = this.contexts.get(key);
     if (context) view.context = { ...context };
     return view;
@@ -1249,7 +1295,7 @@ export class CliAgentHub {
     // A session with a pending permission or question is waiting for the user whatever state the file says.
     const asked = new Set(this.store.all("SELECT DISTINCT session_key FROM cli_agent_requests WHERE status='pending'").map((row) => String(row.session_key)));
     for (const row of this.store.all("SELECT key,device_id,state FROM cli_agent_sessions WHERE hidden=0 AND (state IN ('waiting','running') OR key IN (SELECT session_key FROM cli_agent_requests WHERE status='pending'))")) {
-      if (!this.caps.has(String(row.device_id))) continue;
+      if (!this.caps.has(String(row.device_id)) || this.archivedKeys.has(String(row.key))) continue;
       if (row.state === "waiting" || asked.has(String(row.key))) waiting++; else running++;
     }
     return { waiting, running };

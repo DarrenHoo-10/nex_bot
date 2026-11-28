@@ -258,16 +258,25 @@ describe("CodexScanner state", () => {
 });
 
 describe("CodexScanner window and segments", () => {
-  it("keeps the last 14 days by directory name and then by mtime", async () => {
+  it("lists sessions without a time limit by default, honors an explicit historyDays window, and scans archived_sessions", async () => {
     rollout(ID(1), [meta(ID(1))], { ageMs: 2 * DAY });
     rollout(ID(2), [meta(ID(2))], { ageMs: (HISTORY_DAYS - 1) * DAY });
     rollout(ID(3), [meta(ID(3))], { ageMs: (HISTORY_DAYS + 5) * DAY });
     // recent directory, but the file itself has been untouched for longer than the window
     rollout(ID(4), [meta(ID(4))], { ageMs: (HISTORY_DAYS + 1) * DAY, dirAgeMs: DAY });
-    // old directory, written recently: not reached (plan: walk recent day directories only)
+    // old directory, written recently
     rollout(ID(5), [meta(ID(5))], { ageMs: DAY, dirAgeMs: (HISTORY_DAYS + 20) * DAY });
-    const rows = await scan(new CodexScanner(home, writerOf("no")));
-    expect(rows.map((r) => r.nativeId)).toEqual([ID(1), ID(2)]);
+    const archivedDir = path.join(home, "archived_sessions");
+    mkdirSync(archivedDir, { recursive: true });
+    writeFileSync(path.join(archivedDir, `rollout-2026-10-01T00-00-00-${ID(6)}.jsonl`), `${JSON.stringify(meta(ID(6)))}\n`, "utf8");
+
+    const all = await scan(new CodexScanner(home, writerOf("no")));
+    expect(all.map((r) => r.nativeId).sort()).toEqual([ID(1), ID(2), ID(3), ID(4), ID(5), ID(6)].sort());
+    expect(all.find((r) => r.nativeId === ID(6))?.archived).toBe(true);
+    expect(all.find((r) => r.nativeId === ID(3))?.archived).toBeUndefined();
+
+    const windowed = await scan(new CodexScanner(home, { ...writerOf("no"), historyDays: HISTORY_DAYS }));
+    expect(windowed.filter((r) => !r.archived).map((r) => r.nativeId)).toEqual([ID(1), ID(2)]);
   });
 
   it("merges continuation segments by session_meta id and keeps the newest", async () => {

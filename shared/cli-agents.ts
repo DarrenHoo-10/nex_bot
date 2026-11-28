@@ -41,7 +41,7 @@ export const WS_PONG_TIMEOUT_MS = 45_000;
 export const SCAN_LIVE_MS = 2000;
 export const SCAN_HISTORY_MS = 15_000;
 export const HISTORY_DAYS = 14;
-export const MAX_SESSIONS = 300;
+export const MAX_SESSIONS = 1000;
 export const SESSIONS_COALESCE_MS = 500;
 
 /** Size caps the parsers enforce on session rows and messages. */
@@ -217,6 +217,8 @@ export interface CliSessionWire {
   context?: CliContextUsage;
   /** epoch ms */
   lastActivityAt: number;
+  /** True when the native harness has archived this session. */
+  archived?: boolean;
   /** The device could not verify who writes the native session. */
   writerUnknown?: boolean;
 }
@@ -546,11 +548,12 @@ export interface CliError {
  * attachments written to the computer (`attach`) and the models its CLIs offer
  * (`models`). Older executors send none. */
 /** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first.
- * `gitBranch`: list local branches/dirty state (`branches`), switch `cwd` to a branch on `start`, and set `worktree.baseBranch`. */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes" | "skills" | "gitBranch";
+ * `gitBranch`: list local branches/dirty state (`branches`), switch `cwd` to a branch on `start`, and set `worktree.baseBranch`.
+ * `sessionManage`: the executor natively archives, restores and deletes sessions (`archive`, `delete`). */
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes" | "skills" | "gitBranch" | "sessionManage";
 /** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask".
  * `permissionModes`: it also takes each CLI's other permission modes (cliPermissionModes); without it only "full" and "ask". */
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch"];
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch", "sessionManage"];
 
 export const CLI_BRANCH_RE = /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/;
 export const CLI_BRANCH_LIMIT = 200;
@@ -758,6 +761,8 @@ export const CLI_OPS = [
   "skills",
   "dirs",
   "branches",
+  "archive",
+  "delete",
 ] as const;
 export type CliOp = (typeof CLI_OPS)[number];
 
@@ -816,6 +821,10 @@ export interface CliOpArgs {
   dirs: { path: string };
   /** local Git branches and working-tree cleanliness for `cwd` */
   branches: { cwd: string };
+  /** natively archive or unarchive (restore) a session on the computer */
+  archive: { ref: CliSessionRef; archived: boolean };
+  /** permanently delete a native session on the computer */
+  delete: { ref: CliSessionRef };
 }
 
 export interface CliSearchHit {
@@ -870,6 +879,8 @@ export interface CliOpResult {
   skills: SkillCatalog;
   dirs: CliDirListing;
   branches: CliGitBranches;
+  archive: Record<string, never>;
+  delete: Record<string, never>;
 }
 
 export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
@@ -891,6 +902,8 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   skills: 15_000,
   dirs: 8000,
   branches: 8000,
+  archive: 20_000,
+  delete: 20_000,
 };
 
 /** Operations that change state: never re-sent after a timeout or a drop.
@@ -904,6 +917,8 @@ export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
   "steer",
   "interrupt",
   "answer",
+  "archive",
+  "delete",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1219,6 +1234,7 @@ function sessionWire(value: unknown): CliSessionWire {
     // a usage this side cannot read is left out rather than dropping the row
     context: present(o, "context") ? guard(() => contextUsage(rec(o.context))) ?? undefined : undefined,
     lastActivityAt,
+    archived: optBool(o, "archived") === true ? true : undefined,
     writerUnknown: optBool(o, "writerUnknown"),
   });
 }
@@ -1604,6 +1620,8 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     if (!isAbsoluteCwd(cwd)) fail();
     return { cwd };
   },
+  archive: (o) => ({ ref: ref(o.ref), archived: bool(o.archived) }),
+  delete: (o) => ({ ref: ref(o.ref) }),
   history_image: (o) => {
     const locator = str(o.locator, 90);
     if (!HISTORY_IMAGE_LOCATOR.test(locator)) fail();
@@ -1710,6 +1728,8 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
   skills: (o) => skillCatalog(o),
   dirs: (o) => dirListing(o),
   branches: (o) => gitBranches(o),
+  archive: () => ({}),
+  delete: () => ({}),
 };
 
 export interface SkillOption { name: string; description: string }

@@ -330,11 +330,17 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
           fork: (session, title) => runWorkbenchAction("fork", session, { title }),
           rename: async (session, row, title) => { await runWorkbenchAction("rename", session, { title, row: { id: row?.id, version: row?.version } }); },
           archive: async (session, row, archived) => {
-            // "hidden" was the old archive: restoring clears it too
-            if (!archived && session.hidden) await hide(session, false);
-            if (archived || row?.archived) await runWorkbenchAction(archived ? "archive" : "restore", session, { row: { id: row?.id, version: row?.version } });
+            if (archived || session.archived || row?.archived) {
+              await runWorkbenchAction(archived ? "archive" : "restore", session, { row: { id: row?.id, version: row?.version } });
+              if (!archived && session.hidden) await hide(session, false).catch(() => undefined);
+            } else if (!archived && session.hidden) {
+              await hide(session, false);
+            }
           },
-          remove: async (session, row) => { await runWorkbenchAction("delete", session, { row: { id: row?.id, version: row?.version } }); },
+          remove: async (session, row) => {
+            await runWorkbenchAction("delete", session, { row: { id: row?.id, version: row?.version } });
+            if (selectedKey === session.key) setSelectedKey(null);
+          },
         }}
         onSelect={select}
         reloadSessions={reload}

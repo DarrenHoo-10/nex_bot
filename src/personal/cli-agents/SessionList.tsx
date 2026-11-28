@@ -130,8 +130,14 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   }, []);
   const meta=(key:CliSessionKey)=>review?.records[key] ?? workbench?.get(key);
   const label=(s:CliSessionView)=>{const own=meta(s.key);return (own&&"title" in own&&own.title?unwrapPastedContent(own.title):"")||sessionTitle(s)};
-  // the older per-session "hidden" flag reads as archived: one place to put sessions away
-  const isArchived=(s:CliSessionView)=>Boolean(meta(s.key)?.archived)||(!review&&!!s.hidden);
+  const deviceOf=(deviceId:string)=>groups.find(group=>group.device.id===deviceId)?.device;
+  // Native archive state from `sessionManage`-capable devices is authoritative; legacy hidden/workbench flags remain as fallback.
+  const isArchived=(s:CliSessionView)=>{
+    if(review)return Boolean(meta(s.key)?.archived);
+    if(s.archived===true||s.hidden)return true;
+    if(deviceOf(s.deviceId)?.cliAgents?.features?.includes("sessionManage"))return false;
+    return Boolean(meta(s.key)?.archived);
+  };
   const ownRow=(key:CliSessionKey)=>{const own=meta(key);return own&&"id" in own&&own.id?own as WorkbenchMeta:undefined};
   function toggle(id:string){setClosed(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next})}
   function toggleEarlier(id:string){setEarlier(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next})}
@@ -375,15 +381,26 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       e.preventDefault();const next=e.key==="Home"?0:e.key==="End"?buttons.length-1:(index+(e.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length;buttons[next].focus();
     }} onBlur={e=>{if(e.relatedTarget && !e.currentTarget.contains(e.relatedTarget))setMenu(null)}} style={{left:Math.max(5,Math.min(menu.x-140,innerWidth-198)),top:Math.max(5,Math.min(menu.y,innerHeight-265))}}>
       <small>{AGENT_LABEL[menu.row.engine]}</small>
-      {(review||wbActions)&&archived?<button role="menuitem" onClick={()=>{const run=review?review.run("restore",menu.row.key):wbActions!.archive(menu.row,ownRow(menu.row.key),false);void run.then(()=>setArchived(false)).catch(e=>setError(e.message));setMenu(null)}}><ArchiveRestore size={14}/>恢复会话</button>:null}
-      {(["id",...((review||wbActions)&&!archived?["fork","archive","delete"]:[])] as Action[]).map(action=>{
+      {(review||wbActions)&&archived?(()=>{
+        const dev=deviceOf(menu.row.deviceId);
+        const legacyHiddenOnly=menu.row.hidden&&!menu.row.archived&&!ownRow(menu.row.key)?.archived;
+        const manageBlocked=!review&&!legacyHiddenOnly&&!!dev&&(!dev.online||!dev.cliAgents?.features?.includes("sessionManage"));
+        const manageHint=!dev?.online?"电脑离线":"电脑端版本过旧，升级后可用";
+        return <button role="menuitem" disabled={manageBlocked} title={manageBlocked?manageHint:undefined} onClick={()=>{const run=review?review.run("restore",menu.row.key):wbActions!.archive(menu.row,ownRow(menu.row.key),false);void run.then(()=>setArchived(false)).catch(e=>setError(e.message));setMenu(null)}}><ArchiveRestore size={14}/>恢复会话</button>;
+      })():null}
+      {(["id",...((review||wbActions)?(archived?["delete"]:["fork","archive","delete"]):[])] as Action[]).map(action=>{
         const p=meta(menu.row.key)?.parent,limit=action==="fork"&&p&&meta(p)?.parent;
+        const dev=deviceOf(menu.row.deviceId);
         // a real fork needs an executor that lists the engine; an older one would open a blank session
-        const forkEngines=groups.find(group=>group.device.id===menu.row.deviceId)?.device.cliAgents?.forkEngines;
-        const unavailable=action==="fork" && (review ? menu.row.engine!=="claude" : !forkEngines?.includes(menu.row.engine));
+        const forkEngines=dev?.cliAgents?.forkEngines;
+        const forkUnavailable=action==="fork" && (review ? menu.row.engine!=="claude" : !forkEngines?.includes(menu.row.engine));
+        const manageUnavailable=(action==="archive"||action==="delete")&&!review&&!!dev&&(!dev.online||!dev.cliAgents?.features?.includes("sessionManage"));
+        const unavailable=forkUnavailable||manageUnavailable;
         const forkHint=review?"测试设备未安装该 Harness":forkEngines?"该 Harness 暂不支持分支":"电脑端版本过旧，升级后可分叉会话";
+        const manageHint=!dev?.online?"电脑离线":"电脑端版本过旧，升级后可用";
+        const hint=forkUnavailable?forkHint:manageHint;
         const Icon=actionIcons[action];
-        return <button key={action} role="menuitem" className={action==="delete"?"na-danger":""} disabled={!!limit||unavailable||(action==="fork" && !!forking)} title={unavailable?forkHint:undefined} onClick={()=>choose(menu.row,action)}><Icon size={14}/>{limit?"已达两级分支上限":actions[action]}</button>
+        return <button key={action} role="menuitem" className={action==="delete"?"na-danger":""} disabled={!!limit||unavailable||(action==="fork" && !!forking)} title={unavailable?hint:undefined} onClick={()=>choose(menu.row,action)}><Icon size={14}/>{limit?"已达两级分支上限":actions[action]}</button>
       })}
     </div>,document.body)}
     {dialog&&createPortal(<div className="modal-backdrop"><form className="modal na-dialog" role="dialog" aria-modal="true" onKeyDown={e=>{
@@ -394,7 +411,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     }} aria-label={actions[dialog.action]} onSubmit={e=>{e.preventDefault();void submit()}}>
       <h3>{actions[dialog.action]}</h3><p>{AGENT_LABEL[dialog.row.engine]} · {label(dialog.row)}</p>
       {dialog.action==="id"?<code>{dialog.row.nativeId}</code>:null}
-      {dialog.action==="delete"||dialog.action==="archive"?<small>{review?"本次操作作用于隔离评审会话。子会话单独保留。":dialog.action==="archive"?"可在「已归档」中恢复。电脑上的原生会话不受影响。":"删除后子会话移到上一级；电脑上的原生会话不受影响。"}</small>:null}
+      {dialog.action==="delete"||dialog.action==="archive"?<small>{review?"本次操作作用于隔离评审会话。子会话单独保留。":dialog.action==="archive"?"归档后会同步隐藏电脑上的原生会话，可在「已归档」中恢复。":"将永久删除电脑上的原生会话记录，无法恢复；子会话移到上一级。"}</small>:null}
       {error?<p role="alert">{error}</p>:null}
       <footer><button type="button" autoFocus disabled={busy} onClick={dismissDialog}>关闭</button>{dialog.action==="id"?<button type="button" onClick={()=>void copyText(dialog.row.nativeId).then(result=>result==="copied"?dismissDialog():setError("请选中 ID 复制"))}>复制 ID</button>:<button className={dialog.action==="delete"?"na-confirm-delete":"primary"} disabled={busy}>{busy?"处理中…":actions[dialog.action]}</button>}</footer>
     </form></div>,document.body)}

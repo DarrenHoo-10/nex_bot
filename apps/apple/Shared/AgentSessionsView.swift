@@ -39,6 +39,7 @@ struct AgentSessionsView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var sheet: AgentSheet?
     @State private var errorText = ""
+    @State private var deleting: CliSession?
     /// the new-session page, while it is open
     @State private var composing: AgentNewTarget?
     #if os(iOS)
@@ -54,6 +55,18 @@ struct AgentSessionsView: View {
             #endif
             .onChange(of: scenePhase) { _, phase in sceneChanged(phase) }
             .sheet(item: $sheet) { _ in AgentSupervisionSheet(model: model) }
+            .alert("删除会话？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { session in
+                Button("取消", role: .cancel) { deleting = nil }
+                Button("删除会话", role: .destructive) {
+                    let target = session
+                    deleting = nil
+                    Task {
+                        do { try await model.deleteSession(target.key) } catch { errorText = CliErrorText.text(for: error) }
+                    }
+                }
+            } message: { session in
+                Text("将永久删除「\(CliSessions.title(session))」在电脑上的原生会话记录，无法恢复。")
+            }
     }
 
     private func sceneChanged(_ phase: ScenePhase) {
@@ -112,11 +125,12 @@ struct AgentSessionsView: View {
             onSelect: { key in composing = nil; onSelect(key) },
             onCreate: { composing = AgentNewTarget(deviceId: model.selected?.deviceId, cwd: model.selected?.cwd) },
             onNew: { composing = AgentNewTarget(deviceId: $0, cwd: $1) },
-            onHide: { session, hidden in
+            onArchive: { session, archived in
                 Task {
-                    do { try await model.setHidden(session.key, hidden) } catch { errorText = CliErrorText.text(for: error) }
+                    do { try await model.archiveSession(session.key, archived: archived) } catch { errorText = CliErrorText.text(for: error) }
                 }
-            })
+            },
+            onDelete: { session in deleting = session })
     }
 
     private func toggleBell() async {
@@ -202,7 +216,8 @@ struct AgentSessionList: View {
     let onSelect: (CliSessionKey) -> Void
     let onCreate: () -> Void
     let onNew: (String, String?) -> Void
-    let onHide: (CliSession, Bool) -> Void
+    let onArchive: (CliSession, Bool) -> Void
+    let onDelete: (CliSession) -> Void
     @AppStorage("nexagent.activeFolded") private var activeFolded = false
 
     var body: some View {
@@ -229,7 +244,7 @@ struct AgentSessionList: View {
                 if !active.isEmpty { pinned(active, pending: pending) }
                 ForEach(groups) { group in device(group, pending: pending, single: single) }
                 if model.hiddenCount > 0 {
-                    Button(model.showHidden ? "收起已隐藏" : "已隐藏 \(model.hiddenCount)") { model.showHidden.toggle() }
+                    Button(model.showHidden ? "收起已归档" : "已归档 \(model.hiddenCount)") { model.showHidden.toggle() }
                         .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.muted)
                 }
             }
@@ -301,6 +316,9 @@ struct AgentSessionList: View {
         let tone = CliSessions.tone(session)
         let waiting = asked > 0 || tone == .waiting
         let waitingLabel = asked > 1 ? "等你处理 \(asked)" : "等你处理"
+        let archived = CliSessions.isArchived(session)
+        let dev = model.device(session.deviceId)
+        let manageBlocked = dev.map { !$0.online || !($0.cliAgents?.features.contains("sessionManage") ?? false) } ?? !session.online
         return HStack(spacing: 8) {
             Button { onSelect(session.key) } label: {
                 HStack(spacing: 8) {
@@ -316,14 +334,30 @@ struct AgentSessionList: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(CliSessions.title(session))，\(agentName(session.engine))，\(waiting ? waitingLabel : CliSessions.statusLabel(session))")
-            Button { onHide(session, !session.hidden) } label: { Image(systemName: session.hidden ? "eye" : "eye.slash").font(.system(size: 11)) }
-                .buttonStyle(.plain).foregroundStyle(Theme.muted.opacity(0.7))
-                .accessibilityLabel(session.hidden ? "取消隐藏" : "隐藏")
+            Menu {
+                Button { onArchive(session, !archived) } label: {
+                    Label(archived ? "恢复会话" : "归档会话", systemImage: archived ? "arrow.uturn.backward" : "archivebox")
+                }
+                .disabled(manageBlocked && !(archived && session.hidden && !session.archived))
+                Button(role: .destructive) { onDelete(session) } label: {
+                    Label("删除会话", systemImage: "trash")
+                }
+                .disabled(manageBlocked)
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 11)).frame(width: 24, height: 22).contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            #if os(macOS)
+            .menuIndicator(.hidden)
+            #endif
+            .fixedSize()
+            .foregroundStyle(Theme.muted.opacity(0.75))
+            .accessibilityLabel("\(CliSessions.title(session))的操作")
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(selected == session.key ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .leading) { if selected == session.key { Rectangle().fill(Theme.nexAgentAccent).frame(width: 2.5).padding(.vertical, 4) } }
-        .opacity(session.hidden ? 0.55 : 1)
+        .opacity(archived ? 0.55 : 1)
         .help("\(agentName(session.engine)) · \(CliSessions.statusLabel(session))")
     }
 }

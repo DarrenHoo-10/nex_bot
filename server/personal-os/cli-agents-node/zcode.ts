@@ -16,10 +16,10 @@ import { fileURLToPath } from "node:url";
 import { resolveCli } from "./launch.ts";
 import {
   CLI_LIMITS,
-  HISTORY_DAYS,
   ITEM_TEXT_MAX,
   MAX_SESSIONS,
   PAGE_SIZE,
+  isCliNativeId,
   type CliContextUsage,
   type CliEngine,
   type CliItem,
@@ -41,7 +41,6 @@ import {
   type TranscriptImage,
 } from "./items.ts";
 
-const DAY_MS = 86_400_000;
 const POLL_MS = 30_000;
 const REG_TIMEOUT_MS = 3000;
 const AUXILIARY_TASK_TYPES = new Set([
@@ -61,6 +60,8 @@ export interface ZcodeHostChannel {
 export interface ZcodeScannerOptions {
   /** explicit SQLite file override (e.g. `ZCODE_SESSION_DB_PATH`) */
   dbFile?: string;
+  /** explicit ZCode Desktop `tasks-index.sqlite` override (defaults to sibling `../v2/tasks-index.sqlite` when home is `…/cli`) */
+  tasksIndexFile?: string;
   /** which pids are alive; defaults to a signal-0 probe */
   pidAlive?: (pid: number) => boolean;
   /** managed app-server pids owned by NexAgent, excluded from external presence */
@@ -130,6 +131,13 @@ export function resolveZcodeDbPath(home: string): string {
   const flat = path.join(home, "db.sqlite");
   if (existsSync(flat)) return flat;
   return nested;
+}
+
+/** Resolves ZCode Desktop's `v2/tasks-index.sqlite` sibling when `home` is `~/.zcode/cli`. */
+export function resolveZcodeTasksIndexPath(home: string): string | null {
+  if (path.basename(home).toLowerCase() !== "cli") return null;
+  const candidate = path.join(path.dirname(home), "v2", "tasks-index.sqlite");
+  return existsSync(candidate) ? candidate : null;
 }
 
 /** A cheap liveness probe: signal 0 throws when the pid is gone. */
@@ -237,13 +245,50 @@ export class ZcodeDb {
     }
   }
 
-  /** Every non-auxiliary session worth reporting, newest first. Archived and
-   * deleted rows are left out; a live external pid makes the row `running`. */
+  private tasksIndexFile(): string | null {
+    if (this.options.tasksIndexFile !== undefined) return this.options.tasksIndexFile || null;
+    if (this.options.dbFile) return null;
+    return resolveZcodeTasksIndexPath(this.home);
+  }
+
+  /** Reads ZCode Desktop's `tasks-index.sqlite` (read-only) to learn which sessions are archived or deleted in Desktop UI. */
+  private readTasksIndexState(): { archived: Set<string>; deleted: Set<string> } {
+    const archived = new Set<string>();
+    const deleted = new Set<string>();
+    const file = this.tasksIndexFile();
+    if (!file || !existsSync(file)) return { archived, deleted };
+    let db: DatabaseSync | null = null;
+    try {
+      db = new DatabaseSync(file, { readOnly: true });
+      db.exec("PRAGMA query_only = 1; PRAGMA busy_timeout = 100");
+      const cols = new Set((db.prepare("PRAGMA table_info(tasks)").all() as Array<Rec>).map((c) => String(c.name)));
+      if (!cols.has("task_id")) return { archived, deleted };
+      const hasCliDeleted = cols.has("cli_deleted");
+      const sql = hasCliDeleted
+        ? "SELECT task_id, archived, deleted, cli_deleted FROM tasks WHERE archived = 1 OR deleted = 1 OR cli_deleted = 1"
+        : "SELECT task_id, archived, deleted FROM tasks WHERE archived = 1 OR deleted = 1";
+      for (const row of db.prepare(sql).all() as Array<Rec>) {
+        const id = str(row.task_id, 200);
+        if (!id) continue;
+        if (Number(row.deleted) === 1 || (hasCliDeleted && Number(row.cli_deleted) === 1)) deleted.add(id);
+        else if (Number(row.archived) === 1) archived.add(id);
+      }
+    } catch {
+      // Desktop tasks index missing or locked: fall back to db.sqlite alone.
+    } finally {
+      try { db?.close(); } catch { /* ignore */ }
+    }
+    return { archived, deleted };
+  }
+
+  /** Every non-auxiliary session worth reporting, newest first (active and archived).
+   * Deleted rows are left out; a live external pid makes the row `running`. */
   scan(options?: { ignorePids?: ReadonlySet<number> }): ZcodeSessionRow[] {
     const db = this.open();
     if (!db) return [];
     const alive = this.options.pidAlive ?? pidAlive;
     const ignored = options?.ignorePids ?? this.options.ignorePids?.();
+    const desktopState = this.readTasksIndexState();
     try {
       const presence = new Map<string, boolean>();
       for (const row of db.prepare("SELECT session_id, process_id FROM session_runtime_presence").all() as Array<Rec>) {
@@ -253,12 +298,21 @@ export class ZcodeDb {
         if (ignored?.has(pid)) continue;
         presence.set(session, presence.get(session) === true || alive(pid));
       }
+      const purged = new Set<string>();
+      try {
+        for (const row of db.prepare("SELECT session_id FROM session_purge").all() as Array<Rec>) {
+          const id = str(row.session_id, 200);
+          if (id) purged.add(id);
+        }
+      } catch {
+        // Older schema without `session_purge`.
+      }
       const withTaskType = this.sessionHasTaskType(db);
       const sql = withTaskType
         ? `SELECT id, directory, title, version, time_created, time_updated, time_archived, time_deleted, parent_id, task_type
-           FROM session WHERE time_deleted IS NULL AND time_archived IS NULL ORDER BY time_updated DESC LIMIT ?`
+           FROM session WHERE time_deleted IS NULL ORDER BY time_updated DESC LIMIT ?`
         : `SELECT id, directory, title, version, time_created, time_updated, time_archived, time_deleted, parent_id
-           FROM session WHERE time_deleted IS NULL AND time_archived IS NULL ORDER BY time_updated DESC LIMIT ?`;
+           FROM session WHERE time_deleted IS NULL ORDER BY time_updated DESC LIMIT ?`;
       const rows = db.prepare(sql).all(MAX_SESSIONS * 2) as Array<Rec>;
       const filtered: ZcodeSessionRow[] = [];
       for (const row of rows) {
@@ -266,6 +320,7 @@ export class ZcodeDb {
         const id = str(row.id, 200);
         const timeUpdated = Number(row.time_updated);
         if (!id || !Number.isSafeInteger(timeUpdated)) continue;
+        if (purged.has(id) || desktopState.deleted.has(id)) continue;
         filtered.push({
           id,
           directory: str(row.directory, CLI_LIMITS.cwd),
@@ -273,7 +328,7 @@ export class ZcodeDb {
           version: row.version === null || row.version === undefined ? null : str(row.version, CLI_LIMITS.cliVersion),
           timeCreated: Number(row.time_created) || timeUpdated,
           timeUpdated,
-          archived: row.time_archived !== null && row.time_archived !== undefined,
+          archived: (row.time_archived !== null && row.time_archived !== undefined) || desktopState.archived.has(id),
           running: presence.get(id) === true,
           parentId: row.parent_id === null || row.parent_id === undefined ? null : str(row.parent_id, 200),
         });
@@ -284,6 +339,72 @@ export class ZcodeDb {
     } catch {
       return [];
     }
+  }
+
+  /** Natively archives or restores a ZCode session in `db.sqlite` and ZCode Desktop's `tasks-index.sqlite`. */
+  setArchived(sessionId: string, archived: boolean): boolean {
+    const file = this.file();
+    if (!existsSync(file)) return false;
+    let found = false;
+    const at = Date.now();
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("PRAGMA busy_timeout = 5000");
+      const res = db.prepare("UPDATE session SET time_archived = ? WHERE id = ? AND time_deleted IS NULL").run(archived ? at : null, sessionId);
+      if (Number(res.changes) > 0) found = true;
+    } finally {
+      db.close();
+    }
+    const tasksFile = this.tasksIndexFile();
+    if (tasksFile && existsSync(tasksFile)) {
+      const tdb = new DatabaseSync(tasksFile);
+      try {
+        tdb.exec("PRAGMA busy_timeout = 5000");
+        const res = tdb.prepare("UPDATE tasks SET archived = ?, updated_at = ? WHERE task_id = ? AND deleted = 0").run(archived ? 1 : 0, at, sessionId);
+        if (Number(res.changes) > 0) found = true;
+      } catch {
+        // Ignore if Desktop tasks schema differs; db.sqlite already updated.
+      } finally {
+        tdb.close();
+      }
+    }
+    this.close();
+    return found;
+  }
+
+  /** Permanently marks a ZCode session deleted in `db.sqlite` (`softDeleteSession`) and ZCode Desktop's `tasks-index.sqlite`. */
+  deleteSession(sessionId: string): boolean {
+    const file = this.file();
+    if (!existsSync(file)) return false;
+    let found = false;
+    const at = Date.now();
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("PRAGMA busy_timeout = 5000");
+      const res = db.prepare("UPDATE session SET time_deleted = coalesce(time_deleted, ?) WHERE id = ?").run(at, sessionId);
+      if (Number(res.changes) > 0) found = true;
+    } finally {
+      db.close();
+    }
+    const tasksFile = this.tasksIndexFile();
+    if (tasksFile && existsSync(tasksFile)) {
+      const tdb = new DatabaseSync(tasksFile);
+      try {
+        tdb.exec("PRAGMA busy_timeout = 5000");
+        const cols = new Set((tdb.prepare("PRAGMA table_info(tasks)").all() as Array<Rec>).map((c) => String(c.name)));
+        const sql = cols.has("cli_deleted")
+          ? "UPDATE tasks SET deleted = 1, cli_deleted = 1, updated_at = ? WHERE task_id = ?"
+          : "UPDATE tasks SET deleted = 1, updated_at = ? WHERE task_id = ?";
+        const res = tdb.prepare(sql).run(at, sessionId);
+        if (Number(res.changes) > 0) found = true;
+      } catch {
+        // Ignore if Desktop tasks schema differs; db.sqlite already marked deleted.
+      } finally {
+        tdb.close();
+      }
+    }
+    this.close();
+    return found;
   }
 
   /** Reads latest assistant model & token usage for the scanned sessions in one cheap pass. */
@@ -637,10 +758,8 @@ export class ZcodeScanner {
     const at = (options.now ?? this.options.now ?? Date.now)();
     if (this.cached && at - this.cached.at < 2000) return this.cached.rows;
     const host = this.options.host;
-    const cutoff = at - HISTORY_DAYS * DAY_MS;
     const rows = this.db
       .scan()
-      .filter((row) => row.running || row.timeUpdated >= cutoff)
       .slice(0, MAX_SESSIONS)
       .map<LocalSession>((row) => {
         const state: CliSessionState = row.running ? "running" : "stopped";
@@ -655,6 +774,8 @@ export class ZcodeScanner {
           lastActivityAt: row.timeUpdated,
           transcript: "",
         };
+        if (row.archived && !row.running) session.archived = true;
+        if (row.parentId && isCliNativeId(row.parentId)) session.forkOf = row.parentId;
         if (row.version) session.cliVersion = row.version;
         if (row.model) session.model = row.model;
         if (row.context) session.context = row.context;

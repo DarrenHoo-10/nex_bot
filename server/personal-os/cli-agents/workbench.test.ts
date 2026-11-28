@@ -9,13 +9,13 @@ import { randomBytes } from "node:crypto";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPersonalApp, type AppOptions } from "../index.ts";
-import type { CliQueueView } from "../../../shared/cli-agents.ts";
+import { CLI_FEATURES, type CliQueueView } from "../../../shared/cli-agents.ts";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 const OWNER = "synthetic-workbench-owner";
-const CAP = { version: 1, engines: ["claude", "codex", "zcode", "agy"], terminal: { name: "herdr-core", version: "0.1.21", ready: true } };
+const CAP = { version: 1, engines: ["claude", "codex", "zcode", "agy"], features: [...CLI_FEATURES], terminal: { name: "herdr-core", version: "0.1.21", ready: true } };
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until<T>(read: () => T | undefined | null | false, what = "condition", ms = 4000): Promise<T> {
@@ -523,22 +523,45 @@ describe("workbench tree", () => {
     expect(tree.find((s) => s.id === grand.data.id)?.parentId).toBe(branch.data.id);
   });
 
-  it("archives, restores and deletes with children re-parented, never deleting the native session", async () => {
+  it("natively archives, restores and deletes sessions on the device with children re-parented", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "lifecycle");
     const key = await sessionOn(f, device, "l1", "idle");
     const child = await f.call("cli-agents/sessions/branch", { parentKey: key, requestId: ids.request(), title: "子" });
     const parent = (await f.get("cli-agents")).data.workbench.find((s: any) => s.sessionKey === key);
     const archived = await f.call("cli-agents/sessions/archive", { id: parent.id, expectedVersion: parent.version });
+    expect(archived.status).toBe(200);
     expect(archived.data.session.archived).toBe(true);
+    expect(device.ops("archive")).toHaveLength(1);
+    expect(device.ops("archive")[0].args).toEqual({ ref: "claude:l1", archived: true });
+    expect(f.app.cliHub.list().sessions.find((s) => s.key === key)?.archived).toBe(true);
+
     const restored = await f.call("cli-agents/sessions/restore", { id: parent.id, expectedVersion: archived.data.session.version });
+    expect(restored.status).toBe(200);
     expect(restored.data.session.archived).toBe(false);
-    await f.call("cli-agents/sessions/delete", { id: parent.id, expectedVersion: restored.data.session.version });
+    expect(device.ops("archive")).toHaveLength(2);
+    expect(device.ops("archive")[1].args).toEqual({ ref: "claude:l1", archived: false });
+    expect(f.app.cliHub.list().sessions.find((s) => s.key === key)?.archived).toBeUndefined();
+
+    const deleted = await f.call("cli-agents/sessions/delete", { id: parent.id, expectedVersion: restored.data.session.version });
+    expect(deleted.status).toBe(200);
+    expect(device.ops("delete")).toHaveLength(1);
+    expect(device.ops("delete")[0].args).toEqual({ ref: "claude:l1" });
     const list = (await f.get("cli-agents")).data;
     expect(list.workbench.find((s: any) => s.id === parent.id)).toBeUndefined();
     expect(list.workbench.find((s: any) => s.id === child.data.id)?.parentId).toBeNull();
-    // the native session itself is untouched
-    expect(f.app.cliHub.list().sessions.some((s) => s.key === key)).toBe(true);
+    // the native session was genuinely removed on the device and dropped from Core
+    expect(f.app.cliHub.list().sessions.some((s) => s.key === key)).toBe(false);
+  });
+
+  it("refuses archiving or deleting when the device is offline", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "offline-manage");
+    const key = await sessionOn(f, device, "o1", "idle");
+    device.kill();
+    await until(() => f.app.cliHub.list().devices.find((d) => d.id === device.id)?.online === false, "device offline");
+    expect((await f.call("cli-agents/sessions/archive", { key })).status).toBe(409);
+    expect((await f.call("cli-agents/sessions/delete", { key })).status).toBe(409);
   });
 
   it("archives and renames a session the workbench never touched, by its native key", async () => {

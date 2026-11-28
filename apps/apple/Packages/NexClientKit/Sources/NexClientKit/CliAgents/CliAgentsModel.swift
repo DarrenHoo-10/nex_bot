@@ -543,7 +543,7 @@ public final class CliAgentsModel {
         return key
     }
 
-    /// Hides or shows a session. The list changes at once and goes back if Core refuses.
+    /// Hides or shows a session (legacy fallback). The list changes at once and goes back if Core refuses.
     public func setHidden(_ key: CliSessionKey, _ hidden: Bool) async throws {
         guard let index = sessions.firstIndex(where: { $0.key == key }) else { return }
         let before = sessions[index].hidden
@@ -552,6 +552,30 @@ public final class CliAgentsModel {
             if let again = sessions.firstIndex(where: { $0.key == key }) { sessions[again].hidden = before }
             throw error
         }
+    }
+
+    /// Natively archives or restores a session on its computer via Core.
+    public func archiveSession(_ key: CliSessionKey, archived: Bool) async throws {
+        guard let index = sessions.firstIndex(where: { $0.key == key }) else { return }
+        let session = sessions[index]
+        if !archived && session.hidden && !session.archived {
+            try await setHidden(key, false)
+            return
+        }
+        try await clientProvider().cliArchiveSession(key: key, archived: archived)
+        if let again = sessions.firstIndex(where: { $0.key == key }) {
+            sessions[again].archived = archived
+            if !archived { sessions[again].hidden = false }
+        }
+        await refresh()
+    }
+
+    /// Permanently deletes a native session on its computer via Core.
+    public func deleteSession(_ key: CliSessionKey) async throws {
+        try await clientProvider().cliDeleteSession(key: key)
+        sessions.removeAll { $0.key == key }
+        if selectedKey == key { select(nil) }
+        await refresh()
     }
 
     /// Answers a pending request. `selection` holds the chosen labels of a question; `other` holds custom "其他" text; `always` allows such calls for the rest of the session.

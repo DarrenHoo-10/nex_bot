@@ -11,12 +11,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { codexPromptTitle, emptyCodexTitle, isNexAgentCodexTitle } from "./codex-title.ts";
-import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, PAGE_SIZE, isCliNativeId, type CliItem } from "../../../shared/cli-agents.ts";
+import { CLI_LIMITS, MAX_SESSIONS, PAGE_SIZE, isCliNativeId, type CliItem } from "../../../shared/cli-agents.ts";
 import { clipUnits, codexThreadItemToItems, imageLocator, itemHasImage, type TranscriptImage, type LocalSession } from "./items.ts";
 
 const DAY_MS = 86_400_000;
 const TITLE_CHARS = 60;
-const THREAD_ROWS = 500;
+const THREAD_ROWS = MAX_SESSIONS * 2;
 const CACHE_MS = 30_000;
 
 type Row = Record<string, unknown>;
@@ -116,6 +116,8 @@ export interface CodexAppDbOptions {
 export class CodexAppDb {
   /** Includes threads with rollouts whose first input may fall beyond the scanned header. */
   readonly nexagentNames = new Map<string, { name: string; title: string }>();
+  /** Thread ids marked `archived = 1` in `state_<n>.sqlite`. */
+  readonly archivedIds = new Set<string>();
   private cache: { key: string; at: number; rows: LocalSession[] } | null = null;
 
   constructor(
@@ -123,27 +125,35 @@ export class CodexAppDb {
     private readonly options: CodexAppDbOptions = {},
   ) {}
 
-  /** The chats of the last HISTORY_DAYS days that have no rollout file, newest first. */
+  /** All chats that have no rollout file (or within `historyDays` when configured), newest first. */
   async scan(now: number = Date.now()): Promise<LocalSession[]> {
     const file = await latestDb(this.home, "state");
     if (!file) {
       this.cache = null;
       this.nexagentNames.clear();
+      this.archivedIds.clear();
       return [];
     }
     const key = await this.signature(file);
     if (this.cache && this.cache.key === key && now - this.cache.at < CACHE_MS) return this.cache.rows;
     let rows: LocalSession[] = [];
     this.nexagentNames.clear();
+    this.archivedIds.clear();
     try {
       rows = this.read(file, now);
     } catch {
       // a locked or unknown database is left alone
       rows = [];
       this.nexagentNames.clear();
+      this.archivedIds.clear();
     }
     this.cache = { key, at: now, rows };
     return rows;
+  }
+
+  /** Drops the scan cache so the next scan reads fresh database state (after archive/restore/delete). */
+  invalidate(): void {
+    this.cache = null;
   }
 
   private async signature(file: string): Promise<string> {
@@ -166,10 +176,9 @@ export class CodexAppDb {
       if (!present.has("id")) return [];
       const selected = THREAD_COLUMNS.filter((name) => present.has(name));
       const order = present.has("recency_at_ms") ? "recency_at_ms" : present.has("updated_at_ms") ? "updated_at_ms" : present.has("updated_at") ? "updated_at" : "id";
-      const where = present.has("archived") ? "WHERE archived IS NULL OR archived = 0" : "";
-      const found = db.prepare(`SELECT ${selected.map((name) => `"${name}"`).join(", ")} FROM threads ${where} ORDER BY "${order}" DESC LIMIT ${THREAD_ROWS}`).all() as Row[];
+      const found = db.prepare(`SELECT ${selected.map((name) => `"${name}"`).join(", ")} FROM threads ORDER BY "${order}" DESC LIMIT ${THREAD_ROWS}`).all() as Row[];
       const exists = this.options.fileExists ?? existsSync;
-      const cutoff = now - (this.options.historyDays ?? HISTORY_DAYS) * DAY_MS;
+      const cutoff = this.options.historyDays === undefined ? Number.NEGATIVE_INFINITY : now - this.options.historyDays * DAY_MS;
       const out: LocalSession[] = [];
       for (const row of found) {
         const id = text(row.id);
@@ -177,8 +186,10 @@ export class CodexAppDb {
         if (text(row.agent_role) || text(row.attached_thread_parent_id)) continue;
         const meta = { id, originator: text(row.originator), source: sourceOf(row.source), threadSource: text(row.thread_source) };
         if (this.options.exclude?.(meta)) continue;
+        const archived = num(row.archived) === 1;
+        if (archived) this.archivedIds.add(id);
         const at = epochMs(row.recency_at_ms) ?? epochMs(row.updated_at_ms) ?? epochMs(row.updated_at) ?? 0;
-        if (at < cutoff) continue;
+        if (!archived && at < cutoff) continue;
         const name = text(row.name);
         let title = name ?? text(row.title) ?? text(row.preview) ?? text(row.first_user_message) ?? "";
         if (meta.originator === "nexbot" && name && isNexAgentCodexTitle(id, name)) {
@@ -195,9 +206,9 @@ export class CodexAppDb {
           cwd: clipUnits(text(row.cwd) ?? "", CLI_LIMITS.cwd),
           title: clipUnits(shortTitle(title), CLI_LIMITS.title),
           // the App owns the chat: not stopped, and nex_bot never continues it in a terminal of its own
-          state: "idle",
+          state: archived ? "stopped" : "idle",
           lastActivityAt: at,
-          liveIn: "desktop",
+          ...(archived ? { archived: true } : { liveIn: "desktop" as const }),
           transcript: "",
           appChat: { home: this.home, threadId: id },
         };

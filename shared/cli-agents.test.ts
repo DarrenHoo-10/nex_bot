@@ -271,8 +271,10 @@ describe("constants and tables", () => {
       git: 20_000,
       search: 10_000,
       attach: 20_000,
+      archive: 20_000,
+      delete: 20_000,
     });
-    expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "continue", "interrupt", "send", "start", "steer"]);
+    expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "archive", "continue", "delete", "interrupt", "send", "start", "steer"]);
   });
 });
 
@@ -293,6 +295,7 @@ describe("parseCliSessionWire", () => {
       model: "gpt-5",
       cliVersion: "1.2.3",
       writerUnknown: true,
+      archived: true,
     });
     expect(parseCliSessionWire(full)).toEqual(full);
   });
@@ -334,6 +337,7 @@ describe("parseCliSessionWire", () => {
       wire({ lastActivityAt: 1.5 }),
       wire({ lastActivityAt: Number.NaN }),
       wire({ writerUnknown: "yes" }),
+      wire({ archived: "yes" }),
       wire({ gitBranch: 3 }),
       wire({ lastActivityAt: undefined }),
     ]) {
@@ -490,10 +494,16 @@ describe("parseCliOpArgs", () => {
     expect(parseCliOpArgs("continue", { ref, cols: 80, rows: 24 })).toEqual({ ref, cols: 80, rows: 24 });
     expect(parseCliOpArgs("send", { ref, text: "你好\nworld" })).toEqual({ ref, text: "你好\nworld" });
     expect(parseCliOpArgs("interrupt", { ref })).toEqual({ ref });
+    expect(parseCliOpArgs("archive", { ref, archived: true })).toEqual({ ref, archived: true });
+    expect(parseCliOpArgs("archive", { ref, archived: false })).toEqual({ ref, archived: false });
+    expect(parseCliOpArgs("delete", { ref })).toEqual({ ref });
   });
 
   it("rejects invalid args", () => {
     const ref = `claude:${UUID}`;
+    expect(parseCliOpArgs("archive", { ref })).toBeNull();
+    expect(parseCliOpArgs("archive", { ref, archived: "yes" })).toBeNull();
+    expect(parseCliOpArgs("delete", { ref: "bad" })).toBeNull();
     expect(parseCliOpArgs("read", { ref: "x" })).toBeNull();
     expect(parseCliOpArgs("read", { ref, limit: 0 })).toBeNull();
     expect(parseCliOpArgs("read", { ref, limit: MAX_ITEMS_PER_MESSAGE + 1 })).toBeNull();
@@ -546,8 +556,12 @@ describe("parseCliOpResult", () => {
     expect(parseCliOpResult("send", { ...queued, nativeQueued: "yes" })).toBeNull();
     expect(parseCliOpResult("send", { turn: 0, started: false, delivery: "unconfirmed", waiting: true, extra: 1 })).toEqual({ turn: 0, started: false, delivery: "unconfirmed", waiting: true });
     expect(parseCliOpResult("interrupt", { outcome: "interrupted" })).toEqual({ outcome: "interrupted" });
+    expect(parseCliOpResult("archive", {})).toEqual({});
+    expect(parseCliOpResult("delete", {})).toEqual({});
   });
   it("rejects invalid results", () => {
+    expect(parseCliOpResult("archive", null)).toBeNull();
+    expect(parseCliOpResult("delete", null)).toBeNull();
     expect(parseCliOpResult("read", { items: [], more: "no" })).toBeNull();
     expect(parseCliOpResult("read", { items: [{ kind: "x" }], more: false })).toBeNull();
     expect(parseCliOpResult("start", { ref: "bad", terminal: "t" })).toBeNull();
@@ -682,6 +696,9 @@ describe("parseCoreCliMessage", () => {
       models: { engine: "codex" },
       skills: { engine: "codex", cwd: "", ref },
       dirs: { path: "D:\\work" },
+      branches: { cwd: "D:\\work" },
+      archive: { ref, archived: true },
+      delete: { ref },
     };
     expect(Object.keys(ops).sort()).toEqual([...CLI_OPS].sort());
     for (const [op, args] of Object.entries(ops)) {

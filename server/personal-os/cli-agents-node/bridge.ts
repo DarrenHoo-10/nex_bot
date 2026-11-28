@@ -1307,6 +1307,10 @@ export class CliAgentBridge {
         return listDirs((args as CliOpArgs["dirs"]).path, { platform: this.platform, ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
       case "branches":
         return this.git.branches((args as CliOpArgs["branches"]).cwd);
+      case "archive":
+        return this.exclusive((args as CliOpArgs["archive"]).ref, () => this.opArchive(args as CliOpArgs["archive"]));
+      case "delete":
+        return this.exclusive((args as CliOpArgs["delete"]).ref, () => this.opDelete(args as CliOpArgs["delete"]));
       default:
         throw new OpFailure("invalid", "this operation is not available on this computer yet");
     }
@@ -1326,6 +1330,69 @@ export class CliAgentBridge {
     const row = this.discovery.get(ref);
     if (!row) throw new OpFailure("not_found");
     return row;
+  }
+
+  /** Releases local watches and idle NexBot-managed terminals before a native archive/delete,
+   * and refuses when an active turn or external interactive session would be disrupted. */
+  private async prepareSessionMutation(ref: CliSessionRef, row: CliSessionWire, mode: "archive" | "restore" | "delete"): Promise<void> {
+    if (mode === "restore") return;
+    if (row.state === "running" || row.state === "waiting") {
+      throw new OpFailure("busy", mode === "delete" ? "会话正在运行，请先停止后再删除" : "会话正在运行，请先停止后再归档");
+    }
+    const address = this.addressFor(ref);
+    if (!address && row.liveIn && row.state !== "stopped") {
+      if (mode === "delete" && row.engine === "claude") {
+        throw new OpFailure("open_elsewhere", "会话正在其他窗口打开，请先关闭后再删除");
+      }
+      if (mode === "delete" && row.engine === "codex" && row.liveIn === "terminal") {
+        throw new OpFailure("open_elsewhere", "会话正在终端中打开，请先关闭后再删除");
+      }
+      if (mode === "archive" && row.engine === "claude" && row.liveIn === "terminal") {
+        throw new OpFailure("open_elsewhere", "会话正在终端中打开，请先关闭后再归档");
+      }
+    }
+    const watch = this.watches.get(ref);
+    if (watch) {
+      this.closeWatch(watch);
+      this.watches.delete(ref);
+    }
+    this.dropObserved(ref);
+    if (address) {
+      const hc = this.getHc();
+      if (hc) {
+        const term = await hc.get(address).catch(() => null);
+        if (term?.state === "live" && term.pid) {
+          try { process.kill(term.pid); } catch { /* already exited */ }
+          const until = Date.now() + 1500;
+          while (Date.now() < until) {
+            try { process.kill(term.pid, 0); } catch { break; }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+      }
+      this.terminals.delete(address);
+      this.store.endTerminal(address);
+    }
+  }
+
+  private async opArchive({ ref, archived }: CliOpArgs["archive"]): Promise<CliOpResult["archive"]> {
+    const row = this.session(ref);
+    const driver = this.driver(row.engine);
+    if (!driver?.archive) throw new OpFailure("invalid", "此工具不支持归档会话");
+    await this.prepareSessionMutation(ref, row, archived ? "archive" : "restore");
+    await driver.archive(ref, row, archived);
+    await this.discovery.refresh({ flush: true });
+    return {};
+  }
+
+  private async opDelete({ ref }: CliOpArgs["delete"]): Promise<CliOpResult["delete"]> {
+    const row = this.session(ref);
+    const driver = this.driver(row.engine);
+    if (!driver?.deleteSession) throw new OpFailure("invalid", "此工具不支持删除会话");
+    await this.prepareSessionMutation(ref, row, "delete");
+    await driver.deleteSession(ref, row);
+    await this.discovery.refresh({ flush: true });
+    return {};
   }
 
   private async opHistoryImage({ ref, itemId, locator }: CliOpArgs["history_image"]) {

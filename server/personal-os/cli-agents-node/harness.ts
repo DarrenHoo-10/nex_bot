@@ -152,6 +152,10 @@ export interface HarnessDriver {
   /** Pending approval/question request routing owned by this driver. */
   hasRequest?(id: string): boolean;
   answerRequest?(args: CliOpArgs["answer"]): Promise<{ outcome: string }>;
+  /** Natively archive or restore (unarchive) a session on disk / via daemon. */
+  archive?(ref: CliSessionRef, row: CliSessionWire, archived: boolean): Promise<void>;
+  /** Permanently delete a native session on disk / via daemon. */
+  deleteSession?(ref: CliSessionRef, row: CliSessionWire): Promise<void>;
   /** Called when the Core link comes back so open driver requests are re-announced. */
   relink?(): void;
   /** Called when CliAgentBridge detaches. */

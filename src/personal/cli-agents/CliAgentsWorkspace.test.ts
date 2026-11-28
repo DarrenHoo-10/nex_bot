@@ -230,7 +230,8 @@ describe("session list", () => {
 
   it("archives a session that has no workbench row yet, by its key", async () => {
     fixture.archiveWorkbenchSession.mockResolvedValue({});
-    await mount({ devices: [device()], sessions: [session()] });
+    const capable = device({ cliAgents: { ...device().cliAgents!, features: ["sessionManage"] } });
+    await mount({ devices: [capable], sessions: [session()] });
     await click(container.querySelector(".na-more"));
     expect([...document.querySelectorAll(".na-menu button")].map((el) => el.textContent)).not.toContain("隐藏");
     await click([...document.querySelectorAll(".na-menu button")].find((el) => el.textContent === "归档会话") ?? null);
@@ -238,6 +239,25 @@ describe("session list", () => {
     await flush();
     expect(fixture.archiveWorkbenchSession).toHaveBeenCalledWith({ key: "dev1:claude:s1" }, true);
     expect(document.querySelector(".na-dialog")).toBeNull();
+  });
+
+  it("restores and deletes natively archived sessions via the workbench archive/delete routes", async () => {
+    fixture.archiveWorkbenchSession.mockResolvedValue({});
+    fixture.deleteWorkbenchSession.mockResolvedValue({});
+    const capable = device({ cliAgents: { ...device().cliAgents!, features: ["sessionManage"] } });
+    await mount({ devices: [capable], sessions: [session(), session({ nativeId: "arch", title: "原生归档", archived: true })] });
+    await click(button("已归档"));
+    expect(text()).toContain("原生归档");
+    await click(container.querySelector(".na-more"));
+    await click([...document.querySelectorAll(".na-menu button")].find((el) => el.textContent === "恢复会话") ?? null);
+    await flush();
+    expect(fixture.archiveWorkbenchSession).toHaveBeenCalledWith({ key: "dev1:claude:arch" }, false);
+    await click(button("已归档"));
+    await click(container.querySelector(".na-more"));
+    await click([...document.querySelectorAll(".na-menu button")].find((el) => el.textContent === "删除会话") ?? null);
+    await click([...document.querySelectorAll(".na-dialog button")].find((el) => el.textContent === "删除会话") ?? null);
+    await flush();
+    expect(fixture.deleteWorkbenchSession).toHaveBeenCalledWith({ key: "dev1:claude:arch" });
   });
 
   it("lists older hidden sessions under 已归档 and restores them", async () => {

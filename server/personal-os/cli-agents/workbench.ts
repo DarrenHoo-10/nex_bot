@@ -180,6 +180,14 @@ export class CliAgentWorkbench {
     return row;
   }
 
+  /** Looks up an existing logical session by logical id or native session key without creating one. */
+  find(ref: string): Row | undefined {
+    const byId = this.rowOf(ref);
+    if (byId) return byId;
+    if (!parseCliKey(ref)) return undefined;
+    return this.store.get("SELECT * FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", ref);
+  }
+
   /** By logical id, or the logical session of a native key; both work so the
    * routes can accept either shape. */
   resolve(ref: string): Row {
@@ -269,8 +277,8 @@ export class CliAgentWorkbench {
     return this.rowOf(logicalId) as Row;
   }
 
-  /** A soft delete. Children move up to their grandparent instead of
-   * disappearing with the parent; native sessions are never touched. */
+  /** Deletes the logical workbench row (paired with native deletion on the device).
+   * Children move up to their grandparent instead of disappearing with the parent. */
   remove(logicalId: string, expectedVersion: number): Row {
     const parent = this.store.get("SELECT parent_id FROM cli_agent_workbench WHERE id=? AND deleted_at IS NULL", logicalId);
     if (!parent) throw new CliOpError("not_found");
@@ -285,7 +293,7 @@ export class CliAgentWorkbench {
     );
     this.store.run("UPDATE cli_agent_outbox SET status='withdrawn',version=version+1,updated_at=? WHERE workbench_id=? AND status='pending'", now(), logicalId);
     this.pushWorkbench();
-    return this.rowOf(logicalId) as Row;
+    return this.store.get("SELECT * FROM cli_agent_workbench WHERE id=?", logicalId) as Row;
   }
 
   /** Non-deleted rows, parents before children. */
@@ -307,7 +315,7 @@ export class CliAgentWorkbench {
       kind: String(row.kind) as CliWorkbenchKind,
       title: String(row.title),
       archived: row.archived === 1,
-      deleted: false,
+      deleted: row.deleted_at !== null,
       version: Number(row.version),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
@@ -940,12 +948,23 @@ export class CliAgentWorkbench {
   }
 
   /** Harnesses without turn events still end turns: their session row flips to
-   * idle, which is a list delta. */
-  private onListDelta(delta: { upserts: { key: string; state: string }[] }) {
+   * idle, which is a list delta. Also mirrors native archive state back into
+   * existing workbench rows when the device supports `sessionManage`. */
+  private onListDelta(delta: { upserts: { key: string; deviceId: string; state: string; archived?: boolean }[] }) {
+    let workbenchChanged = false;
     for (const upsert of delta.upserts) {
-      if (upsert.state !== "idle") continue;
-      const row = this.store.get("SELECT id FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", upsert.key);
-      if (row) this.pump(String(row.id));
+      const row = this.store.get("SELECT id,archived FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", upsert.key);
+      if (row) {
+        if (this.hub.hasFeature(upsert.deviceId, "sessionManage")) {
+          const want = upsert.archived === true ? 1 : 0;
+          if (Number(row.archived) !== want) {
+            this.store.run("UPDATE cli_agent_workbench SET archived=?,version=version+1,updated_at=? WHERE id=? AND deleted_at IS NULL", want, now(), row.id);
+            workbenchChanged = true;
+          }
+        }
+        if (upsert.state === "idle") this.pump(String(row.id));
+      }
     }
+    if (workbenchChanged) this.pushWorkbench();
   }
 }

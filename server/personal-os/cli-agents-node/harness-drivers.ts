@@ -19,7 +19,8 @@ import {
 } from "../../../shared/cli-agents.ts";
 import type { AgyRuntime } from "./agy.ts";
 import { supportsAgyAcp } from "./agy-native.ts";
-import { DaemonError, codexSkills, type CodexDaemons } from "./codex-daemon.ts";
+import { archiveClaudeSession, deleteClaudeSession } from "./claude.ts";
+import { DaemonError, codexSkills, manageCodexThread, type CodexDaemons } from "./codex-daemon.ts";
 import type { CodexDesktopQueue } from "./codex-desktop-queue.ts";
 import type { SessionDiscovery } from "./discovery.ts";
 import { harnessFor, type HarnessDriver, type HarnessWatchSource } from "./harness.ts";
@@ -138,6 +139,14 @@ export function createDefaultHarnessDrivers(host: HarnessDriverHost): Map<CliEng
     skills(session, cwd) {
       return claudeSkills(session?.configDir || env().CLAUDE_CONFIG_DIR || path.join(home(), ".claude"), cwd);
     },
+    async archive(_ref, row, archived) {
+      const ok = await archiveClaudeSession(row.configDir || env().CLAUDE_CONFIG_DIR || path.join(home(), ".claude"), row.nativeId, archived, host.discovery.claudeDesktopRoots());
+      if (!ok) throw host.fail("not_found");
+    },
+    async deleteSession(_ref, row) {
+      const ok = await deleteClaudeSession(row.configDir || env().CLAUDE_CONFIG_DIR || path.join(home(), ".claude"), row.nativeId, host.discovery.claudeDesktopRoots());
+      if (!ok) throw host.fail("not_found");
+    },
   };
 
   const codexDriver: HarnessDriver = {
@@ -187,6 +196,28 @@ export function createDefaultHarnessDrivers(host: HarnessDriverHost): Map<CliEng
         if (error instanceof DaemonError) throw host.fail(error.code, error.code === "not_found" ? "request is closed" : undefined);
         throw error;
       }
+    },
+    async archive(_ref, row, archived) {
+      const codexHome = row.configDir || env().CODEX_HOME || path.join(home(), ".codex");
+      await manageCodexThread(
+        { codexPath: () => host.findCli("codex"), env: env(), platform: host.platform },
+        codexHome,
+        archived ? "archive" : "unarchive",
+        row.nativeId,
+      );
+      if (archived) host.codexDaemons.forgetThread(codexHome, row.nativeId);
+      host.discovery.invalidateCodex(codexHome);
+    },
+    async deleteSession(_ref, row) {
+      const codexHome = row.configDir || env().CODEX_HOME || path.join(home(), ".codex");
+      await manageCodexThread(
+        { codexPath: () => host.findCli("codex"), env: env(), platform: host.platform },
+        codexHome,
+        "delete",
+        row.nativeId,
+      );
+      host.codexDaemons.forgetThread(codexHome, row.nativeId);
+      host.discovery.invalidateCodex(codexHome);
     },
     relink() {
       host.codexDaemons.relink();
@@ -270,6 +301,12 @@ export function createDefaultHarnessDrivers(host: HarnessDriverHost): Map<CliEng
     answerRequest(args) {
       return host.zcode.answer(args);
     },
+    archive(_ref, row, archived) {
+      return host.zcode.archiveSession(row.nativeId, archived);
+    },
+    deleteSession(_ref, row) {
+      return host.zcode.deleteSession(row.nativeId);
+    },
     relink() {
       host.zcode.relink();
     },
@@ -333,6 +370,12 @@ export function createDefaultHarnessDrivers(host: HarnessDriverHost): Map<CliEng
     },
     answerRequest(args) {
       return host.agy.answer(args);
+    },
+    archive(_ref, row, archived) {
+      return host.agy.archiveSession(row.nativeId, row.configDir, archived);
+    },
+    deleteSession(_ref, row) {
+      return host.agy.deleteSession(row.nativeId, row.configDir);
     },
     relink() {
       host.agy.relink();

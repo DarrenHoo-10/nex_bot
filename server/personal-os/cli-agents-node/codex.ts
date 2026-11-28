@@ -5,7 +5,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliContextUsage, type CliLiveIn } from "../../../shared/cli-agents.ts";
+import { CLI_LIMITS, MAX_SESSIONS, isCliNativeId, type CliContextUsage, type CliLiveIn } from "../../../shared/cli-agents.ts";
 import { codexContext } from "./context-usage.ts";
 import { CodexAppDb } from "./codex-app-db.ts";
 import { codexPromptTitle, emptyCodexTitle, isNexAgentCodexTitle } from "./codex-title.ts";
@@ -260,6 +260,7 @@ interface RolloutFile {
   file: string;
   size: number;
   mtimeMs: number;
+  archived: boolean;
 }
 
 export class CodexScanner {
@@ -286,7 +287,7 @@ export class CodexScanner {
     });
   }
 
-  /** All sessions of the last HISTORY_DAYS days, newest first. */
+  /** All sessions (or the last `historyDays` when configured), newest first, including natively archived sessions. */
   async scan(options: { now?: number } = {}): Promise<LocalSession[]> {
     const now = options.now ?? Date.now();
     await this.readIndex();
@@ -306,7 +307,11 @@ export class CodexScanner {
         if (!previous || file.mtimeMs > previous.file.mtimeMs) byId.set(meta.id, { file, head, meta });
       }
     }
-    const chosen = [...byId.values()].sort((a, b) => b.file.mtimeMs - a.file.mtimeMs).slice(0, this.options.maxSessions ?? MAX_SESSIONS);
+    const limit = this.options.maxSessions ?? MAX_SESSIONS;
+    const allEntries = [...byId.values()];
+    const activeRollouts = allEntries.filter((e) => !e.file.archived).sort((a, b) => b.file.mtimeMs - a.file.mtimeMs);
+    const archivedRollouts = allEntries.filter((e) => e.file.archived).sort((a, b) => b.file.mtimeMs - a.file.mtimeMs);
+    const chosen = [...activeRollouts.slice(0, limit), ...archivedRollouts.slice(0, Math.max(0, limit - activeRollouts.length))];
     const rollouts: Array<(typeof chosen)[number] & { tail: TailInfo }> = [];
     for (const entry of chosen) rollouts.push({ ...entry, tail: await this.tail(entry.file) });
     const appChats = (await this.appDb.scan(now)).filter((chat) => !byId.has(chat.nativeId));
@@ -317,12 +322,11 @@ export class CodexScanner {
     const writer = this.options.writer ?? ((home, id, at) => codexWriter(home, id, { now: at }));
     const rows = rollouts.map(({ file, head, meta, tail }) => this.row(file, head, meta, tail, activeTurns.has(meta.id), now, writer));
     // chats that exist only in the App's database
-    const limit = this.options.maxSessions ?? MAX_SESSIONS;
     for (const chat of appChats) {
       if (rows.length >= limit) break;
       const startedAt = activeTurns.get(chat.nativeId);
       const recent = startedAt !== undefined && now - startedAt <= RUNNING_WINDOW_MS;
-      const running = activeTurns.has(chat.nativeId) && (recent || writer(this.home, chat.nativeId, now) === "yes");
+      const running = !chat.archived && activeTurns.has(chat.nativeId) && (recent || writer(this.home, chat.nativeId, now) === "yes");
       rows.push(running ? { ...chat, state: "running", lastActivityAt: Math.max(chat.lastActivityAt, startedAt ?? 0) } : chat);
     }
     this.syncNames(rows, byId, now);
@@ -397,6 +401,7 @@ export class CodexScanner {
     if (tail.context) row.context = tail.context;
     // discovery keeps it only when that thread is in the list too
     if (meta.forkedFrom) row.forkOf = meta.forkedFrom;
+    if ((file.archived || this.appDb.archivedIds.has(meta.id)) && state !== "running") row.archived = true;
     if (writerUnknown) row.writerUnknown = true;
     return row;
   }
@@ -423,10 +428,10 @@ export class CodexScanner {
 
   private async listRollouts(now: number): Promise<RolloutFile[]> {
     const root = path.join(this.home, "sessions");
-    const days = this.options.historyDays ?? HISTORY_DAYS;
-    const cutoff = now - days * DAY_MS;
+    const days = this.options.historyDays;
+    const cutoff = days === undefined ? Number.NEGATIVE_INFINITY : now - days * DAY_MS;
     // directory names are local dates; one day of slack covers time zones
-    const dirCutoff = cutoff - 2 * DAY_MS;
+    const dirCutoff = days === undefined ? Number.NEGATIVE_INFINITY : cutoff - 2 * DAY_MS;
     const dirs: string[] = [];
     for (const year of await numericDirs(root, 4)) {
       for (const month of await numericDirs(path.join(root, year), 2)) {
@@ -449,11 +454,26 @@ export class CodexScanner {
         const file = path.join(dir, name);
         try {
           const info = await stat(file);
-          if (info.isFile() && info.mtimeMs >= cutoff) out.push({ file, size: info.size, mtimeMs: info.mtimeMs });
+          if (info.isFile() && info.mtimeMs >= cutoff) out.push({ file, size: info.size, mtimeMs: info.mtimeMs, archived: false });
         } catch {
           // removed while scanning
         }
       }
+    }
+    const archivedRoot = path.join(this.home, "archived_sessions");
+    try {
+      for (const name of await readdir(archivedRoot)) {
+        if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) continue;
+        const file = path.join(archivedRoot, name);
+        try {
+          const info = await stat(file);
+          if (info.isFile()) out.push({ file, size: info.size, mtimeMs: info.mtimeMs, archived: true });
+        } catch {
+          // removed while scanning
+        }
+      }
+    } catch {
+      // no archived_sessions directory yet
     }
     return out;
   }

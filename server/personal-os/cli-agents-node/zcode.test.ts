@@ -83,11 +83,11 @@ const NOW = Date.now();
 const stamp = (ageMs: number) => NOW - ageMs;
 
 describe("discovery", () => {
-  it("reports live sessions as running with a host route, inactive sessions as stopped, and skips subagents", async () => {
+  it("reports live, older and archived sessions without a 14-day cutoff, carries forkOf, and skips subagents and deleted rows", async () => {
     const host = tempHome(
       [
         { id: "sess_live", timeUpdated: stamp(1000) },
-        { id: "sess_old", timeUpdated: stamp(2000) },
+        { id: "sess_old", timeUpdated: stamp(60 * 86_400_000), parentId: "sess_live" },
         { id: "sess_sub", timeUpdated: stamp(1500), taskType: "subagent_child" },
         { id: "sess_archived", timeUpdated: stamp(3000), timeArchived: stamp(3500) },
         { id: "sess_deleted", timeUpdated: stamp(4000), timeDeleted: stamp(4500) },
@@ -97,13 +97,42 @@ describe("discovery", () => {
     expect(await zcodeHomeExists(host)).toBe(true);
     const scanner = new ZcodeScanner(host, { pidAlive: alive, host: { submit: async () => ({ accepted: true }), interrupt: async () => ({ outcome: "ok" }) } });
     const rows = await scanner.scan();
-    expect(rows.map((row) => [row.nativeId, row.state, row.sendVia])).toEqual([
-      ["sess_live", "running", "host"],
-      ["sess_old", "stopped", undefined],
+    expect(rows.map((row) => [row.nativeId, row.state, row.sendVia, row.archived ?? false, row.forkOf])).toEqual([
+      ["sess_live", "running", "host", false, undefined],
+      ["sess_archived", "stopped", undefined, true, undefined],
+      ["sess_old", "stopped", undefined, false, "sess_live"],
     ]);
     expect(rows.every((row) => row.engine === "zcode" && row.cwd === "D:/proj")).toBe(true);
     expect(rows[0]!.route).toEqual({ via: "host", home: host, sessionId: "sess_live" });
     scanner.close();
+  });
+
+  it("natively archives, restores and deletes sessions across db.sqlite and sibling v2/tasks-index.sqlite", async () => {
+    const host = tempHome([{ id: "sess_target", timeUpdated: stamp(45 * 86_400_000) }]);
+    const v2Dir = path.join(path.dirname(host), "v2");
+    mkdirSync(v2Dir, { recursive: true });
+    const tasksFile = path.join(v2Dir, "tasks-index.sqlite");
+    const tdb = new DatabaseSync(tasksFile);
+    tdb.exec("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, cli_deleted INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)");
+    tdb.prepare("INSERT INTO tasks (task_id, archived, deleted, cli_deleted, updated_at) VALUES (?, 0, 0, 0, 1000)").run("sess_target");
+    tdb.close();
+
+    const db = new ZcodeDb(host, { pidAlive: dead });
+    expect(db.setArchived("sess_target", true)).toBe(true);
+    expect(db.scan().find((r) => r.id === "sess_target")?.archived).toBe(true);
+    const check1 = new DatabaseSync(tasksFile, { readOnly: true });
+    expect(check1.prepare("SELECT archived, deleted FROM tasks WHERE task_id=?").get("sess_target")).toEqual({ archived: 1, deleted: 0 });
+    check1.close();
+
+    expect(db.setArchived("sess_target", false)).toBe(true);
+    expect(db.scan().find((r) => r.id === "sess_target")?.archived).toBe(false);
+
+    expect(db.deleteSession("sess_target")).toBe(true);
+    expect(db.scan()).toEqual([]);
+    const check2 = new DatabaseSync(tasksFile, { readOnly: true });
+    expect(check2.prepare("SELECT deleted, cli_deleted FROM tasks WHERE task_id=?").get("sess_target")).toEqual({ deleted: 1, cli_deleted: 1 });
+    check2.close();
+    db.close();
   });
 
   it("supports legacy flat db.sqlite layout as fallback", async () => {

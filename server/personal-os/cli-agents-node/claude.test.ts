@@ -4,9 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CLI_LIMITS, HISTORY_DAYS, parseCliSessionWire } from "../../../shared/cli-agents.ts";
 import {
+  archiveClaudeSession,
   claudeConfigDirs,
   claudeLiveIn,
   claudeState,
+  deleteClaudeSession,
   mergeClaude,
   resetClaudeHistoryCache,
   scanHistory,
@@ -239,7 +241,7 @@ describe("scanHistory", () => {
     expect(entries.map((e) => e.sessionId)).toEqual([SID(1)]);
   });
 
-  it("keeps only files modified within the window and caps the count, newest first", async () => {
+  it("lists transcripts without a time limit by default, honors an explicit window, and caps the count newest first", async () => {
     const now = Date.now();
     const days = (n: number) => new Date(now - n * 86_400_000);
     writeTranscript("a", SID(1), [user("old")], days(HISTORY_DAYS + 1));
@@ -247,17 +249,19 @@ describe("scanHistory", () => {
     writeTranscript("b", SID(3), [user("new")], days(0));
     writeTranscript("b", SID(4), [user("mid")], days(3));
     const all = await scanHistory(dir, { now });
-    expect(all.map((e) => e.sessionId)).toEqual([SID(3), SID(4), SID(2)]);
+    expect(all.map((e) => e.sessionId)).toEqual([SID(3), SID(4), SID(2), SID(1)]);
+    const windowed = await scanHistory(dir, { now, historyDays: HISTORY_DAYS });
+    expect(windowed.map((e) => e.sessionId)).toEqual([SID(3), SID(4), SID(2)]);
     const capped = await scanHistory(dir, { now, maxSessions: 2 });
     expect(capped.map((e) => e.sessionId)).toEqual([SID(3), SID(4)]);
   });
 
-  it("still finds an included session id beyond the window and the cap", async () => {
+  it("still finds an included session id beyond an explicit window and the cap", async () => {
     const now = Date.now();
     writeTranscript("a", SID(1), [user("ancient")], new Date(now - 60 * 86_400_000));
     writeTranscript("a", SID(2), [user("a")], new Date(now - 1000));
     writeTranscript("a", SID(3), [user("b")], new Date(now - 2000));
-    const entries = await scanHistory(dir, { now, maxSessions: 1, include: [SID(1), SID(3)] });
+    const entries = await scanHistory(dir, { now, historyDays: HISTORY_DAYS, maxSessions: 1, include: [SID(1), SID(3)] });
     expect(new Set(entries.map((e) => e.sessionId))).toEqual(new Set([SID(1), SID(2), SID(3)]));
   });
 
@@ -441,10 +445,14 @@ describe("lineage", () => {
 describe("the desktop app's sidebar", () => {
   const running: LiveClaudeSession = { sessionId: SID(2), pid: 2, cwd: "/x", state: "idle", updatedAt: 1, unverified: false };
 
-  it("hides archived sessions and their earlier transcripts, unless they are running", () => {
+  it("marks archived desktop sessions as archived, drops their earlier transcripts, and keeps running sessions active", () => {
     const index = sidebar({ [SID(1)]: { archived: true }, [SID(2)]: { archived: true }, [SID(3)]: { archived: false } }, { priorOf: new Map([[SID(4), SID(1)]]) });
     const rows = mergeClaude("/cfg", [running], [entryOf(SID(1)), entryOf(SID(2)), entryOf(SID(3)), entryOf(SID(4))], { desktop: index, now: NOW });
-    expect(rows.map((r) => r.nativeId).sort()).toEqual([SID(2), SID(3)]);
+    const byId = Object.fromEntries(rows.map((r) => [r.nativeId, r]));
+    expect(Object.keys(byId).sort()).toEqual([SID(1), SID(2), SID(3)]);
+    expect(byId[SID(1)]?.archived).toBe(true);
+    expect(byId[SID(2)]?.archived).toBeUndefined();
+    expect(byId[SID(3)]?.archived).toBeUndefined();
   });
 
   it("shows one row per session: an earlier transcript leaves once the current one is listed", () => {
@@ -504,6 +512,20 @@ describe("scan and merge end to end", () => {
     expect(by[SID(1)]).toMatchObject({ state: "running", liveIn: "terminal", title: "Named" });
     expect(by[SID(2)]).toMatchObject({ state: "stopped", title: "finished one" });
   });
+
+  it("natively archives, restores and permanently deletes CLI transcripts on disk", async () => {
+    writeTranscript("proj", SID(1), [user("to archive")]);
+    expect(await archiveClaudeSession(dir, SID(1), true)).toBe(true);
+    let rows = mergeClaude(dir, [], await scanHistory(dir));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ nativeId: SID(1), archived: true });
+    expect(await archiveClaudeSession(dir, SID(1), false)).toBe(true);
+    rows = mergeClaude(dir, [], await scanHistory(dir));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.archived).toBeUndefined();
+    expect(await deleteClaudeSession(dir, SID(1))).toBe(true);
+    expect(await scanHistory(dir)).toEqual([]);
+  });
 });
 
 describe("Claude desktop session store", () => {
@@ -537,5 +559,18 @@ describe("Claude desktop session store", () => {
     expect(index.deleted.has(SID(8))).toBe(true);
     expect(desktopAlwaysListed(index)[0]).toBe(SID(2));
     expect(desktopAlwaysListed(index)).not.toContain(SID(1));
+
+    const { deleteClaudeDesktopEntries, setClaudeDesktopArchived } = await import("./claude-desktop.ts");
+    const roots = [path.join(dir, "Claude-3p")];
+    expect(await setClaudeDesktopArchived(roots, SID(2), true)).toBe(true);
+    let updated = await new ClaudeDesktopSessions(roots).scan();
+    expect(updated.sessions.get(SID(2))?.archived).toBe(true);
+    expect(await setClaudeDesktopArchived(roots, SID(2), false)).toBe(true);
+    updated = await new ClaudeDesktopSessions(roots).scan();
+    expect(updated.sessions.get(SID(2))?.archived).toBe(false);
+    expect(await deleteClaudeDesktopEntries(roots, SID(2))).toBe(true);
+    updated = await new ClaudeDesktopSessions(roots).scan();
+    expect(updated.sessions.has(SID(2))).toBe(false);
+    expect(updated.deleted.has(SID(2))).toBe(true);
   });
 });

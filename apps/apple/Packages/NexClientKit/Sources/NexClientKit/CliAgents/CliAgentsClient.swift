@@ -245,6 +245,16 @@ extension CoreClient {
 
     public func cliHide(key: CliSessionKey, hidden: Bool) async throws { try await post(Self.cliBase + "/hide", body: CliHideBody(key: key, hidden: hidden)) }
 
+    /// Natively archives or restores a session on its computer via Core.
+    public func cliArchiveSession(key: CliSessionKey, archived: Bool) async throws {
+        try await post(Self.cliBase + (archived ? "/sessions/archive" : "/sessions/restore"), body: CliKeyBody(key: key))
+    }
+
+    /// Permanently deletes a native session on its computer via Core.
+    public func cliDeleteSession(key: CliSessionKey) async throws {
+        try await post(Self.cliBase + "/sessions/delete", body: CliKeyBody(key: key))
+    }
+
     /// Allow or deny a pending request. A question answer maps the question text to the chosen labels joined by ", ".
     /// A request that was answered elsewhere or expired fails with code `not_found`.
     /// `always` (with allow) also allows such calls for the rest of the session, for a request that offers it.

@@ -11,7 +11,7 @@ import { CLI_IMAGE_PREFIX, mapCliImageLinks } from "../../../shared/cli-images.t
 import { execCli } from "../../procs.ts";
 import { AgyAcp, AgyAcpError } from "./agy-acp.ts";
 import {
-  agyArray, agyDesktopWriters, agyJson, agyLastStep, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
+  agyArray, agyDesktopWriters, agyJson, agyLastStep, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, deleteAgyConversation, isAgyId, scanAgyHistory, setAgyArchived,
   type AgyNativeSession, type AgyRecord, type AgyWriters,
 } from "./agy-native.ts";
 import { appendItemText, buildAssistantItem, buildNoticeItem, buildThinkingItem, buildToolItem, buildUserItem, clipUnits, updateToolItem, type LocalSession } from "./items.ts";
@@ -241,21 +241,25 @@ export class AgyRuntime {
     for (const [id, { row, working }] of this.native) {
       if (row.configDir === this.options.desktopDir) {
         const held = this.desktopWriters.sessions.has(id.toLowerCase());
-        rows.set(id, {
+        const next: LocalSession = {
           ...row,
           state: working ? "running" : held ? "idle" : "stopped",
           ...(working || held ? { liveIn: "desktop" } : {}),
           ...(this.desktopWriters.unknown ? { writerUnknown: true } : {}),
-        });
+        };
+        if (working || held) delete next.archived;
+        rows.set(id, next);
         continue;
       }
       const explicit = this.writers.sessions.has(id.toLowerCase());
-      rows.set(id, {
+      const next: LocalSession = {
         ...row,
         state: working && (explicit || this.writers.unknown) ? "running" : explicit ? "idle" : "stopped",
         ...(explicit ? { liveIn: "terminal" } : {}),
         ...(!explicit && this.writers.unknown ? { writerUnknown: true } : {}),
-      });
+      };
+      if (working || explicit) delete next.archived;
+      rows.set(id, next);
     }
     for (const [id, session] of this.sessions) {
       const row = rows.get(id);
@@ -347,6 +351,40 @@ export class AgyRuntime {
     this.options.changed();
   }
 
+  /** Natively archives or restores an Antigravity conversation in `annotations/<id>.pbtxt`. */
+  async archiveSession(id: string, dir: string, archived: boolean): Promise<void> {
+    if (!isAgyId(id)) throw new AgyError("not_found", "找不到 Antigravity 会话");
+    const session = this.sessions.get(id);
+    if (archived) {
+      if (session?.active) throw new AgyError("busy", "会话正在运行，请先停止后再归档");
+      if (session) {
+        clearTimeout(session.idle);
+        await this.retire(session);
+        this.sessions.delete(id);
+      }
+    }
+    const targetDir = dir || this.sessionDir(id);
+    await setAgyArchived(targetDir, id, archived);
+    await this.scan();
+    this.options.changed();
+  }
+
+  /** Permanently deletes a local Antigravity conversation after confirming no live writer holds it. */
+  async deleteSession(id: string, dir: string): Promise<void> {
+    if (!isAgyId(id)) throw new AgyError("not_found", "找不到 Antigravity 会话");
+    const session = this.sessions.get(id);
+    if (session?.active) throw new AgyError("busy", "会话正在运行，请先停止后再删除");
+    const targetDir = dir || this.sessionDir(id);
+    await this.requireAvailableWriter(id, targetDir);
+    if (session) {
+      clearTimeout(session.idle);
+      await this.retire(session);
+      this.sessions.delete(id);
+    }
+    await deleteAgyConversation(targetDir, id);
+    await this.scan();
+    this.options.changed();
+  }
   private async requireAvailableWriter(id: string, dir = this.sessionDir(id)): Promise<void> {
     await this.refreshWriters();
     if (dir === this.options.desktopDir) {

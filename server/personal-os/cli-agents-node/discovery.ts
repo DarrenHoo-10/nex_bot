@@ -79,6 +79,7 @@ export class SessionDiscovery {
   private readonly zcodes: ZcodeScanner[];
   private readonly options: SessionDiscoveryOptions;
   private readonly desktop: ClaudeDesktopSessions | null;
+  private readonly desktopRoots: readonly string[];
   /** the desktop app's sidebar index (sessions, earlier transcripts, deletions), from the last history scan */
   private desktopIndex: DesktopIndex = EMPTY_DESKTOP_INDEX;
 
@@ -111,7 +112,20 @@ export class SessionDiscovery {
     // stay hermetic instead of picking up the developer's own ZCode database
     this.zcodes = (options.zcodeHomes ?? []).map((home) => new ZcodeScanner(home, options.zcode));
     const desktopRoots = options.claudeDesktopRoots ?? (options.claudeDirs ? [] : claudeDesktopRoots());
+    this.desktopRoots = desktopRoots;
     this.desktop = desktopRoots.length > 0 ? new ClaudeDesktopSessions(desktopRoots) : null;
+  }
+
+  /** Claude Desktop roots configured for this discovery instance (empty in hermetic tests). */
+  claudeDesktopRoots(): readonly string[] {
+    return this.desktopRoots;
+  }
+
+  /** Drops Codex App DB's short scan cache for `home` so the next scan reflects archive/restore/delete immediately. */
+  invalidateCodex(home: string): void {
+    for (const scanner of this.scanners) {
+      if (scanner.home === home) scanner.appDb.invalidate();
+    }
   }
 
   /** Runs one full round, reports it, then keeps scanning on the timers. */
@@ -411,11 +425,12 @@ export class SessionDiscovery {
       }
     }
 
-    // newest first; sessions with a live process are never dropped by the cap
+    // newest first; live non-archived sessions are never dropped, then non-archived stopped, then archived
     const sorted = [...merged.entries()].sort((a, b) => b[1].lastActivityAt - a[1].lastActivityAt);
-    const active = sorted.filter(([, row]) => row.state !== "stopped");
-    const stopped = sorted.filter(([, row]) => row.state === "stopped").slice(0, Math.max(0, MAX_SESSIONS - active.length));
-    const kept = new Map([...active, ...stopped].sort((a, b) => b[1].lastActivityAt - a[1].lastActivityAt).slice(0, MAX_SESSIONS));
+    const live = sorted.filter(([, row]) => !row.archived && row.state !== "stopped");
+    const stopped = sorted.filter(([, row]) => !row.archived && row.state === "stopped").slice(0, Math.max(0, MAX_SESSIONS - live.length));
+    const archived = sorted.filter(([, row]) => row.archived === true).slice(0, Math.max(0, MAX_SESSIONS - live.length - stopped.length));
+    const kept = new Map([...live, ...stopped, ...archived].sort((a, b) => b[1].lastActivityAt - a[1].lastActivityAt).slice(0, MAX_SESSIONS));
     // a fork parent is only reported when it is in the list the report carries, so the
     // reference always resolves (the cap, an archive or a window edge may have dropped it)
     for (const [ref, row] of kept) {
@@ -498,6 +513,7 @@ function toWire(row: Row): CliSessionWire {
   if (row.model !== undefined) wire.model = row.model;
   if (row.cliVersion !== undefined) wire.cliVersion = row.cliVersion;
   if (row.context !== undefined) wire.context = { ...row.context };
+  if (row.archived === true) wire.archived = true;
   if (row.writerUnknown !== undefined) wire.writerUnknown = row.writerUnknown;
   return wire;
 }

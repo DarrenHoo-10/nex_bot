@@ -28,11 +28,11 @@ describe("grouping", () => {
     expect(groups.map((group) => [group.device.id, group.count])).toEqual([["empty", 0], ["ghost", 1]]);
   });
 
-  it("hides hidden sessions unless asked", () => {
-    const rows = [session({ nativeId: "1" }), session({ nativeId: "2", hidden: true })];
+  it("hides hidden and natively archived sessions unless asked", () => {
+    const rows = [session({ nativeId: "1" }), session({ nativeId: "2", hidden: true }), session({ nativeId: "3", archived: true })];
     expect(groupSessions([device()], rows)[0].count).toBe(1);
-    expect(groupSessions([device()], rows, true)[0].count).toBe(2);
-    expect(hiddenCount(rows)).toBe(1);
+    expect(groupSessions([device()], rows, true)[0].count).toBe(3);
+    expect(hiddenCount(rows)).toBe(2);
   });
 
   it("lists recent folders of one computer, skipping scratch folders", () => {
@@ -66,7 +66,13 @@ describe("status", () => {
   });
 
   it("counts waiting sessions that are visible and online", () => {
-    expect(waitingCount([session({ state: "waiting" }), session({ nativeId: "2", state: "waiting", hidden: true }), session({ nativeId: "3", state: "waiting", online: false }), session({ nativeId: "4" })])).toBe(1);
+    expect(waitingCount([
+      session({ state: "waiting" }),
+      session({ nativeId: "2", state: "waiting", hidden: true }),
+      session({ nativeId: "5", state: "waiting", archived: true }),
+      session({ nativeId: "3", state: "waiting", online: false }),
+      session({ nativeId: "4" }),
+    ])).toBe(1);
   });
 });
 

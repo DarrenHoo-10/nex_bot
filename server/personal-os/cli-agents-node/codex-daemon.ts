@@ -328,6 +328,27 @@ export async function updateCodexThreadNames(options: ProxyConnectorOptions, hom
   }
 }
 
+/** Natively archives, unarchives or permanently deletes a Codex thread via `codex app-server`. */
+export async function manageCodexThread(
+  options: ProxyConnectorOptions,
+  home: string,
+  action: "archive" | "unarchive" | "delete",
+  threadId: string,
+): Promise<void> {
+  const peer = await connectCodexProcess(options, home, "stdio");
+  const rpc = new Rpc(peer, { notification() {}, request() {}, closed() {} });
+  const closed = new Promise<void>((resolve) => peer.onClose(resolve));
+  const method = action === "archive" ? "thread/archive" : action === "unarchive" ? "thread/unarchive" : "thread/delete";
+  try {
+    await rpc.request("initialize", { clientInfo: { name: "nexbot", title: "NexBot", version: "1" }, capabilities: null }, 6000);
+    rpc.notify("initialized");
+    await rpc.request(method, { threadId }, 12_000);
+  } finally {
+    rpc.close();
+    await closed;
+  }
+}
+
 /** True when `<home>/app-server-control/` holds anything: a control socket a TUI may be using. */
 export async function controlSocketExists(home: string): Promise<boolean> {
   try {
@@ -418,6 +439,15 @@ export class CodexDaemons {
   threads(home: string): ReadonlySet<string> | undefined {
     const state = this.homes.get(home);
     return state?.rpc?.open ? state.threads : undefined;
+  }
+
+  /** Drops local daemon tracking for a thread that was archived or deleted. */
+  forgetThread(home: string, threadId: string): void {
+    const state = this.homes.get(home);
+    if (!state) return;
+    state.joined.delete(threadId);
+    state.active.delete(threadId);
+    state.threads?.delete(threadId);
   }
 
   /** Looks at the daemon again (at most every `listEveryMs`). Never throws and never starts a daemon. */

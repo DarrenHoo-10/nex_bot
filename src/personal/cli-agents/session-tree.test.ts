@@ -262,7 +262,7 @@ describe("earlier history", () => {
     expect(titles(project("alpha"))).toHaveLength(4);
   });
 
-  it("does not fold the archive view", async () => {
+  it("does not fold the archive view and allows deleting archived sessions", async () => {
     const rows = history();
     const workbench = new Map<CliSessionKey, WorkbenchMeta>(rows.map((row) => [row.key, { title: row.title, archived: true, id: `wb-${row.nativeId}`, version: 1 }]));
     await mount(rows, { workbench });
@@ -270,6 +270,29 @@ describe("earlier history", () => {
     await click([...container.querySelectorAll("button")].find((entry) => entry.textContent?.includes("已归档")) ?? null);
     expect(titles()).toEqual(["今天", "旧一", "旧二", "旧三"]);
     expect(older()).toBeNull();
+    const items = await openMenu("今天");
+    expect(items.map((item) => item.textContent)).toEqual(["恢复会话", "查看会话 ID", "删除会话"]);
+  });
+
+  it("reads natively archived sessions into 已归档 and blocks archive/delete when the device is offline", async () => {
+    const active = session({ nativeId: "a", title: "活跃会话", lastActivityAt: recent(1) });
+    const archivedRow = session({ nativeId: "b", title: "原生归档", archived: true, lastActivityAt: recent(2) });
+    await mount([active, archivedRow], { device: device({ online: false }) });
+    expect(titles()).toEqual(["活跃会话"]);
+    const items = await openMenu("活跃会话");
+    expect(items.find((item) => item.textContent === "归档会话")?.disabled).toBe(true);
+    expect(items.find((item) => item.textContent === "删除会话")?.disabled).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await click([...container.querySelectorAll("button")].find((entry) => entry.textContent?.includes("已归档")) ?? null);
+    expect(titles()).toEqual(["原生归档"]);
+  });
+
+  it("blocks archive and delete when the device lacks sessionManage", async () => {
+    await mount([session({ nativeId: "a", title: "活跃会话", lastActivityAt: recent(1) })], { device: device() });
+    const items = await openMenu("活跃会话");
+    expect(items.find((item) => item.textContent === "归档会话")?.disabled).toBe(true);
+    expect(items.find((item) => item.textContent === "归档会话")?.title).toBe("电脑端版本过旧，升级后可用");
+    expect(items.find((item) => item.textContent === "删除会话")?.disabled).toBe(true);
   });
 });
 

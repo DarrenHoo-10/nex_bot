@@ -151,7 +151,7 @@ describe("CodexAppDb.scan", () => {
     expect(rows[1].title).toBe("Second");
   });
 
-  it("leaves out archived, subagent, exec, child, old and rollout-backed threads", async () => {
+  it("includes archived and older threads while leaving out subagent, exec, child and rollout-backed threads", async () => {
     const rollout = path.join(home, "rollout-x.jsonl");
     writeFileSync(rollout, "{}\n");
     makeState(1, [
@@ -164,7 +164,11 @@ describe("CodexAppDb.scan", () => {
       { id: "a7", title: "kept", originator: "Codex Desktop" },
     ]);
     const rows = await new CodexAppDb(home, { exclude }).scan(NOW);
-    expect(rows.map((row) => row.nativeId)).toEqual(["a6", "a7"]);
+    expect(rows.map((row) => row.nativeId)).toEqual(["a1", "a6", "a7", "a4"]);
+    expect(rows[0]).toMatchObject({ nativeId: "a1", archived: true, state: "stopped" });
+    expect(rows.find((row) => row.nativeId === "a4")?.archived).toBeUndefined();
+    const windowed = await new CodexAppDb(home, { exclude, historyDays: 14 }).scan(NOW);
+    expect(windowed.map((row) => row.nativeId)).toEqual(["a1", "a6", "a7"]);
   });
 
   it("reads only the highest state file and never writes it", async () => {
