@@ -1,7 +1,7 @@
 ﻿import { useEffect, useId, useState, type ReactNode } from "react";
 import { userErrorText } from "../lib/http-errors";
 import { AccountControls, useAccount } from "./auth";
-import { Cpu, Info, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
+import { ChevronRight, Cpu, Globe, Info, KeyRound, Laptop, Plug, Smartphone, Sparkles, UserRound, X } from "lucide-react";
 import { AboutSettings } from "./AboutSettings";
 import { api, desktop, str, type State, type LocalDeviceState } from "./api";
 import { ConnectorsPage } from "./ConnectorsPage";
@@ -18,26 +18,52 @@ export function Editor({ title, fields, onClose, onSubmit }: { title: string; fi
 export function Confirm({ title, detail, onClose, onConfirm }: { title: string; detail: string; onClose: () => void; onConfirm: () => Promise<unknown> }) {
   return <><h2>{title}</h2><p>{detail}</p><div className="actions"><button className="danger" onClick={() => void onConfirm()}>确认</button><button autoFocus onClick={onClose}>取消</button></div></>;
 }
+function deviceIcon(name: string) {
+  const lower = name.toLowerCase();
+  if (/\b(?:android|iphone|ipad|ios|mobile|phone|pixel|huawei|xiaomi|redmi|honor|oppo|vivo|oneplus|samsung)\b|手机/.test(lower)) {
+    return Smartphone;
+  }
+  if (/\b(?:browser|chrome|safari|firefox|edge|web)\b|浏览器/.test(lower)) {
+    return Globe;
+  }
+  return Laptop;
+}
+
 export type SettingsCategory = "account" | "model" | "memory" | "connectors" | "devices" | "about";
-export function SettingsPage({ state, run, category, onCategory, refresh, setDialog, closeDialog }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; category: SettingsCategory; onCategory: (category: SettingsCategory) => void; refresh: () => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
+export const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = {
+  account: "账号与登录设备",
+  model: "模型",
+  memory: "长期记忆",
+  connectors: "连接器",
+  devices: "设备",
+  about: "关于",
+};
+export function SettingsPage({ state, run, category, onCategory, mobileDetail = true, refresh, setDialog, closeDialog }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; category: SettingsCategory; onCategory: (category: SettingsCategory) => void; mobileDetail?: boolean; refresh: () => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
   const sectionId = useId();
   const categories: Array<{ id: SettingsCategory; label: string; icon: typeof UserRound }> = [
-    { id: "account", label: "账号与登录设备", icon: UserRound },
-    { id: "model", label: "模型", icon: KeyRound },
-    { id: "memory", label: "长期记忆", icon: Sparkles },
-    { id: "connectors", label: "连接器", icon: Plug },
-    { id: "devices", label: "设备", icon: Cpu },
-    { id: "about", label: "关于", icon: Info },
+    { id: "account", label: SETTINGS_CATEGORY_LABELS.account, icon: UserRound },
+    { id: "model", label: SETTINGS_CATEGORY_LABELS.model, icon: KeyRound },
+    { id: "memory", label: SETTINGS_CATEGORY_LABELS.memory, icon: Sparkles },
+    { id: "connectors", label: SETTINGS_CATEGORY_LABELS.connectors, icon: Plug },
+    { id: "devices", label: SETTINGS_CATEGORY_LABELS.devices, icon: Cpu },
+    { id: "about", label: SETTINGS_CATEGORY_LABELS.about, icon: Info },
   ];
-  return <div className="preferences-page">
+  return <div className="preferences-page" data-mobile-view={mobileDetail ? "detail" : "index"}>
     <h1 className="sr-only">设置</h1>
     <div className="preferences-layout">
-      <nav className="preferences-nav" aria-label="设置分类">{categories.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={category === id ? "page" : undefined} aria-controls={`${sectionId}-${id}`} onClick={() => onCategory(id)}><Icon size={17}/><span>{label}</span></button>)}</nav>
+      <nav className="preferences-nav" aria-label="设置分类">
+        <div className="preferences-nav-title" aria-hidden="true">设置</div>
+        {categories.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={category === id ? "page" : undefined} aria-controls={`${sectionId}-${id}`} onClick={() => onCategory(id)}>
+          <span className="preferences-nav-icon" aria-hidden="true"><Icon size={17}/></span>
+          <span className="preferences-nav-label">{label}</span>
+          <ChevronRight size={16} className="preferences-nav-chevron" aria-hidden="true"/>
+        </button>)}
+      </nav>
       <div className="preferences-content">
         <section id={`${sectionId}-account`} hidden={category !== "account"} aria-label="账号与登录设备" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>账号与登录设备</h2></div>
           <AccountControls/>
-          <ClientSessions cursor={state.sync.cursor} run={run}/>
+          <ClientSessions cursor={state.sync.cursor} run={run} setDialog={setDialog} closeDialog={closeDialog}/>
         </section>
         <section id={`${sectionId}-model`} hidden={category !== "model"} aria-label="模型" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>模型</h2></div>
@@ -63,7 +89,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
     </div>
   </div>;
 }
-function ClientSessions({ cursor, run }: { cursor: number; run: (fn: () => Promise<unknown>) => Promise<void> }) {
+function ClientSessions({ cursor, run, setDialog, closeDialog }: { cursor: number; run: (fn: () => Promise<unknown>) => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
   const { status } = useAccount();
   const [sessions, setSessions] = useState<Array<{ session_id: string; name: string; last_seen_at?: number; expires_at: number; revoked_at: number | null }>>([]);
   const [currentId, setCurrentId] = useState<string>();
@@ -80,25 +106,37 @@ function ClientSessions({ cursor, run }: { cursor: number; run: (fn: () => Promi
     }).catch(() => { if (current) { setLoaded(true); setLoadError(true); } });
     return () => { current = false; };
   }, [cursor, status?.sessionId]);
+  const activeCurrentId = currentId ?? status?.sessionId;
+  const ordered = [...sessions].sort((a, b) =>
+    Number(b.session_id === activeCurrentId) - Number(a.session_id === activeCurrentId)
+    || (b.last_seen_at ?? b.expires_at) - (a.last_seen_at ?? a.expires_at));
   return <section className="preferences-section">
-    <div className="preferences-section-heading"><h3>登录设备</h3>{loaded && !loadError && <span className="preferences-status">{sessions.length} 个有效登录</span>}</div>
+    <div className="preferences-section-heading"><h3>登录设备</h3>{loaded && !loadError && <span className="preferences-status">{ordered.length} 个有效登录</span>}</div>
 
     {!loaded && <p className="preferences-description" role="status">正在加载登录设备…</p>}
     {loadError && <p className="preferences-notice" role="alert">登录设备暂时无法加载，请稍后重新打开设置。</p>}
-    {loaded && !loadError && !sessions.length && <p className="preferences-description">暂无其他有效登录。</p>}
+    {loaded && !loadError && !ordered.length && <p className="preferences-description">暂无其他有效登录。</p>}
     <div className="ds-session-list">
-      {sessions.map((session) => {
-        const isCurrent = session.session_id === (currentId ?? status?.sessionId);
+      {ordered.map((session) => {
+        const isCurrent = session.session_id === activeCurrentId;
+        const DeviceIcon = deviceIcon(session.name);
+        const label = session.name || "未命名设备";
         return <div className={`ds-session-item ${isCurrent ? "is-current" : ""}`} key={session.session_id}>
-          <Laptop size={16}/>
+          <DeviceIcon size={18} aria-hidden="true"/>
           <div className="ds-session-meta">
             <strong>
-              <span>{session.name}</span>
+              <span>{label}</span>
               {isCurrent ? <i className="ds-current-pill">当前设备</i> : null}
             </strong>
             <small className="muted">到期时间：{new Date(session.expires_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
           </div>
-          {!isCurrent ? <button disabled={!!pendingId} onClick={() => { setPendingId(session.session_id); void run(() => api("clients/revoke", { sessionId: session.session_id })).finally(() => setPendingId(undefined)); }}>撤销登录</button> : null}
+          {!isCurrent ? <button type="button" className="ds-session-revoke" disabled={!!pendingId} onClick={() => setDialog(
+            <Confirm title="撤销该设备的登录？" detail={`撤销后「${label}」需要重新登录。`} onClose={closeDialog} onConfirm={async () => {
+              closeDialog();
+              setPendingId(session.session_id);
+              await run(() => api("clients/revoke", { sessionId: session.session_id })).finally(() => setPendingId(undefined));
+            }}/>
+          )}>{pendingId === session.session_id ? "撤销中…" : "撤销登录"}</button> : null}
         </div>;
       })}
     </div>
@@ -140,9 +178,10 @@ export function Devices({ state, run, setDialog, closeDialog }: { state: State; 
       {visible.map(session => {
         const isCurrent = session.session_id === currentId;
         const online = clock - (session.last_seen_at ?? 0) < 90_000;
+        const DeviceIcon = deviceIcon(session.name);
         return <section className={`signed-in-device ${isCurrent ? "local-device" : ""}`} key={session.session_id}>
-          <Laptop size={22} aria-hidden="true"/>
-          <div className="signed-in-device-name"><strong>{session.name}</strong>{isCurrent && <span className="ds-current-pill">本设备</span>}</div>
+          <DeviceIcon size={20} aria-hidden="true"/>
+          <div className="signed-in-device-name"><strong>{session.name}</strong>{isCurrent && <span className="ds-current-pill">当前设备</span>}</div>
           <span className="device-presence"><i data-online={online}/>{online ? "在线" : "离线"}{isCurrent && local?.paused ? " · 已暂停" : ""}</span>
           {isCurrent && desktop?.mode === "client" && local?.cliAgents?.available && <label className="device-switch"><input type="checkbox" role="switch" checked={local.cliAgents.enabled} disabled={pending || !local.authorized} onChange={event => void update(() => desktop!.setCliAgentsEnabled!(event.target.checked))}/>Agent 会话{local.cliAgents.enabled && local.cliAgents.hc === "error" ? " · 终端不可用" : ""}</label>}
           {isCurrent && local?.available && <button disabled={pending || !local.authorized} onClick={() => void update(() => desktop!.setDevicePaused!(!local.paused))}>{pending ? "处理中…" : local.paused ? "恢复控制" : "暂停控制"}</button>}

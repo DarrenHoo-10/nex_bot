@@ -456,15 +456,17 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
 
   if (type === "user") {
     if (record.isCompactSummary === true) return { items: [notice(baseId, ts, "info", COMPACT_TEXT)] };
+    const origin = isRec(record.origin) ? record.origin : undefined;
+    if (origin?.kind === "task-notification") {
+      const task = parseCliTaskNotification(blocksText(message?.content));
+      return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
+    }
+    if (origin?.kind === "peer") {
+      const peer = claudePeerItem(origin, blocksText(message?.content), baseId, ts);
+      return peer ? { items: [peer] } : none;
+    }
     if (record.isMeta === true) {
-      const text = blocksText(message?.content);
-      // A peer delivery: NexBot's own inbox messages belong to the user; teammate/cross-session messages fold into work progress.
-      const origin = isRec(record.origin) ? record.origin : undefined;
-      if (origin?.kind === "peer") {
-        const peer = claudePeerItem(origin, text, baseId, ts);
-        return peer ? { items: [peer] } : none;
-      }
-      const task = parseCliTaskNotification(text);
+      const task = parseCliTaskNotification(blocksText(message?.content));
       return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
     }
     return { items: claudeUser(record, message, ctx, baseId, ts) };
@@ -481,11 +483,11 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
     if (!attachment || attachment.type !== "queued_command") return none;
     const raw = attachment.prompt ?? attachment.content ?? attachment.text;
     const text = unwrapPastedContent(blocksText(raw));
-    if (attachment.commandMode === "task-notification") {
+    const origin = isRec(attachment.origin) ? attachment.origin : undefined;
+    if (attachment.commandMode === "task-notification" || origin?.kind === "task-notification") {
       const task = parseCliTaskNotification(text);
       return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
     }
-    const origin = isRec(attachment.origin) ? attachment.origin : undefined;
     if (origin?.kind === "peer") {
       const peer = claudePeerItem(origin, text, baseId, ts);
       return peer ? { items: [peer] } : none;
@@ -658,6 +660,19 @@ function norm(value: unknown): string {
 
 const CODEX_INJECTED_USER = /^\s*(<environment_context>|<user_instructions>|<turn_aborted>|<permissions instructions>|# AGENTS\.md instructions|<INSTRUCTIONS>)/;
 
+function codexSubagentNotification(text: string): CliTaskEnd | undefined {
+  const match = /^\s*<subagent_notification>([\s\S]*?)<\/subagent_notification>\s*$/.exec(text);
+  if (!match) return undefined;
+  try {
+    const parsed = JSON.parse(match[1]!.trim());
+    if (!isRec(parsed) || typeof parsed.agent_path !== "string") return undefined;
+    const status = isRec(parsed.status) ? Object.keys(parsed.status)[0] : typeof parsed.status === "string" ? parsed.status : undefined;
+    return cliTaskEnd(parsed.agent_path, status);
+  } catch {
+    return undefined;
+  }
+}
+
 export function codexRecordToItems(record: unknown, ctx: ItemContext): MappedRecord {
   const none: MappedRecord = { items: [] };
   if (!isRec(record)) return none;
@@ -792,6 +807,10 @@ function codexThreadItem(item: Rec, ctx: ItemContext, ts: number): MappedRecord 
       return generatedImage(item, ctx, id, ts);
     case "usermessage": {
       const { text, images } = codexUserText(item, ctx);
+      if (text.trimStart().startsWith("<subagent_notification>")) {
+        const task = codexSubagentNotification(text);
+        return task ? { items: [cliTaskNotice(id, ts, task)] } : none;
+      }
       if (text.trim() === "" && images.length === 0) return none;
       const user: CliItem = { kind: "user", id, ts, text: itemText(text) };
       if (images.length > 0) user.images = images.slice(0, 20);
@@ -879,6 +898,10 @@ function codexResponseItem(payload: Rec, ctx: ItemContext, ts: number): MappedRe
       }
       const text = texts.join("\n\n");
       if (role === "user") {
+        if (text.trimStart().startsWith("<subagent_notification>")) {
+          const task = codexSubagentNotification(text);
+          return task ? { items: [cliTaskNotice(id, ts, task)] } : none;
+        }
         if (CODEX_INJECTED_USER.test(text)) return none;
         if (text.trim() === "" && images.length === 0) return none;
         const user: CliItem = { kind: "user", id, ts, text: itemText(text) };

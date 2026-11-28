@@ -21,6 +21,153 @@ struct AgentNewTarget: Hashable, Identifiable {
 private let startable: [CliEngine] = [.claude, .codex, .zcode, .agy]
 func agentName(_ engine: CliEngine) -> String { engine == .claude ? "Claude Code" : engine.label }
 
+/// Inline searchable branch picker shared by in-place branch switching and Worktree base-branch selection.
+private struct AgentBranchPicker: View {
+    struct Option: Identifiable {
+        let value: String
+        let label: String
+        let isCurrent: Bool
+        var id: String { value.isEmpty ? "__head__" : value }
+    }
+
+    let label: String
+    @Binding var selection: String
+    let branches: [String]
+    let currentBranch: String?
+    @Binding var expanded: Bool
+    @State private var query = ""
+
+    private var ordered: [Option] {
+        var out: [Option] = []
+        let hasCurrent = currentBranch.map { branches.contains($0) } == true
+        if !hasCurrent { out.append(Option(value: "", label: "当前 HEAD", isCurrent: false)) }
+        var seen = Set<String>()
+        func add(_ name: String) {
+            guard !name.isEmpty, !seen.contains(name), branches.contains(name) else { return }
+            seen.insert(name)
+            out.append(Option(value: name, label: name, isCurrent: name == currentBranch))
+        }
+        if let currentBranch { add(currentBranch) }
+        add("main")
+        add("master")
+        for name in branches { add(name) }
+        return out
+    }
+
+    private var filtered: [Option] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return ordered }
+        return ordered.filter { $0.label.lowercased().contains(needle) }
+    }
+
+    var body: some View {
+        let displayLabel = selection.isEmpty ? "当前 HEAD" : selection
+        let isCurrent = !selection.isEmpty && selection == currentBranch
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                expanded.toggle()
+                if !expanded { query = "" }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                    Text(displayLabel)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .foregroundStyle(Theme.foreground)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    if isCurrent {
+                        Text("当前")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(Theme.nexAgentAccent)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Theme.nexAgentSoft, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.muted)
+                }
+                .padding(.horizontal, 10).frame(height: 36)
+                .background(expanded ? Theme.card : Theme.secondary.opacity(0.65), in: shape)
+                .overlay(shape.strokeBorder(expanded ? Theme.nexAgentAccent : Theme.border, lineWidth: 1))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(label)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                        TextField("搜索分支…", text: $query)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5))
+                            .autocorrectionDisabled()
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                        if !query.isEmpty {
+                            Button { query = "" } label: {
+                                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8).frame(height: 32)
+                    .background(Theme.secondary.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    if filtered.isEmpty {
+                        Text("没有匹配的分支").font(.caption).foregroundStyle(Theme.muted)
+                            .frame(maxWidth: .infinity).padding(.vertical, 12)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 2) {
+                                ForEach(filtered) { option in
+                                    let chosen = option.value == selection
+                                    Button {
+                                        selection = option.value
+                                        expanded = false
+                                        query = ""
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            Text(option.label)
+                                                .font(.system(size: 12.5, weight: chosen ? .semibold : .regular, design: .monospaced))
+                                                .foregroundStyle(chosen ? Theme.nexAgentAccent : Theme.foreground)
+                                                .lineLimit(1).truncationMode(.middle)
+                                            Spacer(minLength: 0)
+                                            if option.isCurrent {
+                                                Text("当前")
+                                                    .font(.system(size: 10.5, weight: .semibold))
+                                                    .foregroundStyle(Theme.nexAgentAccent)
+                                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                                    .background(Theme.nexAgentSoft, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                            }
+                                            if chosen {
+                                                Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.nexAgentAccent)
+                                            }
+                                        }
+                                        .padding(.horizontal, 8).frame(minHeight: 32)
+                                        .background(chosen ? Theme.nexAgentSoft.opacity(0.65) : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        #if os(iOS)
+                        .frame(maxHeight: 240)
+                        #else
+                        .frame(maxHeight: 210)
+                        #endif
+                    }
+                }
+                .padding(6)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+            }
+        }
+    }
+}
+
 /// One of the three tabs in the row above the box: project, CLI, session options.
 private struct AgentPickChip<Label: View>: View {
     var active = false
@@ -50,6 +197,7 @@ struct AgentNewSessionPage: View {
     @State private var selectedBranch = ""
     @State private var baseBranch = ""
     @State private var branch: String?
+    @State private var branchListExpanded = false
     @State private var message = ""
     @State private var chosenModel = ""
     @State private var effort = ""
@@ -146,7 +294,28 @@ struct AgentNewSessionPage: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: presenting(.options)) {
+            NavigationStack {
+                ScrollView {
+                    sessionOptions
+                        .padding(16)
+                }
+                .background(Theme.background)
+                .navigationTitle("会话设置")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("完成") { picker = nil }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         #endif
+        .onChange(of: picker) { _, next in
+            if next != .options { branchListExpanded = false }
+        }
         .onAppear { setUp(); focused = true }
         .onChange(of: model.devices.map(\.id)) { _, _ in setUp() }
         .onChange(of: deviceId) { previous, _ in if !previous.isEmpty { dir = nil } }
@@ -251,25 +420,35 @@ struct AgentNewSessionPage: View {
                     Image(systemName: "arrow.triangle.branch").foregroundStyle(branch != nil || switchingInPlace ? Theme.nexAgentAccent : Theme.muted)
                     if branch != nil {
                         Text("Worktree")
-                    } else if !selectedBranch.isEmpty {
-                        Text(selectedBranch).truncationMode(.middle)
+                    } else {
+                        #if os(macOS)
+                        if !selectedBranch.isEmpty {
+                            Text(selectedBranch).truncationMode(.middle)
+                        }
+                        #else
+                        if switchingInPlace {
+                            Circle().fill(Theme.nexAgentAccent).frame(width: 6, height: 6)
+                        }
+                        #endif
                     }
                     if canChoosePermissions && selectedPermissions != .full {
                         Image(systemName: "exclamationmark.shield").foregroundStyle(Theme.approval)
                     }
                     Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
                 }
+                #if os(macOS)
+                .frame(maxWidth: 210)
+                #endif
             }
             .buttonStyle(.plain)
             .help(optionsHelp)
             .accessibilityLabel("会话选项")
+            #if os(macOS)
             .popover(isPresented: presenting(.options), arrowEdge: .bottom) {
                 sessionOptions
-                    .padding(14).frame(width: 290)
-                    #if os(iOS)
-                    .presentationCompactAdaptation(.popover)
-                    #endif
+                    .padding(14).frame(width: 336)
             }
+            #endif
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 4)
@@ -283,6 +462,7 @@ struct AgentNewSessionPage: View {
         let hasCurrentOption = current.map { branches.contains($0) } == true
         return VStack(alignment: .leading, spacing: 14) {
             Toggle(isOn: Binding(get: { branch != nil }, set: { on in
+                branchListExpanded = false
                 if on {
                     branch = CliLaunches.randomBranch()
                     baseBranch = !selectedBranch.isEmpty ? selectedBranch : (hasCurrentOption ? (current ?? "") : "")
@@ -298,30 +478,25 @@ struct AgentNewSessionPage: View {
             .toggleStyle(.switch).tint(Theme.nexAgentAccent).disabled(!git)
             if git && branch == nil && !branches.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(branchInfo?.dirty == true ? "分支 · 有未提交改动" : "分支")
-                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
-                    SwiftUI.Picker("选择分支", selection: $selectedBranch) {
-                        if !hasCurrentOption { Text("当前 HEAD").tag("") }
-                        ForEach(branches, id: \.self) { name in
-                            Text(name == current ? "\(name)（当前）" : name).tag(name)
+                    HStack(spacing: 6) {
+                        Text("分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                        Spacer(minLength: 0)
+                        if branchInfo?.dirty == true {
+                            Text("有未提交改动")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.approval)
+                                .padding(.horizontal, 7).padding(.vertical, 2)
+                                .background(Theme.approvalSoft, in: Capsule())
                         }
                     }
-                    .pickerStyle(.menu).labelsHidden()
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    AgentBranchPicker(label: "选择分支", selection: $selectedBranch, branches: branches, currentBranch: current, expanded: $branchListExpanded)
                 }
             }
             if branch != nil {
                 if !branches.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("基准分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
-                        SwiftUI.Picker("基准分支", selection: $baseBranch) {
-                            if !hasCurrentOption { Text("当前 HEAD").tag("") }
-                            ForEach(branches, id: \.self) { name in
-                                Text(name == current ? "\(name)（当前）" : name).tag(name)
-                            }
-                        }
-                        .pickerStyle(.menu).labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        AgentBranchPicker(label: "基准分支", selection: $baseBranch, branches: branches, currentBranch: current, expanded: $branchListExpanded)
                     }
                 }
                 VStack(alignment: .leading, spacing: 6) {
@@ -334,7 +509,24 @@ struct AgentNewSessionPage: View {
                         .onSubmit { picker = nil }
                 }
             }
-            if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
+            if let branchError {
+                HStack(spacing: 8) {
+                    Text(branchError).font(.caption).foregroundStyle(Theme.danger)
+                    Spacer(minLength: 0)
+                    if dirtySwitchError != nil {
+                        Button("改用 Worktree") {
+                            branchListExpanded = false
+                            branch = CliLaunches.randomBranch()
+                            baseBranch = !selectedBranch.isEmpty ? selectedBranch : (hasCurrentOption ? (current ?? "") : "")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.nexAgentAccent)
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(Theme.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
             if canChoosePermissions {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("权限").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)

@@ -102,6 +102,48 @@ it("opens the authenticated Feishu settings from a Stock management link", async
   }
 });
 
+it("uses a two-level index-to-detail settings flow on narrow screens", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query === "(min-width: 721px)" ? false : originalMatchMedia(query).matches,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  try {
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route.startsWith("state?view=workspace")) return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [] };
+      if (route === "clients") return { sessions: [] };
+      return {};
+    });
+    await act(async () => { root.render(createElement(AgentDesktop, { key: "mobile-settings" })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>(".workspace-account-name")!.click(); });
+    const openSettingsBtn = [...container.querySelectorAll<HTMLButtonElement>('.account-menu [role="menuitem"]')].find((el) => el.textContent === "设置")!;
+    await act(async () => { openSettingsBtn.click(); });
+    expect(container.querySelector(".preferences-page")?.getAttribute("data-mobile-view")).toBe("index");
+    expect(container.querySelector("main > header .contact-heading")?.textContent).toBe("设置");
+    expect(container.querySelector('button[aria-label="返回设置"]')).toBeNull();
+
+    const accountBtn = [...container.querySelectorAll<HTMLButtonElement>(".preferences-nav button")].find((el) => el.textContent === "账号与登录设备")!;
+    await act(async () => { accountBtn.click(); });
+    expect(container.querySelector(".preferences-page")?.getAttribute("data-mobile-view")).toBe("detail");
+    expect(container.querySelector("main > header .contact-heading")?.textContent).toBe("账号与登录设备");
+    const backBtn = container.querySelector<HTMLButtonElement>('button[aria-label="返回设置"]')!;
+    expect(backBtn).toBeTruthy();
+
+    await act(async () => { backBtn.click(); });
+    expect(container.querySelector(".preferences-page")?.getAttribute("data-mobile-view")).toBe("index");
+    expect(container.querySelector("main > header .contact-heading")?.textContent).toBe("设置");
+  } finally {
+    window.matchMedia = originalMatchMedia;
+  }
+});
+
 it("opens assistant details from its own button and switches assistants only after selection", async () => {
   HTMLElement.prototype.showPopover ??= function () {};
   HTMLElement.prototype.hidePopover ??= function () {};

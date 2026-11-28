@@ -15,12 +15,12 @@ import { cliImageId } from "../../shared/cli-images";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, PanelRight, Sparkles, Square, X } from "lucide-react";
+import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, PanelRight, Sparkles, Square, X } from "lucide-react";
 import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { usePersistentPreview } from "./use-persistent-preview";
 import { authorizeLocalCache, clearLocalCache, localCacheScope, queueLocalCache, readLocalCache } from "./local-content-cache";
-import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
+import { Confirm, Editor, SETTINGS_CATEGORY_LABELS, SettingsPage, type SettingsCategory } from "./panels";
 import { ProviderSettings } from "./ProviderSettings";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { CreateBotDialog } from "./components/CreateBotDialog";
@@ -142,7 +142,21 @@ export function AgentDesktop() {
   const [state, setState] = useState<State>();
   const [page, setPage] = useState(() => new URLSearchParams(window.location.search).get("settings") === "feishu" ? "settings" : new URLSearchParams(location.search).get("workspace") === "nexagent-review" && agentSection ? "cli" : "agent");
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>(page === "settings" ? "connectors" : "account");
-  const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
+  const [settingsDetailOpen, setSettingsDetailOpen] = useState(() => page === "settings");
+  const openSettings = (category?: SettingsCategory) => {
+    if (category) {
+      setSettingsCategory(category);
+      setSettingsDetailOpen(true);
+    } else {
+      setSettingsDetailOpen(false);
+    }
+    setPage("settings");
+    setSidebarOpen(false);
+  };
+  const selectSettingsCategory = (category: SettingsCategory) => {
+    setSettingsCategory(category);
+    setSettingsDetailOpen(true);
+  };
   const [financeBotId,setFinanceBotId]=useState<string>();
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
   const bot = state?.bots.find((entry) => entry.id === botId);
@@ -284,6 +298,7 @@ export function AgentDesktop() {
       if (closeTopLayer()) return;
       if (dialog) { setDialog(null); return; }
       if (detail) { setDetail(false); return; }
+      if (page === "settings" && !wide && settingsDetailOpen) { setSettingsDetailOpen(false); return; }
       if (page !== "agent") { setPage("agent"); return; }
       if (!sidebarOpen) { setSidebarOpen(true); return; }
       void desktop?.minimize?.();
@@ -298,7 +313,7 @@ export function AgentDesktop() {
       window.removeEventListener("nex-android-agent", select);
       window.removeEventListener("nex-download-error", downloadError);
     };
-  }, [dialog, detail, page, sidebarOpen]);
+  }, [dialog, detail, page, sidebarOpen, wide, settingsDetailOpen]);
   const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>()), messagesRef = useRef(messages);
   messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
@@ -908,13 +923,15 @@ export function AgentDesktop() {
 
     <main>
       <header>
-        <div className="header-side"><button className="icon-button mobile-menu" aria-label="展开联系人列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={19}/></button></div>
+        <div className="header-side">{page === "settings" && !wide && settingsDetailOpen
+          ? <button type="button" className="icon-button mobile-menu settings-back-button" aria-label="返回设置" onClick={() => setSettingsDetailOpen(false)}><ChevronLeft size={20}/></button>
+          : <button className="icon-button mobile-menu" aria-label="展开联系人列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={19}/></button>}</div>
         {page === "agent" && bot
           ? <AssistantSwitcher key={botId} assistants={state.bots} activeId={botId} onSelect={select}>
               <Avatar bot={bot} allBots={state.bots} size={30} state={avatarState} animate/>
               <strong>{bot.name}</strong>
             </AssistantSwitcher>
-          : <div className="contact-heading who"><strong>{page === "settings" ? "设置" : "你的 Agent"}</strong></div>}
+          : <div className="contact-heading who"><strong>{page === "settings" ? (!wide && settingsDetailOpen ? SETTINGS_CATEGORY_LABELS[settingsCategory] : "设置") : "你的 Agent"}</strong></div>}
         <div className="header-actions">
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
           {page === "agent" && bot ? <button type="button" className="bt-round glass assistant-inspector-toggle"
@@ -924,7 +941,7 @@ export function AgentDesktop() {
         </div>
       </header>
 
-      {update?.status === "ready" && updater.installUpdate && !(page === "settings" && settingsCategory === "about") ? <div role="status" className="update-banner">{desktop ? `新版本 ${update.version} 已就绪` : "网页有新版本"}<button type="button" onClick={() => void updater.installUpdate?.().catch((e: Error) => setError(userErrorText(e)))}>{desktop ? "立即更新" : "刷新页面"}</button></div> : null}
+      {update?.status === "ready" && updater.installUpdate && !(page === "settings" && settingsCategory === "about" && (wide || settingsDetailOpen)) ? <div role="status" className="update-banner">{desktop ? `新版本 ${update.version} 已就绪` : "网页有新版本"}<button type="button" onClick={() => void updater.installUpdate?.().catch((e: Error) => setError(userErrorText(e)))}>{desktop ? "立即更新" : "刷新页面"}</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
       {page === "agent" && modelSelection.error ? <div role="alert" className="error-banner">{modelSelection.error}<button onClick={modelSelection.dismissError} aria-label="关闭模型错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ProviderSettings state={state} refresh={reload} active={modelChooserOpen}/>}</div> : null}
@@ -1023,7 +1040,7 @@ export function AgentDesktop() {
           </form>
         </div>
         </div>
-      </> : <SettingsPage state={state} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
+      </> : <SettingsPage state={state} run={run} category={settingsCategory} onCategory={selectSettingsCategory} mobileDetail={settingsDetailOpen} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
     </main>
 
     {page === "agent" && bot ? <aside id="assistant-inspector" className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="关闭助手详情面板" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>

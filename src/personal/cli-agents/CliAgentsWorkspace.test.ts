@@ -1022,10 +1022,13 @@ describe("new session", () => {
   });
 
   it("lets a clean Git repo switch branches in place and carries the chosen branch as Worktree baseBranch", async () => {
-    const pickSelect = async (select: HTMLSelectElement, value: string) => act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const pickBranch = async (label: string, value: string, search?: string) => {
+      await click(document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`));
+      if (search) {
+        await typeInto(document.querySelector<HTMLInputElement>(`input[aria-label="搜索${label}"]`)!, search);
+      }
+      await click(document.querySelector<HTMLButtonElement>(`[role="listbox"][aria-label="${label}"] [role="option"][data-value="${value}"]`));
+    };
     const branchCapable = () => device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models", "dirs", "gitBranch"] } });
     fixture.fetchBranches.mockResolvedValue({ git: true, current: "main", branches: ["main", "dev", "release"] });
     fixture.startSession.mockResolvedValue({ key: "dev1:claude:new-br" });
@@ -1035,9 +1038,10 @@ describe("new session", () => {
     const options = page.querySelector<HTMLButtonElement>("button[aria-label=会话选项]")!;
     expect(options.textContent).toBe("main");
     await click(options);
-    const branchSelect = document.querySelector<HTMLSelectElement>("select[aria-label=选择分支]")!;
-    expect(branchSelect.value).toBe("main");
-    await pickSelect(branchSelect, "dev");
+    expect(document.querySelector("select")).toBeNull();
+    const branchTrigger = document.querySelector<HTMLButtonElement>("button[aria-label=选择分支]")!;
+    expect(branchTrigger.getAttribute("data-value")).toBe("main");
+    await pickBranch("选择分支", "dev", "de");
     expect(options.textContent).toBe("dev");
     await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();
@@ -1047,10 +1051,10 @@ describe("new session", () => {
     const page2 = await openNew();
     await flush();
     await click(page2.querySelector("button[aria-label=会话选项]"));
-    await pickSelect(document.querySelector<HTMLSelectElement>("select[aria-label=选择分支]")!, "release");
+    await pickBranch("选择分支", "release");
     const worktree = [...document.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input")!;
     await click(worktree);
-    expect(document.querySelector<HTMLSelectElement>("select[aria-label=基准分支]")!.value).toBe("release");
+    expect(document.querySelector<HTMLButtonElement>("button[aria-label=基准分支]")!.getAttribute("data-value")).toBe("release");
     await typeInto(document.querySelector<HTMLInputElement>("input[aria-label=新分支名称]")!, "nexagent/from-rel");
     await act(async () => { page2.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();
@@ -1063,10 +1067,6 @@ describe("new session", () => {
   });
 
   it("blocks in-place branch switch when working tree is dirty, while allowing current branch or Worktree", async () => {
-    const pickSelect = async (select: HTMLSelectElement, value: string) => act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
     const branchCapable = () => device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models", "dirs", "gitBranch"] } });
     fixture.fetchBranches.mockResolvedValue({ git: true, current: "main", dirty: true, branches: ["main", "dev"] });
     await mount({ devices: [branchCapable()], sessions: [session({ cwd: ALPHA })] });
@@ -1075,14 +1075,14 @@ describe("new session", () => {
     // staying on current branch is allowed even when dirty
     expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(false);
     await click(page.querySelector("button[aria-label=会话选项]"));
-    await pickSelect(document.querySelector<HTMLSelectElement>("select[aria-label=选择分支]")!, "dev");
+    await click(document.querySelector<HTMLButtonElement>("button[aria-label=选择分支]"));
+    await click(document.querySelector<HTMLButtonElement>('[role="listbox"][aria-label="选择分支"] [role="option"][data-value="dev"]'));
     expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(true);
     expect(page.querySelector(".na-new-path")?.textContent).toBe("当前目录有未提交改动，请先提交或改用 Worktree");
-    // enabling Worktree clears the dirty block and keeps dev as the base branch
-    const worktree = [...document.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input")!;
-    await click(worktree);
+    // one-click switch to Worktree clears the dirty block and keeps dev as the base branch
+    await click(document.querySelector<HTMLButtonElement>(".na-option-alert-action"));
     expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(false);
-    expect(document.querySelector<HTMLSelectElement>("select[aria-label=基准分支]")!.value).toBe("dev");
+    expect(document.querySelector<HTMLButtonElement>("button[aria-label=基准分支]")!.getAttribute("data-value")).toBe("dev");
   });
 
   it("keeps a failed start on the pane with a retry that reuses the worktree request", async () => {

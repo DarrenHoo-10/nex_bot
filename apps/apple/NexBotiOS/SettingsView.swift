@@ -1,12 +1,56 @@
 import SwiftUI
 import NexClientKit
 
-/// Global settings, pushed from the account menu. Five categories (chips), one shown at a time.
+/// Level 1 Settings screen: a clean grouped list of settings categories that push into their detail pages.
 struct SettingsView: View {
     let model: AppModel
     let workspace: WorkspaceStore
     @Environment(Navigation.self) private var nav
-    private var category: SettingsCategory { nav.settingsCategory }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(Array(SettingsCategory.allCases.enumerated()), id: \.element) { index, item in
+                    Button { nav.openSettings(item) } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: item.icon)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(Theme.brand)
+                                .frame(width: 32, height: 32)
+                                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            Text(item.rawValue)
+                                .font(.body)
+                                .foregroundStyle(Theme.foreground)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Theme.muted)
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if index < SettingsCategory.allCases.count - 1 {
+                        Divider().overlay(Theme.border).padding(.leading, 58)
+                    }
+                }
+            }
+            .cardStyle()
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 32)
+        }
+        .background(Theme.background)
+        .navigationTitle("设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarRole(.editor)
+        .toolbarBackground(Theme.background, for: .navigationBar)
+    }
+}
+
+/// Level 2 Settings screen: renders a single chosen category with native Back navigation to the Settings index.
+struct SettingsDetailView: View {
+    let model: AppModel
+    let workspace: WorkspaceStore
+    let category: SettingsCategory
     @State private var confirmLogout = false
     @State private var revoking: ClientSession?
     @State private var errorText: String?
@@ -14,8 +58,8 @@ struct SettingsView: View {
     @State private var sessionsFailed = false
     @State private var modelForm: ModelForm
 
-    init(model: AppModel, workspace: WorkspaceStore) {
-        self.model = model; self.workspace = workspace
+    init(model: AppModel, workspace: WorkspaceStore, category: SettingsCategory) {
+        self.model = model; self.workspace = workspace; self.category = category
         _modelForm = State(initialValue: ModelForm(config: workspace.state?.config))
     }
 
@@ -23,8 +67,6 @@ struct SettingsView: View {
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("设置").font(.largeTitle.weight(.bold))
-                chips
                 switch category {
                 case .account: account
                 case .model: SettingsModelView(workspace: workspace, form: modelForm)
@@ -34,7 +76,7 @@ struct SettingsView: View {
                 case .about: AboutSettingsView(workspace: workspace)
                 }
             }
-            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .leading)
             Color.clear.frame(height: 1).id("bottom")
         }
@@ -43,16 +85,19 @@ struct SettingsView: View {
         }
         }
         .background(Theme.background)
-        .navigationTitle("设置")
+        .navigationTitle(category.rawValue)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbarBackground(Theme.background, for: .navigationBar)
-        .onChange(of: category, initial: true) { _, category in
+        .onAppear {
             workspace.setResourceVisible("settings", category == .connectors || category == .devices)
         }
         .onDisappear { workspace.setResourceVisible("settings", false) }
-        .task { await load() }
-        .refreshable { await load(); await workspace.refresh() }
+        .task { if category == .account { await load() } }
+        .refreshable {
+            if category == .account { await load() }
+            await workspace.refresh()
+        }
         .errorAlert($errorText)
         .onDebugUI { cmd, _ in if cmd == "settingslogout" { confirmLogout = true } }
         .sheet(isPresented: $confirmLogout) { LogoutConfirmationSheet(model: model, isPresented: $confirmLogout) }
@@ -66,31 +111,10 @@ struct SettingsView: View {
         }
     }
 
-    private var chips: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-            ForEach(SettingsCategory.allCases, id: \.self) { item in
-                let selected = item == category
-                Button { nav.settingsCategory = item } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: item.icon)
-                        Text(item.rawValue).lineLimit(1).minimumScaleFactor(0.8)
-                        Spacer(minLength: 0)
-                    }
-                    .font(.footnote.weight(selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Theme.brand : Theme.muted)
-                    .padding(.horizontal, 14).padding(.vertical, 12)
-                    .background(selected ? Theme.brandSoft : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
     // MARK: Account
 
     private var account: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "账号与登录设备")
             HStack(spacing: 12) {
                 AccountAvatar(size: 44, initial: accountInitial(workspace))
                 Text(workspace.account?.displayName ?? "NexorAI 用户").font(.subheadline.weight(.semibold)).lineLimit(1)
@@ -116,16 +140,34 @@ struct SettingsView: View {
         }
     }
 
-    /// Sessions that are not revoked and have not expired.
+    /// Sessions that are not revoked and have not expired, current device first.
     private var activeSessions: [ClientSession] {
-        workspace.sessions.filter { $0.row.double("revoked_at") == nil && ($0.expiresAt.map { $0 > Date() } ?? true) }
+        workspace.sessions
+            .filter { $0.row.double("revoked_at") == nil && ($0.expiresAt.map { $0 > Date() } ?? true) }
+            .sorted { lhs, rhs in
+                let lc = lhs.sessionID == workspace.currentSessionID
+                let rc = rhs.sessionID == workspace.currentSessionID
+                if lc != rc { return lc }
+                return (lhs.expiresAt ?? .distantPast) > (rhs.expiresAt ?? .distantPast)
+            }
+    }
+
+    private static func deviceSymbol(_ name: String) -> String {
+        let lower = name.lowercased()
+        if lower.range(of: #"\b(android|iphone|ipad|ios|mobile|phone|pixel|huawei|xiaomi|redmi|honor|oppo|vivo|oneplus|samsung)\b|手机"#, options: .regularExpression) != nil {
+            return "iphone"
+        }
+        if lower.range(of: #"\b(browser|chrome|safari|firefox|edge|web)\b|浏览器"#, options: .regularExpression) != nil {
+            return "globe"
+        }
+        return "laptopcomputer"
     }
 
     private func sessionCard(_ session: ClientSession) -> some View {
         let current = session.sessionID == workspace.currentSessionID
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Image(systemName: "iphone").foregroundStyle(Theme.muted)
+                Image(systemName: Self.deviceSymbol(session.name)).foregroundStyle(Theme.muted)
                 Text(session.name.isEmpty ? "未命名设备" : session.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 if current {
                     Text("当前设备").font(.caption2.weight(.medium)).foregroundStyle(Theme.success)

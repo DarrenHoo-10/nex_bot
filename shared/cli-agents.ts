@@ -374,16 +374,20 @@ export function normalizeCliTaskItem(item: CliItem): CliItem {
   const trimmed = item.text.trimStart();
   if (trimmed.startsWith("<task-notification>")) {
     if (item.kind === "notice" && item.level === "info") return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(item.text));
-    if (item.kind === "user" && item.queued && !item.queuedByUser && !item.images?.length) {
+    if (item.kind === "user" && !item.queuedByUser && !item.images?.length) {
       const head = cliTaskHeader(item.text);
-      // Cached V1 queue items lack provenance. Require a runtime field as well as the task envelope.
-      if (taskIdInHeader(head) && /<(tool-use-id|output-file)>[^<]+<\/\1>/.test(head)) {
+      const hasTaskId = !!taskIdInHeader(head);
+      const hasToolUseId = /<tool-use-id>[^<]+<\/tool-use-id>/.test(head);
+      const hasOutputFile = /<output-file>[^<]+<\/output-file>/.test(head);
+      // Cached queued notifications (V1) or non-meta Claude task-notification records lack origin provenance.
+      // Require runtime metadata fields so plain user-pasted XML stays visible as user text.
+      if (hasTaskId && (item.queued ? (hasToolUseId || hasOutputFile) : (hasToolUseId && hasOutputFile))) {
         return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(head));
       }
     }
     return item;
   }
-  if (item.kind === "user" && item.queued && !item.images?.length) {
+  if (item.kind === "user" && !item.images?.length) {
     const peer = parseCliAgentMessage(item.text);
     if (peer) return cliAgentMessageItem(item.id, item.ts, peer);
   }

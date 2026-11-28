@@ -207,9 +207,9 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
             images = try c.decodeIfPresent([String].self, forKey: .images) ?? []
             queued = try c.decodeIfPresent(Bool.self, forKey: .queued) ?? false
             queuedByUser = try c.decodeIfPresent(Bool.self, forKey: .queuedByUser)
-            if queued, queuedByUser != true, images.isEmpty, Self.isLegacyTaskNotification(text) {
+            if queuedByUser != true, images.isEmpty, Self.isLegacyTaskNotification(text, queued: queued) {
                 kind = .notice; text = ""; queued = false
-            } else if queued, images.isEmpty, let peer = Self.parseLegacyAgentMessage(text) {
+            } else if images.isEmpty, let peer = Self.parseLegacyAgentMessage(text) {
                 kind = .tool; name = "AgentMessage"; input = peer.sender; status = .ok; output = peer.body
                 text = ""; queued = false; queuedByUser = nil
             }
@@ -230,12 +230,16 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
         }
     }
 
-    private static func isLegacyTaskNotification(_ text: String) -> Bool {
+    private static func isLegacyTaskNotification(_ text: String, queued: Bool) -> Bool {
         let header = String(text.prefix(2048))
         let payload = header.range(of: #"<(summary|result|output)>"#, options: .regularExpression)?.lowerBound ?? header.endIndex
         let fields = String(header[..<payload])
-        return fields.range(of: #"^\s*<task-notification>\s*<task-id>\s*[A-Za-z0-9_./:-]{1,128}\s*</task-id>"#, options: .regularExpression) != nil
-            && fields.range(of: #"<(tool-use-id|output-file)>[^<]+</\1>"#, options: .regularExpression) != nil
+        guard fields.range(of: #"^\s*<task-notification>\s*<task-id>\s*[A-Za-z0-9_./:-]{1,128}\s*</task-id>"#, options: .regularExpression) != nil else {
+            return false
+        }
+        let hasToolUseId = fields.range(of: #"<tool-use-id>[^<]+</tool-use-id>"#, options: .regularExpression) != nil
+        let hasOutputFile = fields.range(of: #"<output-file>[^<]+</output-file>"#, options: .regularExpression) != nil
+        return queued ? (hasToolUseId || hasOutputFile) : (hasToolUseId && hasOutputFile)
     }
 
     private static func xmlAttr(_ attrs: String, _ name: String) -> String? {

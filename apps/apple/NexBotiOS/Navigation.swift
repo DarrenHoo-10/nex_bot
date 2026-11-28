@@ -2,8 +2,8 @@ import SwiftUI
 import Observation
 import NexClientKit
 
-/// Categories of the Settings screen (chips at the top).
-enum SettingsCategory: String, CaseIterable {
+/// Categories of the Settings screen (index list pushing into each category detail screen).
+enum SettingsCategory: String, CaseIterable, Hashable {
     case account = "账号与登录设备", model = "模型", memory = "长期记忆", connectors = "连接器", devices = "设备", about = "关于"
     var icon: String {
         switch self { case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .connectors: "powerplug"; case .devices: "cpu"; case .about: "info.circle" }
@@ -17,11 +17,11 @@ enum AgentDetailTab: String, CaseIterable { case work = "工作", settings = "�
 /// Root is the contacts list; chats, the approvals list, settings and the other pages are pushed on top.
 @MainActor @Observable
 final class Navigation {
-    enum Route: Hashable { case chat(String), approvals, settings, agentDetail(String), todos, agentSessions }
+    enum Route: Hashable { case chat(String), approvals, settings, settingsCategory(SettingsCategory), agentDetail(String), todos, agentSessions }
     var path: [Route] = []
     /// The account menu sheet.
     var showMenu = false
-    /// The category Settings shows.
+    /// The last selected Settings category (kept for deep links & debug hooks).
     var settingsCategory = SettingsCategory.account
     /// The tab AgentDetailView shows.
     var detailTab = AgentDetailTab.work
@@ -44,10 +44,26 @@ final class Navigation {
     func openDevices() { openSettings(.devices) }
     /// Pushes the agent detail screen, optionally at a tab (e.g. 工作 for a file preview).
     func openAgentDetail(_ botID: String, tab: AgentDetailTab = .work) { detailTab = tab; push(.agentDetail(botID)) }
-    /// Pushes Settings at a category (e.g. 模型 from 配置 API Key).
-    func openSettings(_ category: SettingsCategory = .account) {
+    /// Pushes the Settings index (when `category` is nil) or pushes directly into a Settings category
+    /// with the Settings index underneath so Back returns to the index list.
+    func openSettings(_ category: SettingsCategory? = nil) {
+        showMenu = false
+        guard let category else {
+            if case .settingsCategory? = path.last {
+                path.removeLast()
+                if path.last != .settings { path.append(.settings) }
+            } else if path.last != .settings {
+                path.append(.settings)
+            }
+            return
+        }
         settingsCategory = category
-        if case .settings? = path.last { showMenu = false } else { push(.settings) }
+        if case .settingsCategory(let current)? = path.last {
+            if current != category { path[path.count - 1] = .settingsCategory(category) }
+            return
+        }
+        if path.last != .settings { path.append(.settings) }
+        path.append(.settingsCategory(category))
     }
 
     /// The screen for a route. Kept here so the route table has one owner.
@@ -62,6 +78,7 @@ final class Navigation {
         case .agentSessions:
             AgentSessionsView(model: agents, workspace: workspace) { id in workspace.select(id); self.openChat(id) }.toolbar(.visible, for: .navigationBar)
         case .settings: SettingsView(model: model, workspace: workspace)
+        case .settingsCategory(let category): SettingsDetailView(model: model, workspace: workspace, category: category)
         case .agentDetail(let id): AgentDetailView(workspace: workspace, botID: id)
         }
     }
