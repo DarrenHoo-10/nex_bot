@@ -13,6 +13,8 @@ private struct CliStartBody: Encodable {
     var worktreeBranch: String? = nil; var worktreeBaseBranch: String? = nil
     var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
     var permissions: String? = nil
+    var parentId: String? = nil
+    var forkFrom: String? = nil
 }
 private struct CliSendBody: Encodable {
     let key: String; let text: String
@@ -99,7 +101,7 @@ extension CoreClient {
     /// takes a while to check out: this request waits longer than the others.
     /// `permissions` is "full" or "ask"; nil leaves the computer's default (full access for a new session).
     public func cliStart(deviceId: String, engine: CliEngine, cwd: String, worktreeBranch: String? = nil, requestId: String? = nil, model: String? = nil, effort: String? = nil, createDir: Bool = false,
-                         permissions: CliPermissionMode? = nil, branch: String? = nil, worktreeBaseBranch: String? = nil) async throws -> CliSessionKey {
+                         permissions: CliPermissionMode? = nil, branch: String? = nil, worktreeBaseBranch: String? = nil, parentId: String? = nil, forkFrom: CliSessionKey? = nil) async throws -> CliSessionKey {
         let trimmedWorktree = worktreeBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
         let wtBranch = trimmedWorktree?.isEmpty == false ? trimmedWorktree : nil
         let trimmedBase = worktreeBaseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -110,7 +112,7 @@ extension CoreClient {
                                 worktreeBranch: wtBranch, worktreeBaseBranch: wtBase,
                                 requestId: wtBranch == nil ? nil : requestId,
                                 model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil, createDir: createDir && wtBranch == nil ? true : nil,
-                                permissions: permissions?.rawValue)
+                                permissions: permissions?.rawValue, parentId: parentId, forkFrom: forkFrom)
         let r: CliKeyResult = try await send(request(Self.cliBase + "/start", query: [], body: JSONEncoder().encode(body), timeout: 60), as: CliKeyResult.self)
         return r.key
     }
@@ -128,6 +130,13 @@ extension CoreClient {
     /// `GET /api/cli-agents/models`: the rows of that CLI's own `/model` picker on the computer.
     public func cliModels(deviceId: String, engine: CliEngine) async throws -> CliModelCatalog {
         try await get(Self.cliBase + "/models", query: [("deviceId", deviceId), ("engine", engine.rawValue)])
+    }
+
+    /// `GET /api/cli-agents/search?q=`: sessions whose conversation matches all words of `query`, newest activity first.
+    public func cliSearch(query: String) async throws -> [CliSearchHit] {
+        struct Body: Decodable, Sendable { let hits: LossyList<CliSearchHit>? }
+        let body: Body = try await get(Self.cliBase + "/search", query: [("q", query)], timeout: 30)
+        return body.hits?.values ?? []
     }
 
     /// Resumes a stopped session in a nex_bot terminal. The resumed session may have a new key.
@@ -159,6 +168,13 @@ extension CoreClient {
 
     @discardableResult public func cliSend(key: CliSessionKey, text: String) async throws -> CliSendResult {
         try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text), timeout: 90)
+    }
+
+    /// Idempotent workbench send using stable `clientMessageId` and `requestId` so retries never duplicate delivery.
+    @discardableResult public func cliSendIdempotent(key: CliSessionKey, text: String, clientMessageId: String, requestId: String) async throws -> CliSendResult {
+        guard text.utf8.count <= Self.cliMaxSendBytes else { throw CoreError(kind: .http, message: "内容太长", status: 400, code: "too_large") }
+        let body = CliSendBody(key: key, text: text, delivery: "send", clientMessageId: clientMessageId, requestId: requestId)
+        return try await post(Self.cliBase + "/send", body: body, timeout: 90)
     }
 
     /// The first message uses the same outbox request even if its HTTP acknowledgement was lost.
@@ -253,6 +269,64 @@ extension CoreClient {
     /// Permanently deletes a native session on its computer via Core.
     public func cliDeleteSession(key: CliSessionKey) async throws {
         try await post(Self.cliBase + "/sessions/delete", body: CliKeyBody(key: key))
+    }
+
+    // MARK: Workbench sessions, Git & Notes
+
+    public func cliBranchSession(parentKey: CliSessionKey, title: String, requestId: String = UUID().uuidString, kind: CliWorkbenchKind = .fork) async throws -> CliBranchResult {
+        struct Body: Encodable { let parentKey: String; let requestId: String; let title: String?; let kind: String? }
+        return try await post(Self.cliBase + "/sessions/branch", body: Body(parentKey: parentKey, requestId: requestId, title: title.isEmpty ? nil : title, kind: kind == .side ? "side" : nil))
+    }
+
+    public func cliRenameWorkbenchSession(id: String? = nil, expectedVersion: Int? = nil, key: CliSessionKey? = nil, title: String) async throws {
+        struct Body: Encodable { let id: String?; let expectedVersion: Int?; let key: String?; let title: String }
+        try await post(Self.cliBase + "/sessions/rename", body: Body(id: id, expectedVersion: expectedVersion, key: id == nil ? key : nil, title: title))
+    }
+
+    public func cliArchiveWorkbenchSession(id: String? = nil, expectedVersion: Int? = nil, key: CliSessionKey? = nil, archived: Bool) async throws {
+        struct Body: Encodable { let id: String?; let expectedVersion: Int?; let key: String? }
+        try await post(Self.cliBase + (archived ? "/sessions/archive" : "/sessions/restore"), body: Body(id: id, expectedVersion: expectedVersion, key: id == nil ? key : nil))
+    }
+
+    public func cliDeleteWorkbenchSession(id: String? = nil, expectedVersion: Int? = nil, key: CliSessionKey? = nil) async throws {
+        struct Body: Encodable { let id: String?; let expectedVersion: Int?; let key: String? }
+        try await post(Self.cliBase + "/sessions/delete", body: Body(id: id, expectedVersion: expectedVersion, key: id == nil ? key : nil))
+    }
+
+    public func cliGit(key: CliSessionKey) async throws -> CliGitInfo {
+        try await get(Self.cliBase + "/sessions/git", query: [("key", key)], timeout: 30)
+    }
+
+    public func cliNotes(key: CliSessionKey) async throws -> [CliNote] {
+        struct Body: Decodable, Sendable { let notes: LossyList<CliNote>? }
+        let body: Body = try await get(Self.cliBase + "/notes", query: [("key", key)], timeout: 30)
+        return body.notes?.values ?? []
+    }
+
+    public func cliCreateNote(key: CliSessionKey, id: String = UUID().uuidString, message: String, quote: String, body: String, num: Int, start: Int? = nil, end: Int? = nil) async throws -> CliNote {
+        struct Req: Encodable {
+            let key: String; let id: String; let message: String; let quote: String; let body: String; let num: Int
+            let start: Int?; let end: Int?
+        }
+        struct Res: Decodable, Sendable { let note: CliNote }
+        let validRange: (Int, Int)? = {
+            guard let s = start, let e = end, s >= 0, e > s else { return nil }
+            return (s, e)
+        }()
+        let res: Res = try await post(Self.cliBase + "/notes", body: Req(key: key, id: id, message: message, quote: quote, body: body, num: num, start: validRange?.0, end: validRange?.1))
+        return res.note
+    }
+
+    public func cliUpdateNote(id: String, expectedVersion: Int, body: String) async throws -> CliNote {
+        struct Req: Encodable { let id: String; let expectedVersion: Int; let body: String }
+        struct Res: Decodable, Sendable { let note: CliNote }
+        let res: Res = try await post(Self.cliBase + "/notes/update", body: Req(id: id, expectedVersion: expectedVersion, body: body))
+        return res.note
+    }
+
+    public func cliDeleteNote(id: String, expectedVersion: Int) async throws {
+        struct Req: Encodable { let id: String; let expectedVersion: Int }
+        try await post(Self.cliBase + "/notes/delete", body: Req(id: id, expectedVersion: expectedVersion))
     }
 
     /// Allow or deny a pending request. A question answer maps the question text to the chosen labels joined by ", ".

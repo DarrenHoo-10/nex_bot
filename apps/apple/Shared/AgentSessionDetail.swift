@@ -66,6 +66,9 @@ struct AgentSessionDetail: View {
     @State private var failuresSeen: Set<String>?
     @State private var openedAt = Date()
     @State private var expandedActivities: Set<String> = []
+    @State private var inspectorOpen = false
+    @State private var inspectorTab: AgentWorkbenchTab = .git
+    @State private var noteDraft: AgentNoteDraft?
 
     private var session: CliSession? { model.sessions.first { $0.key == key } }
 
@@ -118,7 +121,7 @@ struct AgentSessionDetail: View {
         let shown = attach ? tab : .chat
         // handled cards show their outcome for a moment, then leave the space above the box
         let cards = model.shownCards(key)
-        return VStack(spacing: 0) {
+        let mainColumn = VStack(spacing: 0) {
             header(session, attach: attach, shown: shown)
             Group {
                 if shown == .terminal {
@@ -128,6 +131,11 @@ struct AgentSessionDetail: View {
                                     branch: workspace.bots.isEmpty ? nil : { itemId in
                                         forkItemId = itemId
                                         forking = true
+                                    },
+                                    onNote: { item in
+                                        noteDraft = AgentNoteDraft(messageId: item.id, quote: item.text)
+                                        inspectorTab = .notes
+                                        inspectorOpen = true
                                     })
                 }
             }
@@ -147,13 +155,32 @@ struct AgentSessionDetail: View {
             }
             AgentComposer(model: model, session: session, pending: $pending, guides: $guides) { next in onKeyChange(next) }
         }
+        #if os(macOS)
+        return HStack(spacing: 0) {
+            mainColumn
+            if inspectorOpen {
+                Divider()
+                AgentWorkbenchInspector(model: model, session: session, tab: $inspectorTab, noteDraft: $noteDraft) {
+                    inspectorOpen = false
+                }
+                .frame(width: 288)
+                .background(Theme.background.opacity(0.6))
+            }
+        }
+        #else
+        return mainColumn.sheet(isPresented: $inspectorOpen) {
+            AgentWorkbenchInspector(model: model, session: session, tab: $inspectorTab, noteDraft: $noteDraft) {
+                inspectorOpen = false
+            }
+        }
+        #endif
     }
 
     private func header(_ session: CliSession, attach: Bool, shown: AgentTab) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(CliSessions.title(session)).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    Text(model.displayTitle(for: session)).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                     Text([session.engine.label, CliSessions.projectLabel(session), session.gitBranch ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
                 }
@@ -174,8 +201,17 @@ struct AgentSessionDetail: View {
     private func actions(_ session: CliSession) -> some View {
         let canFork = !workspace.bots.isEmpty
         #if os(macOS)
+        Button {
+            if inspectorOpen && inspectorTab == .git { inspectorOpen = false } else { inspectorTab = .git; inspectorOpen = true }
+        } label: {
+            Image(systemName: "sidebar.right")
+                .foregroundStyle(inspectorOpen ? Theme.nexAgentAccent : Theme.muted)
+        }
+        .buttonStyle(.bordered)
+        .help(inspectorOpen ? "收起工作区面板" : "打开 Git / 笔记 / 侧聊面板")
         if canFork { Button("交给助手") { forking = true }.buttonStyle(.bordered) }
         #else
+        Button { inspectorOpen = true } label: { Image(systemName: "info.circle") }
         if canFork {
             Menu {
                 Button("交给助手") { forking = true }
@@ -253,6 +289,7 @@ private struct AgentTerminalPane: View {
                         style: style,
                         transformInput: transformInput
                     )
+                    .id(ObjectIdentifier(controller))
                     .padding(6)
                     #else
                     CliTerminalView(
@@ -264,6 +301,7 @@ private struct AgentTerminalPane: View {
                         transformInput: transformInput,
                         onPinchFontSize: { next in fontSize = Double(next) }
                     )
+                    .id(ObjectIdentifier(controller))
                     .padding(6)
                     #endif
                 }
@@ -328,6 +366,7 @@ private struct AgentTerminalPane: View {
         }
         .onAppear { create() }
         .onChange(of: model.connected) { _, _ in create() }
+        .onChange(of: model.streamRevision) { _, _ in recreate() }
         .onDisappear {
             toastTask?.cancel()
             controller?.stop()
@@ -363,6 +402,16 @@ private struct AgentTerminalPane: View {
 
     private func create() {
         guard controller == nil, let made = model.makeTerminal(key: key, mode: .control) else { return }
+        controller = made
+        model.attach(made)
+    }
+
+    private func recreate() {
+        let previousMode: CliTermMode = controller?.wantsControl == false ? .observe : .control
+        controller?.stop()
+        model.attach(nil)
+        controller = nil
+        guard let made = model.makeTerminal(key: key, mode: previousMode) else { return }
         controller = made
         model.attach(made)
     }
@@ -694,6 +743,7 @@ private struct AgentTranscript: View {
     /// messages sent from here that the records do not hold yet
     var pending: [AgentPendingSend] = []
     var branch: ((String) -> Void)?
+    var onNote: ((CliItem) -> Void)?
     @State private var lateReceipt: String?
 
     var body: some View {
@@ -845,7 +895,7 @@ private struct AgentTranscript: View {
         let state = guide.flatMap { guide in model.queues[key]?.entries.first { $0.id == guide.id }?.status }
         return AgentBlockView(block: block, guideStatus: state == "failed" ? "发送失败" : (state == "uncertain" || guide?.uncertain == true ? "待确认" : nil), expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: translate && completed.contains(block.id) && !guides.contains(where: { $0.tail?.id == block.id }) ? { item in
         try await model.translateReply(key, item: item)
-        } : nil, actions: conclusions.contains(block.id), branch: conclusions.contains(block.id) ? branch : nil)
+        } : nil, actions: conclusions.contains(block.id), branch: conclusions.contains(block.id) ? branch : nil, onNote: conclusions.contains(block.id) ? onNote : nil)
     }
 
 }
@@ -858,6 +908,7 @@ private struct AgentBlockView: View {
     var translate: ((CliItem) async throws -> String?)?
     var actions = true
     var branch: ((String) -> Void)?
+    var onNote: ((CliItem) -> Void)?
 
     var body: some View {
         switch block {
@@ -871,7 +922,7 @@ private struct AgentBlockView: View {
                 }
             }
         case .assistant(let item):
-            AgentReplyText(item: item, load: loadImage, translate: translate, actions: actions, branch: branch)
+            AgentReplyText(item: item, load: loadImage, translate: translate, actions: actions, branch: branch, onNote: onNote)
         case .activity(let id, let items):
             AgentActivity(items: items, open: Binding(get: { expandedActivities.contains(id) }, set: { open in
                 if open { expandedActivities.insert(id) }
@@ -889,6 +940,7 @@ private struct AgentReplyText: View {
     var translate: ((CliItem) async throws -> String?)?
     var actions = true
     var branch: ((String) -> Void)?
+    var onNote: ((CliItem) -> Void)?
     @State private var translated: String?
     @State private var original = false
     @State private var failed = false
@@ -925,6 +977,10 @@ private struct AgentReplyText: View {
                     if let branch {
                         Button { branch(item.id) } label: { Label("分支到新聊天", systemImage: "arrow.triangle.branch") }
                             .help("分支到新聊天")
+                    }
+                    if let onNote {
+                        Button { onNote(item) } label: { Label("记笔记", systemImage: "note.text.badge.plus") }
+                            .help("添加到会话笔记")
                     }
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Theme.muted)
@@ -1140,7 +1196,7 @@ private struct AgentToolRow: View {
 
 // MARK: Requests — Scheme E Floating Glass Island
 
-private struct AgentRequestCard: View {
+struct AgentRequestCard: View {
     let model: CliAgentsModel
     let record: CliRequestRecord
     @State private var selection: CliRequestStore.Selection = [:]

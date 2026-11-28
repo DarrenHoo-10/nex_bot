@@ -21,70 +21,71 @@ struct ContactsList: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
-            searchField
-            Button { ui.todosVisible = true } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "checklist").font(.system(size: 17))
-                    if !collapsed { Text("待办").font(.system(size: 13, weight: .medium)); Spacer() }
-                }
-                .foregroundStyle(ui.todosVisible ? Theme.identityAccent : Theme.foreground)
-                .padding(12).frame(maxWidth: .infinity)
-                .background(ui.todosVisible ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).accessibilityLabel("待办").disabled(workspace.state == nil)
-            Button { ui.agentsVisible = true } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "terminal").font(.system(size: 17))
-                    if !collapsed {
-                        Text("Agent 会话").font(.system(size: 13, weight: .medium)); Spacer()
-                        if agents.waitingCount > 0 {
-                            Text("\(agents.waitingCount)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 1).background(Theme.approval, in: Capsule())
-                        }
-                    }
-                }
-                .foregroundStyle(ui.agentsVisible ? Theme.identityAccent : Theme.foreground)
-                .padding(12).frame(maxWidth: .infinity)
-                .background(ui.agentsVisible ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).accessibilityLabel("Agent 会话").disabled(workspace.state == nil)
-            if !collapsed {
-                HStack {
-                    Text("对话")
-                    Spacer()
-                    Text("\(workspace.bots.count)")
-                }
-                .font(.system(size: 11)).foregroundStyle(Theme.muted)
-                .padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 6)
+            if collapsed {
+                modeToggleCollapsed
             }
-
-            if workspace.state == nil {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    if !collapsed { Text(workspace.notice ?? "正在连接…").font(.system(size: 12)).foregroundStyle(Theme.muted) }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if searching {
-                ConversationSearchResults(workspace: workspace, query: trimmedQuery)
-                    .id(SearchIdentity(query: trimmedQuery, sync: workspace.sync))
+            if ui.agentsVisible && !collapsed {
+                AgentSessionList(
+                    model: agents,
+                    selected: ui.agentComposing == nil ? agents.selectedKey : nil,
+                    onSelect: { key in ui.agentComposing = nil; agents.select(key) },
+                    onCreate: { ui.agentComposing = AgentNewTarget(deviceId: agents.selected?.deviceId, cwd: agents.selected?.cwd) },
+                    onNew: { ui.agentComposing = AgentNewTarget(deviceId: $0, cwd: $1) },
+                    onHide: { session, hidden in
+                        Task { try? await agents.setHidden(session.key, hidden) }
+                    }
+                )
             } else {
-                let g = groups
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        section("置顶", g.pinned)
-                        section("我的 Agent", g.rest)
-                        if g.pinned.isEmpty && g.rest.isEmpty && !collapsed {
-                            VStack(spacing: 8) {
-                                Text("你的 Agent 会出现在这里").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                                Button { AgentUI.shared.createAgent() } label: {
-                                    Text("创建第一个 Agent").font(.system(size: 12)).foregroundStyle(Theme.brand).contentShape(Rectangle())
+                searchField
+                Button { ui.todosVisible = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checklist").font(.system(size: 17))
+                        if !collapsed { Text("待办").font(.system(size: 13, weight: .medium)); Spacer() }
+                    }
+                    .foregroundStyle(ui.todosVisible ? Theme.identityAccent : Theme.foreground)
+                    .padding(12).frame(maxWidth: .infinity)
+                    .background(ui.todosVisible ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).accessibilityLabel("待办").disabled(workspace.state == nil)
+                if !collapsed {
+                    HStack {
+                        Text("对话")
+                        Spacer()
+                        Text("\(workspace.bots.count)")
+                    }
+                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    .padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 6)
+                }
+
+                if workspace.state == nil {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        if !collapsed { Text(workspace.notice ?? "正在连接…").font(.system(size: 12)).foregroundStyle(Theme.muted) }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if searching {
+                    ConversationSearchResults(workspace: workspace, query: trimmedQuery)
+                        .id(SearchIdentity(query: trimmedQuery, sync: workspace.sync))
+                } else {
+                    let g = groups
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            section("置顶", g.pinned)
+                            section("我的 Agent", g.rest)
+                            if g.pinned.isEmpty && g.rest.isEmpty && !collapsed {
+                                VStack(spacing: 8) {
+                                    Text("你的 Agent 会出现在这里").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                                    Button { AgentUI.shared.createAgent() } label: {
+                                        Text("创建第一个 Agent").font(.system(size: 12)).foregroundStyle(Theme.brand).contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity).padding(.top, 28)
                             }
-                            .frame(maxWidth: .infinity).padding(.top, 28)
                         }
                     }
+                    .scrollIndicators(.never)
+                    .padding(.horizontal, collapsed ? -11 : 0)
+                    if collapsed { dockAdd }
                 }
-                .scrollIndicators(.never)
-                .padding(.horizontal, collapsed ? -11 : 0)
-                if collapsed { dockAdd }
             }
             Spacer(minLength: 0)
             accountCard
@@ -108,17 +109,82 @@ struct ContactsList: View {
     private var topBar: some View {
         HStack(spacing: 6) {
             if !collapsed {
-                BrandMark(size: 26)
-                Text("NexBot").font(.system(size: 15, weight: .bold)).tracking(-0.3).padding(.leading, 3)
+                modeSwitcher
                 Spacer(minLength: 0)
-                roundButton("plus", "添加 Agent") { AgentUI.shared.createAgent() }.disabled(workspace.state == nil)
+                if !ui.agentsVisible {
+                    roundButton("plus", "添加 Agent") { AgentUI.shared.createAgent() }.disabled(workspace.state == nil)
+                }
             }
             roundButton(collapsed ? "sidebar.left" : "sidebar.leading", collapsed ? "展开左栏" : "收起左栏") { ui.railOpen.toggle() }
                 .accessibilityIdentifier("rail-toggle")
         }
         .frame(maxWidth: .infinity, alignment: collapsed ? .center : .leading)
-        .padding(.leading, collapsed ? 0 : 6).padding(.top, 44).padding(.bottom, 8)
+        .padding(.leading, collapsed ? 0 : 4).padding(.top, 44).padding(.bottom, 8)
         .frame(height: 92)
+    }
+
+    /// Dual-brand switcher matching Web/Windows (`NexBot` / `NexAgent`).
+    private var modeSwitcher: some View {
+        HStack(spacing: 2) {
+            modePill(title: "NexBot", agent: false, active: !ui.agentsVisible, badge: 0) {
+                ui.agentsVisible = false
+            }
+            modePill(title: "NexAgent", agent: true, active: ui.agentsVisible, badge: !ui.agentsVisible ? agents.waitingCount : 0) {
+                ui.agentsVisible = true
+            }
+        }
+        .padding(3)
+        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .disabled(workspace.state == nil)
+    }
+
+    private func modePill(title: String, agent: Bool, active: Bool, badge: Int, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                BrandMark(size: 16, agent: agent)
+                Text(title)
+                    .font(.system(size: 12, weight: active ? .semibold : .medium))
+                    .foregroundStyle(active ? (agent ? Theme.nexAgentAccent : Theme.foreground) : Theme.muted)
+                    .lineLimit(1)
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4.5).padding(.vertical, 0.5)
+                        .background(Theme.approval, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 7).padding(.vertical, 5)
+            .background(active ? Theme.card : .clear, in: RoundedRectangle(cornerRadius: 8.5, style: .continuous))
+            .shadow(color: active ? Theme.shadowInk.opacity(0.06) : .clear, radius: 3, y: 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("切换到 \(title)")
+    }
+
+    private var modeToggleCollapsed: some View {
+        Button { ui.agentsVisible.toggle() } label: {
+            ZStack(alignment: .topTrailing) {
+                BrandMark(size: 22, agent: !ui.agentsVisible)
+                    .frame(width: 40, height: 36)
+                    .background(Theme.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                if !ui.agentsVisible && agents.waitingCount > 0 {
+                    Text("\(agents.waitingCount)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Theme.approval, in: Capsule())
+                        .offset(x: 4, y: -4)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(ui.agentsVisible ? "切换到 NexBot" : "切换到 NexAgent")
+        .accessibilityLabel(ui.agentsVisible ? "切换到 NexBot" : "切换到 NexAgent")
+        .disabled(workspace.state == nil)
+        .padding(.bottom, 6)
     }
 
     private func roundButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {

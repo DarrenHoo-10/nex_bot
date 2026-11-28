@@ -56,6 +56,7 @@ interface Connection {
   offList: (() => void) | null;
   offSummary: (() => void) | null;
   offRequests: (() => void) | null;
+  offWorkbench: (() => void) | null;
   sink: StreamSink;
 }
 
@@ -131,7 +132,7 @@ export class CliAgentStream {
 
   private attach(ws: WebSocket, sessionId: string, token: string) {
     const connection: Connection = {
-      ws, sessionId, token, lastSeen: Date.now(), subscriptions: new Map(), offList: null, offSummary: null, offRequests: null,
+      ws, sessionId, token, lastSeen: Date.now(), subscriptions: new Map(), offList: null, offSummary: null, offRequests: null, offWorkbench: null,
       sink: undefined as unknown as StreamSink,
     };
     connection.sink = this.sinkFor(connection);
@@ -149,6 +150,7 @@ export class CliAgentStream {
     connection.offList?.();
     connection.offSummary?.();
     connection.offRequests?.();
+    connection.offWorkbench?.();
     this.hub.closeSink(connection.sink);
   }
 
@@ -212,8 +214,10 @@ export class CliAgentStream {
     connection.offList?.();
     connection.offSummary?.();
     connection.offRequests?.();
+    connection.offWorkbench?.();
     connection.offList = this.hub.onList((delta) => this.send(connection, { type: "list.delta", ...delta }));
     connection.offSummary = this.hub.onSummary((summary) => this.send(connection, { type: "summary", ...summary }));
+    connection.offWorkbench = this.hub.onWorkbench((message) => this.send(connection, message));
     const { devices, sessions } = this.hub.list();
     const [first = [], ...rest] = groups(sessions);
     this.send(connection, { type: "list", devices, sessions: first });

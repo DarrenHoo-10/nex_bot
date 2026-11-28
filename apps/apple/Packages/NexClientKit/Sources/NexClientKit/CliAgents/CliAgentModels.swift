@@ -64,6 +64,10 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public var repoRoot: String?
     /// What the last request carried; absent until the CLI wrote one down.
     public var context: CliContextUsage?
+    /// Native session ID of the parent when forked natively on the device.
+    public var forkOf: String?
+    /// Native session ID of the parent when this session is a native side-chat (`/btw`).
+    public var sideOf: String?
     /// Epoch milliseconds.
     public var lastActivityAt: Int
     /// True when the native harness has archived this session.
@@ -71,19 +75,31 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public var writerUnknown: Bool
     public var id: String { key }
 
+    public var nativeForkParentKey: CliSessionKey? {
+        guard let forkOf, !forkOf.isEmpty else { return nil }
+        return "\(deviceId):\(engine.rawValue):\(forkOf)"
+    }
+
+    public var nativeSideParentKey: CliSessionKey? {
+        guard let sideOf, !sideOf.isEmpty else { return nil }
+        return "\(deviceId):\(engine.rawValue):\(sideOf)"
+    }
+
     public init(key: CliSessionKey, deviceId: String, hidden: Bool = false, archived: Bool = false, online: Bool = true, engine: CliEngine = .claude, nativeId: String,
                 configDir: String = "", cwd: String, title: String = "", gitBranch: String? = nil, state: CliSessionState = .idle,
                 waitingFor: String? = nil, liveIn: CliLiveIn? = nil, terminal: String? = nil, model: String? = nil, cliVersion: String? = nil,
-                lastActivityAt: Int = 0, writerUnknown: Bool = false, repoRoot: String? = nil, context: CliContextUsage? = nil, sendVia: String? = nil) {
+                lastActivityAt: Int = 0, writerUnknown: Bool = false, repoRoot: String? = nil, context: CliContextUsage? = nil, sendVia: String? = nil,
+                forkOf: String? = nil, sideOf: String? = nil) {
         self.key = key; self.deviceId = deviceId; self.hidden = hidden; self.archived = archived; self.online = online; self.engine = engine; self.nativeId = nativeId
         self.configDir = configDir; self.cwd = cwd; self.title = title; self.gitBranch = gitBranch; self.state = state; self.waitingFor = waitingFor
         self.liveIn = liveIn; self.terminal = terminal; self.model = model; self.cliVersion = cliVersion; self.lastActivityAt = lastActivityAt
         self.writerUnknown = writerUnknown; self.repoRoot = repoRoot; self.context = context; self.sendVia = sendVia
+        self.forkOf = forkOf; self.sideOf = sideOf
     }
 
     enum CodingKeys: String, CodingKey {
         case key, deviceId, hidden, archived, online, engine, nativeId, configDir, cwd, title, gitBranch, state, waitingFor, liveIn, terminal, model
-        case cliVersion, lastActivityAt, writerUnknown, repoRoot, context, sendVia
+        case cliVersion, lastActivityAt, writerUnknown, repoRoot, context, sendVia, forkOf, sideOf
     }
 
     public init(from decoder: Decoder) throws {
@@ -111,6 +127,8 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
         repoRoot = try? c.decodeIfPresent(String.self, forKey: .repoRoot)
         // a usage this side cannot read is left out rather than dropping the row
         context = try? c.decodeIfPresent(CliContextUsage.self, forKey: .context)
+        forkOf = try? c.decodeIfPresent(String.self, forKey: .forkOf)
+        sideOf = try? c.decodeIfPresent(String.self, forKey: .sideOf)
     }
 }
 
@@ -130,17 +148,26 @@ public struct CliCapability: Sendable, Hashable, Decodable {
     public var agyNeedsUpdate: Bool
     /// what the executor does beyond the first protocol (`launchOptions`, `models`, …); empty on older ones
     public var features: [String]
-    public init(engines: [CliEngine], terminal: CliTerminalCapability, features: [String] = [], agyNeedsUpdate: Bool = false) {
-        self.engines = engines; self.terminal = terminal; self.features = features; self.agyNeedsUpdate = agyNeedsUpdate
+    /// engines this executor can fork directly
+    public var forkEngines: [CliEngine]?
+    public init(engines: [CliEngine], terminal: CliTerminalCapability, features: [String] = [], agyNeedsUpdate: Bool = false, forkEngines: [CliEngine]? = nil) {
+        self.engines = engines; self.terminal = terminal; self.features = features; self.agyNeedsUpdate = agyNeedsUpdate; self.forkEngines = forkEngines
     }
-    enum CodingKeys: String, CodingKey { case engines, terminal, features, agyNeedsUpdate }
+    enum CodingKeys: String, CodingKey { case engines, terminal, features, agyNeedsUpdate, forkEngines }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         engines = try c.decode(LossyList<CliEngine>.self, forKey: .engines).values
         terminal = try c.decode(CliTerminalCapability.self, forKey: .terminal)
         features = (try? c.decodeIfPresent(LossyList<String>.self, forKey: .features))?.values ?? []
         agyNeedsUpdate = (try? c.decode(Bool.self, forKey: .agyNeedsUpdate)) ?? false
+        forkEngines = (try? c.decodeIfPresent(LossyList<CliEngine>.self, forKey: .forkEngines))?.values
     }
+}
+
+public struct CliSearchHit: Sendable, Hashable, Decodable {
+    public var key: CliSessionKey
+    public var snippet: String
+    public init(key: CliSessionKey, snippet: String) { self.key = key; self.snippet = snippet }
 }
 
 public struct CliDevice: Sendable, Hashable, Identifiable, Decodable {
@@ -386,15 +413,134 @@ public struct CliSnapshot: Sendable, Decodable {
     public var devices: [CliDevice]
     public var sessions: [CliSession]
     public var requests: [CliRequest]
-    public init(devices: [CliDevice] = [], sessions: [CliSession] = [], requests: [CliRequest] = []) {
-        self.devices = devices; self.sessions = sessions; self.requests = requests
+    public var workbench: [CliWorkbenchSession]
+    public var deletedKeys: [CliSessionKey]
+    public init(devices: [CliDevice] = [], sessions: [CliSession] = [], requests: [CliRequest] = [], workbench: [CliWorkbenchSession] = [], deletedKeys: [CliSessionKey] = []) {
+        self.devices = devices; self.sessions = sessions; self.requests = requests; self.workbench = workbench; self.deletedKeys = deletedKeys
     }
-    enum CodingKeys: String, CodingKey { case devices, sessions, requests }
+    enum CodingKeys: String, CodingKey { case devices, sessions, requests, workbench, deletedKeys }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         devices = (try? c.decodeIfPresent(LossyList<CliDevice>.self, forKey: .devices))?.values ?? []
         sessions = (try? c.decodeIfPresent(LossyList<CliSession>.self, forKey: .sessions))?.values ?? []
         requests = (try? c.decodeIfPresent(LossyList<CliRequest>.self, forKey: .requests))?.values ?? []
+        workbench = (try? c.decodeIfPresent(LossyList<CliWorkbenchSession>.self, forKey: .workbench))?.values ?? []
+        deletedKeys = (try? c.decodeIfPresent(LossyList<String>.self, forKey: .deletedKeys))?.values ?? []
+    }
+}
+
+public enum CliWorkbenchKind: String, Sendable, Hashable, Codable { case main, fork, side }
+
+public struct CliWorkbenchSession: Sendable, Hashable, Identifiable, Decodable {
+    public var id: String
+    public var sessionKey: CliSessionKey?
+    public var deviceId: String?
+    public var engine: CliEngine?
+    public var cwd: String
+    public var parentId: String?
+    public var kind: CliWorkbenchKind
+    public var title: String
+    public var archived: Bool
+    public var deleted: Bool
+    public var version: Int
+
+    public init(id: String, sessionKey: CliSessionKey? = nil, deviceId: String? = nil, engine: CliEngine? = nil, cwd: String = "",
+                parentId: String? = nil, kind: CliWorkbenchKind = .main, title: String = "", archived: Bool = false, deleted: Bool = false, version: Int = 0) {
+        self.id = id; self.sessionKey = sessionKey; self.deviceId = deviceId; self.engine = engine; self.cwd = cwd
+        self.parentId = parentId; self.kind = kind; self.title = title; self.archived = archived; self.deleted = deleted; self.version = version
+    }
+
+    enum CodingKeys: String, CodingKey { case id, sessionKey, deviceId, engine, cwd, parentId, kind, title, archived, deleted, version }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        sessionKey = try? c.decodeIfPresent(String.self, forKey: .sessionKey)
+        deviceId = try? c.decodeIfPresent(String.self, forKey: .deviceId)
+        engine = try? c.decodeIfPresent(CliEngine.self, forKey: .engine)
+        cwd = (try? c.decodeIfPresent(String.self, forKey: .cwd)) ?? ""
+        parentId = try? c.decodeIfPresent(String.self, forKey: .parentId)
+        kind = (try? c.decodeIfPresent(CliWorkbenchKind.self, forKey: .kind)) ?? .main
+        title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        archived = (try? c.decodeIfPresent(Bool.self, forKey: .archived)) ?? false
+        deleted = (try? c.decodeIfPresent(Bool.self, forKey: .deleted)) ?? false
+        version = (try? c.decodeIfPresent(Int.self, forKey: .version)) ?? 0
+    }
+}
+
+public struct CliWorkbenchMeta: Sendable, Hashable {
+    public var id: String
+    public var version: Int
+    public var title: String
+    public var parent: CliSessionKey?
+    public var kind: CliWorkbenchKind
+    public var archived: Bool
+    public var deleted: Bool
+
+    public init(id: String, version: Int, title: String, parent: CliSessionKey? = nil, kind: CliWorkbenchKind = .main, archived: Bool = false, deleted: Bool = false) {
+        self.id = id; self.version = version; self.title = title; self.parent = parent; self.kind = kind; self.archived = archived; self.deleted = deleted
+    }
+}
+
+public struct CliBranchResult: Sendable, Hashable, Decodable {
+    public var id: String
+    public var parentId: String?
+    public var version: Int
+}
+
+public struct CliGitInfo: Sendable, Hashable, Decodable {
+    public var source: String
+    public var project: String?
+    public var worktree: String?
+    public var branch: String?
+    public var head: String?
+    public var files: [String]
+    public var added: Int?
+    public var removed: Int?
+    public var error: String?
+
+    enum CodingKeys: String, CodingKey { case source, project, worktree, branch, head, files, added, removed, error }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = (try? c.decode(String.self, forKey: .source)) ?? "none"
+        project = try? c.decodeIfPresent(String.self, forKey: .project)
+        worktree = try? c.decodeIfPresent(String.self, forKey: .worktree)
+        branch = try? c.decodeIfPresent(String.self, forKey: .branch)
+        head = try? c.decodeIfPresent(String.self, forKey: .head)
+        files = (try? c.decodeIfPresent([String].self, forKey: .files)) ?? []
+        added = try? c.decodeIfPresent(Int.self, forKey: .added)
+        removed = try? c.decodeIfPresent(Int.self, forKey: .removed)
+        error = try? c.decodeIfPresent(String.self, forKey: .error)
+    }
+}
+
+public struct CliNote: Sendable, Hashable, Identifiable, Decodable {
+    public var id: String
+    public var message: String
+    public var num: Int
+    public var start: Int?
+    public var end: Int?
+    public var quote: String
+    public var body: String
+    public var version: Int
+
+    public init(id: String, message: String, num: Int = 1, start: Int? = nil, end: Int? = nil, quote: String, body: String, version: Int = 1) {
+        self.id = id; self.message = message; self.num = num; self.start = start; self.end = end; self.quote = quote; self.body = body; self.version = version
+    }
+
+    enum CodingKeys: String, CodingKey { case id, message, num, start, end, quote, body, version }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        message = try c.decode(String.self, forKey: .message)
+        num = (try? c.decodeIfPresent(Int.self, forKey: .num)) ?? 1
+        start = try? c.decodeIfPresent(Int.self, forKey: .start)
+        end = try? c.decodeIfPresent(Int.self, forKey: .end)
+        quote = (try? c.decodeIfPresent(String.self, forKey: .quote)) ?? ""
+        body = (try? c.decodeIfPresent(String.self, forKey: .body)) ?? ""
+        version = (try? c.decodeIfPresent(Int.self, forKey: .version)) ?? 1
     }
 }
 
@@ -469,7 +615,7 @@ public struct CliSendResult: Decodable, Sendable {
     let status: String?
     let delivery: String?
     public let nativeQueued: Bool?
-    var dispatched: Bool { status == nil || status == "sent" || status == "confirmed" }
+    public var dispatched: Bool { status == nil || status == "sent" || status == "confirmed" }
 }
 struct CliOutcomeResult: Decodable, Sendable { let outcome: String? }
 
@@ -491,6 +637,7 @@ public struct CliSessionQueue: Decodable, Sendable {
 
 public enum CliServerMessage: Sendable {
     case queue(CliSessionQueue)
+    case workbench([CliWorkbenchSession])
     case list(devices: [CliDevice], sessions: [CliSession])
     case listDelta(upserts: [CliSession], removes: [CliSessionKey], devices: [CliDevice]?)
     case items(key: CliSessionKey, items: [CliItem], reset: Bool, more: Bool?)
@@ -526,6 +673,9 @@ public enum CliServerMessage: Sendable {
         case "queue":
             struct QueueBody: Decodable { let queue: CliSessionQueue }
             return body(QueueBody.self).map { .queue($0.queue) }
+        case "workbench":
+            struct WorkbenchBody: Decodable { let sessions: LossyList<CliWorkbenchSession> }
+            return body(WorkbenchBody.self).map { .workbench($0.sessions.values) }
         case "list": return body(ListBody.self).map { .list(devices: $0.devices.values, sessions: $0.sessions.values) }
         case "list.delta": return body(DeltaBody.self).map { .listDelta(upserts: $0.upserts.values, removes: $0.removes, devices: $0.devices?.values) }
         case "items": return body(ItemsBody.self).map {
