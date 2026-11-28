@@ -1121,7 +1121,7 @@ describe("Core TeamScheduler end-to-end (Phase 1 acceptance)", () => {
     dev.onOp = (message) => {
       if (message.op === "start" && failStarts > 0) {
         failStarts--;
-        return { ok: false, error: { code: "unknown", message: "simulated launch failure" } };
+        return { ok: false, error: { code: "cwd_missing", message: "simulated launch failure" } };
       }
       return baseOnOp(message);
     };
@@ -1129,6 +1129,7 @@ describe("Core TeamScheduler end-to-end (Phase 1 acceptance)", () => {
     const f2 = await dev.teamCall(leadRef, "start", { agent: "agy", title: "失败启动2", body: "模拟失败" });
     expect(f1.ok).toBe(false);
     expect(f2.ok).toBe(false);
+    expect(f.app.store.all("SELECT name FROM cli_team_workers WHERE status='failed' AND session_key IS NULL ORDER BY name").map((row) => row.name)).toEqual(["agy-2", "agy-3"]);
     dev.onOp = baseOnOp;
 
     // Already have 2 live workers + 2 launch-failed workers -> 3 more live workers must STILL succeed (total 5 live)!
