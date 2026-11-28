@@ -799,6 +799,80 @@
 }
 .na-team-card-body p:first-child { margin-top: 0; }
 .na-team-card-body p:last-child { margin-bottom: 0; }
+.na-team-card-body ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.na-team-card-body li {
+  margin: 2px 0;
+}
+
+/* Concise review briefing severity strip */
+.na-team-brief-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.na-team-brief-total {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--na-ink);
+  margin-right: 2px;
+}
+.na-team-severity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--na-inset);
+  color: var(--na-muted);
+}
+.na-team-severity-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.na-team-severity-pill[data-severity="high"] {
+  color: #b8322b;
+  background: color-mix(in srgb, #c93b34 11%, transparent);
+}
+.na-team-severity-pill[data-severity="medium"] {
+  color: #a66208;
+  background: color-mix(in srgb, #d68a12 13%, transparent);
+}
+.na-team-severity-pill[data-severity="low"] {
+  color: #2f5c8f;
+  background: color-mix(in srgb, #3b82f6 11%, transparent);
+}
+.na-team-severity-pill[data-severity="clean"] {
+  color: #1c6b49;
+  background: color-mix(in srgb, #2c8f68 12%, transparent);
+}
+.cli-app[data-dark="1"] .na-team-severity-pill[data-severity="high"] {
+  color: #f38a84;
+  background: color-mix(in srgb, #c93b34 22%, transparent);
+}
+.cli-app[data-dark="1"] .na-team-severity-pill[data-severity="medium"] {
+  color: #f2be63;
+  background: color-mix(in srgb, #d68a12 22%, transparent);
+}
+.cli-app[data-dark="1"] .na-team-severity-pill[data-severity="low"] {
+  color: #8cb9f7;
+  background: color-mix(in srgb, #3b82f6 20%, transparent);
+}
+.cli-app[data-dark="1"] .na-team-severity-pill[data-severity="clean"] {
+  color: #74d9ad;
+  background: color-mix(in srgb, #2c8f68 22%, transparent);
+}
 
 /* Hairline-divided review findings */
 .na-team-findings {

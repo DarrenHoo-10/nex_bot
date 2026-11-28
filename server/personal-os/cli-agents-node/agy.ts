@@ -5,10 +5,16 @@ import {
   CLI_LIMITS, CLI_MODEL_LIMITS, CLI_EFFORTS, SUMMARY_MAX,
   cliRef, isCliEffort, parseDeviceCliMessage, truncateUtf8,
   type CliErrorCode, type CliItem, type CliLaunchOptions, type CliModelCatalog,
-  type CliOpArgs, type CliRequestResolvedBy, type CliRequestWire, type CliTeamDeviceConfig, type CliTeamStartMeta, type CliTurnReason, type DeviceCliMessage,
+  type CliOpArgs, type CliRequestResolvedBy, type CliRequestWire, type CliSessionRef, type CliTeamDeviceConfig, type CliTeamStartMeta, type CliTurnReason, type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
 import { CLI_IMAGE_PREFIX, mapCliImageLinks } from "../../../shared/cli-images.ts";
-import { isInsideDir, isSafeAutoApproveNexCommand, leadInstruction } from "./team-cli.ts";
+import {
+  isInsideDir,
+  isLeadAllowedTempFilePath,
+  isLeadBlockedShellCommand,
+  isSafeAutoApproveNexCommand,
+  leadInstruction,
+} from "./team-cli.ts";
 import { execCli } from "../../procs.ts";
 import { AgyAcp, AgyAcpError } from "./agy-acp.ts";
 import {
@@ -44,6 +50,7 @@ interface AgyOptions {
   emit: (message: DeviceCliMessage) => void;
   ended: (id: string, turn: number, reason: CliTurnReason, error?: string) => void;
   teamConfig?: () => CliTeamDeviceConfig;
+  isActiveTeamLead?: (ref: CliSessionRef) => boolean;
   teamEnv?: (sessionId: string) => Promise<Record<string, string>>;
   onTeamBound?: (pendingId: string, realId: string) => void;
 }
@@ -712,12 +719,34 @@ export class AgyRuntime {
     const key = input.length > 0 && input.length <= CLI_LIMITS.requestDetail ? `${agyString(toolCall.title)}\n${input}` : "";
     const rawInput = agyRecord(toolCall.rawInput);
     const toolKind = agyString(toolCall.kind);
+    const toolTitle = agyString(toolCall.title).toLowerCase();
     const cmdLine = agyString(rawInput.CommandLine);
     const cmdShort = agyString(rawInput.command);
     const consistentCmd = !cmdLine || !cmdShort || cmdLine === cmdShort;
     const rawCmd = consistentCmd ? (cmdLine || cmdShort) : "";
     const cmdCwd = agyString(rawInput.Cwd ?? rawInput.cwd);
     const cwdAllowed = !cmdCwd || isInsideDir(session.cwd, cmdCwd, this.options.platform);
+    // In active collaboration mode, the lead session only plans and decides — never edits project files directly.
+    if (deny && !session.isWorker && session.id && this.options.isActiveTeamLead?.(cliRef("agy", session.id))) {
+      const editTarget =
+        agyString(rawInput.TargetFile) ||
+        agyString(rawInput.file_path) ||
+        agyString(rawInput.AbsolutePath) ||
+        agyString(rawInput.path) ||
+        agyString(rawInput.target_file);
+      const isEditTool =
+        toolKind === "edit" ||
+        toolKind === "write" ||
+        /\b(?:write_to_file|replace_file_content|multi_replace_file_content|edit_file|write_file|create_file|apply_patch|notebook_edit)\b/.test(toolTitle);
+      if (isEditTool && (!editTarget || !isLeadAllowedTempFilePath(editTarget, session.cwd, this.options.platform))) {
+        void reply(selected(deny)).catch(() => {});
+        return;
+      }
+      if ((!toolKind || toolKind === "execute") && rawCmd && isLeadBlockedShellCommand(rawCmd, cmdCwd || session.cwd, this.options.platform)) {
+        void reply(selected(deny)).catch(() => {});
+        return;
+      }
+    }
     const allowNex =
       (this.options.teamConfig?.().allowNexInAsk ?? true) &&
       (!toolKind || toolKind === "execute") &&

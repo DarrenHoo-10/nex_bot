@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, ChevronDown, ChevronRight, Clock3, Ellipsis, Monitor, Plus, Search, X } from "lucide-react";
 import { unwrapPastedContent, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { AGENT_LABEL, RECENT_MS, askedSession, projectOf, forkParentKey, foldHistory, matchesTerms, moveProject, orderProjects, projectGroups, rememberProjects, sessionStatusLabel, sessionTone, sessionTitle, treeParents, type DeviceGroup } from "./session-model";
-import { activeWorkingWorkers, isRunLive, TEAM_RUN_STATUS_LABEL, TEAM_WORKER_STATUS_LABEL, type CliTeamRunView, type TeamIndex, type TeamWorkerBinding } from "./team";
+import { activeWorkingWorkers, isRunLive, isWorkerVisible, TEAM_RUN_STATUS_LABEL, TEAM_WORKER_STATUS_LABEL, type CliTeamRunView, type TeamIndex, type TeamWorkerBinding } from "./team";
 import { searchSessions } from "./api";
 import { copyText } from "../../lib/copy-text";
 import {HarnessMark} from "./tokendance/HarnessMark";
@@ -369,7 +369,8 @@ export function SessionList({groups,selectedKey,pending,workbench,teams,onWorkbe
   const visibleDuringFork=(s:CliSessionView)=>!forking || forking.known.has(s.key) ||
     s.deviceId!==forking.parent.deviceId || s.engine!==forking.parent.engine || s.cwd!==forking.parent.cwd ||
     (forking.key ? s.key!==forking.key || forkReady : !!meta(s.key)?.parent && meta(s.key)?.parent!==forking.parent.key);
-  const listed=(agents:DeviceGroup["agents"])=>agents.flatMap(a=>a.sessions).filter(visibleDuringFork).filter(s=>!meta(s.key)?.deleted && meta(s.key)?.kind!=="side" && !s.sideOf && isArchived(s)===archived);
+  const isFailedWorker=(s:CliSessionView)=>{const binding=workerBinding(s.key);return !!binding && !isWorkerVisible(binding.worker);};
+  const listed=(agents:DeviceGroup["agents"])=>agents.flatMap(a=>a.sessions).filter(visibleDuringFork).filter(s=>!meta(s.key)?.deleted && meta(s.key)?.kind!=="side" && !s.sideOf && !isFailedWorker(s) && isArchived(s)===archived);
   const allListedSessions=groups.flatMap(({agents})=>listed(agents));
   const sessionsByKey=new Map(allListedSessions.map(s=>[s.key,s]));
   /** new projects to remember in front, per computer, once this render is on screen */

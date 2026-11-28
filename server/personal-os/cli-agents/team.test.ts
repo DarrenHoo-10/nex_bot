@@ -14,12 +14,18 @@ import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { CLI_FEATURES, parseServerMessage, type CliSessionRef, type DeviceCliMessage } from "../../../shared/cli-agents.ts";
-import { isPureNexCommand } from "../../../shared/cli-team.ts";
+import { buildTeamReportBrief, isPureNexCommand, summarizeFindingCounts } from "../../../shared/cli-team.ts";
 import { createPersonalApp, type AppOptions } from "../index.ts";
 import { codexEmptyComposer } from "../cli-agents-node/codex-first-input.ts";
 import { HookServer, TurnTracker } from "../cli-agents-node/hooks.ts";
 import { parsePromptScreen } from "../cli-agents-node/screen-prompts.ts";
-import { codexMcpArgs, ensureTeamBin, leadInstruction } from "../cli-agents-node/team-cli.ts";
+import {
+  codexMcpArgs,
+  ensureTeamBin,
+  isLeadAllowedTempFilePath,
+  isLeadBlockedShellCommand,
+  leadInstruction,
+} from "../cli-agents-node/team-cli.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const HOOK_SCRIPT = path.resolve(here, "../cli-agents-node/plugin/hooks/hook.mjs");
@@ -1145,5 +1151,201 @@ describe("Core TeamScheduler end-to-end (Phase 1 acceptance)", () => {
     const statusRes = await dev.teamCall(leadRef, "status");
     expect(statusRes.ok).toBe(true);
     expect(statusRes.text).toContain("有效工人 5/5");
+  });
+
+  it("enforces lead-only planner mode via activeLeadRefs/hooks, supports concise briefings, guides review-fix-recheck loop, and excludes failed starts from maxWorkers", async () => {
+    const dir = tempDir("nex-lead-guard-");
+    let isLeadActive = false;
+    const live = new Set<string>(["claude:c-lead"]);
+    const emit = () => true;
+    const server = new HookServer({
+      dir,
+      emit,
+      turns: new TurnTracker(emit),
+      active: () => true,
+      isLive: (ref) => live.has(ref),
+      isTeamLive: (ref) => live.has(ref),
+      sessionCwd: () => dir,
+      allowNexInAsk: () => true,
+      isActiveTeamLead: (ref) => isLeadActive && ref === "claude:c-lead",
+      socketDir: dir,
+      teamCall: async () => ({ ok: true, text: "ok" }),
+    });
+    cleanups.push(() => server.close());
+    await server.start();
+
+    const claudeEnv = { ...process.env, ...server.environment("claude:c-lead", process.execPath) };
+    const projectFile = path.join(dir, "coil-arcade.html");
+    const specFile = path.join(dir, ".nex-team", "fixes.md");
+
+    // Helper checks: allowed temp paths vs project files & shell bypasses
+    expect(isLeadAllowedTempFilePath(specFile, dir)).toBe(true);
+    expect(isLeadAllowedTempFilePath(".nex-team/plan.md", dir)).toBe(true);
+    expect(isLeadAllowedTempFilePath(projectFile, dir)).toBe(false);
+    expect(isLeadAllowedTempFilePath(path.join(dir, ".nex-team", "..", "coil-arcade.html"), dir)).toBe(false);
+    expect(isLeadBlockedShellCommand("nex send agy-1 --file .nex-team/fixes.md", dir)).toBe(false);
+    expect(isLeadBlockedShellCommand("git diff --stat", dir)).toBe(false);
+    expect(isLeadBlockedShellCommand("cat <<'EOF' > .nex-team/fixes.md\nhello > world\nEOF", dir)).toBe(false);
+    expect(isLeadBlockedShellCommand("cat > coil-arcade.html <<'EOF'\nhack\nEOF", dir)).toBe(true);
+    expect(isLeadBlockedShellCommand("sed -i 's/a/b/' coil-arcade.html", dir)).toBe(true);
+    expect(isLeadBlockedShellCommand("Set-Content coil-arcade.html 'x'", dir)).toBe(true);
+    expect(isLeadBlockedShellCommand("echo ok\necho hack > coil-arcade.html", dir)).toBe(true);
+
+    // 1. Before collaboration starts: Edit/Write/Bash are NOT blocked
+    const editWhenIdle = await runNode(
+      HOOK_SCRIPT,
+      ["lead_guard"],
+      claudeEnv,
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: projectFile } }),
+    );
+    expect(editWhenIdle.stdout.trim()).toBe("");
+
+    // 2. While collaboration is active: Edit & project Write & mutating Bash are DENIED, `.nex-team/` Write & pure `nex` pass
+    isLeadActive = true;
+    const editBlocked = await runNode(
+      HOOK_SCRIPT,
+      ["lead_guard"],
+      claudeEnv,
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: projectFile } }),
+    );
+    expect(JSON.parse(editBlocked.stdout)?.hookSpecificOutput?.permissionDecision).toBe("deny");
+
+    const writeProjectBlocked = await runNode(
+      HOOK_SCRIPT,
+      ["lead_guard"],
+      claudeEnv,
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: projectFile } }),
+    );
+    expect(JSON.parse(writeProjectBlocked.stdout)?.hookSpecificOutput?.permissionDecision).toBe("deny");
+
+    const writeSpecAllowed = await runNode(
+      HOOK_SCRIPT,
+      ["lead_guard"],
+      claudeEnv,
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: specFile } }),
+    );
+    expect(writeSpecAllowed.stdout.trim()).toBe("");
+
+    const bashMutateBlocked = await runNode(
+      HOOK_SCRIPT,
+      ["nex_pre"],
+      claudeEnv,
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "sed -i 's/1/2/' coil-arcade.html" } }),
+    );
+    expect(JSON.parse(bashMutateBlocked.stdout)?.hookSpecificOutput?.permissionDecision).toBe("deny");
+
+    const bashNexAllowed = await runNode(
+      HOOK_SCRIPT,
+      ["nex_pre"],
+      claudeEnv,
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "nex status" } }),
+    );
+    expect(JSON.parse(bashNexAllowed.stdout)?.hookSpecificOutput?.permissionDecision).toBe("allow");
+
+    // 3. Concise briefing extraction for review & implementer reports
+    const reviewBrief = buildTeamReportBrief({
+      isReview: true,
+      body: [
+        "果园贪吃蛇独立代码审查",
+        "交付结论：建议修复两项 P2 输入缺陷后再交付。",
+        "1. [P2] 一次触摸可能重复入队。",
+        "2. [P2] 长按空格会反复暂停和恢复。",
+        "3. [P3] 鼠标移出十字键再松开。",
+        "验证范围",
+        "- 静态检查内联 HTML",
+      ].join("\n"),
+    });
+    expect(reviewBrief.findingCounts).toEqual([
+      { severity: "p2", label: "P2", count: 2 },
+      { severity: "p3", label: "P3", count: 1 },
+    ]);
+    expect(reviewBrief.brief).toContain("建议修复两项 P2 输入缺陷后再交付");
+    expect(reviewBrief.brief).not.toContain("验证范围");
+    expect(summarizeFindingCounts([{ severity: "P1", file: "a.ts", issue: "x" }, { severity: "P1", file: "b.ts", issue: "y" }])).toEqual([
+      { severity: "p1", label: "P1", count: 2 },
+    ]);
+
+    // 4. End-to-end Core scheduler: activeLeadRefs push, review->fix->recheck loop footers, and failed start not counting against maxWorkers
+    const f = await fixture();
+    const dev = await connectDevice(f);
+    const leadRef: CliSessionRef = "claude:lead-loop";
+    const leadKey = `${dev.id}:${leadRef}`;
+    dev.sessions([{
+      engine: "claude", nativeId: "lead-loop", configDir: "C:/cfg", cwd: "C:/repo",
+      title: "贪吃蛇协作闭环", state: "idle", liveIn: "nexbot", sendVia: "inbox", terminal: "hc://lead-loop", lastActivityAt: Date.now(),
+    }], { full: true });
+    await until(() => f.app.cliHub.session(leadKey)?.online, "lead-loop online");
+
+    // Fail the first start once (e.g. bad model), then succeed on subsequent starts.
+    const baseOnOp = dev.onOp;
+    let failOnce = true;
+    dev.onOp = (message) => {
+      if (message.op === "start" && failOnce) {
+        failOnce = false;
+        return { ok: false, error: { code: "invalid", message: "invalid model" } };
+      }
+      return baseOnOp(message);
+    };
+
+    const failedStart = await dev.teamCall(leadRef, "start", { agent: "agy", role: "实现", title: "实现贪吃蛇", body: "写贪吃蛇" });
+    expect(failedStart.ok).toBe(false);
+    // Lead is already pushed in activeLeadRefs on run creation
+    await until(() => dev.msgs.some((m) => m.type === "cli.team.config" && Array.isArray(m.config?.activeLeadRefs) && m.config.activeLeadRefs.includes(leadRef)), "activeLeadRefs pushed");
+
+    // Start implementer (agy-2) and report with --brief
+    const implStart = await dev.teamCall(leadRef, "start", { agent: "agy", role: "实现", title: "实现贪吃蛇", body: "写贪吃蛇" });
+    expect(implStart.ok).toBe(true);
+    expect(implStart.data?.worker).toBe("agy-2");
+    const implRef = dev.started[0]!.ref as CliSessionRef;
+    expect((await dev.teamCall(implRef, "report", {
+      outcome: "succeeded",
+      brief: "实现了贪吃蛇核心逻辑、计分与触控方向键。",
+      body: "完整实现详情...",
+      files: ["coil-arcade.html"],
+    })).ok).toBe(true);
+    await until(() => dev.sentTexts.some((s) => s.ref === leadRef && s.text.includes("实现了贪吃蛇核心逻辑")), "impl brief delivered");
+
+    // Start reviewer (codex-1) and report P1/P2 findings -> footer MUST direct lead to `nex send agy-2` (NOT edit itself!)
+    const revStart = await dev.teamCall(leadRef, "start", { agent: "codex", role: "审查", title: "代码审查", body: "只读审查", in: "agy-2", permissions: "readonly" });
+    expect(revStart.ok).toBe(true);
+    const revRef = dev.started[1]!.ref as CliSessionRef;
+    expect((await dev.teamCall(revRef, "report", {
+      outcome: "succeeded",
+      brief: "发现 1 个 P1、1 个 P2 问题，建议修复后再交付。",
+      body: "详细审查记录...",
+      findings: [
+        { severity: "P1", file: "coil-arcade.html", line: 100, issue: "触摸重复入队" },
+        { severity: "P2", file: "coil-arcade.html", line: 200, issue: "长按空格反复暂停" },
+      ],
+    })).ok).toBe(true);
+    const reviewDelivery = await until(
+      () => dev.sentTexts.find((s) => s.ref === leadRef && s.text.includes("发现 1 个 P1、1 个 P2 问题")),
+      "review brief delivered to lead",
+    );
+    expect(reviewDelivery.text).toContain("nex send agy-2");
+    expect(reviewDelivery.text).toContain("严禁自行修改项目代码");
+
+    // Lead sends fix round back to agy-2 -> agy-2 receives follow-up reminder to call `nex report`
+    expect((await dev.teamCall(leadRef, "send", { worker: "agy-2", body: "请修复 P1 和 P2 缺陷" })).ok).toBe(true);
+    const implFollowUp = await until(
+      () => dev.sentTexts.find((s) => s.ref === implRef && s.text.includes("请修复 P1 和 P2 缺陷")),
+      "impl follow-up delivered",
+    );
+    expect(implFollowUp.text).toContain("nex report");
+
+    // agy-2 reports fixes -> footer MUST direct lead to `nex send codex-1` for re-review!
+    expect((await dev.teamCall(implRef, "report", { outcome: "succeeded", brief: "已修复触摸重复入队与长按空格 2 个问题。" })).ok).toBe(true);
+    const fixDelivery = await until(
+      () => dev.sentTexts.find((s) => s.ref === leadRef && s.text.includes("已修复触摸重复入队")),
+      "fix brief delivered to lead",
+    );
+    expect(fixDelivery.text).toContain("nex send codex-1");
+
+    // Finish run -> activeLeadRefs clears leadRef so normal editing resumes after collaboration ends!
+    expect((await dev.teamCall(leadRef, "done", { body: "全部修复并复审通过" })).ok).toBe(true);
+    await until(
+      () => dev.msgs.filter((m) => m.type === "cli.team.config").at(-1)?.config?.activeLeadRefs?.length === 0,
+      "activeLeadRefs cleared after nex done",
+    );
   });
 });

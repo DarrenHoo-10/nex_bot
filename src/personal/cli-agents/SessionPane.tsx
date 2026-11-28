@@ -22,7 +22,7 @@ import type { GuideMessage } from "./transcript";
 import { TranscriptView } from "./TranscriptView";
 import { isVisibleQueueEntry, useCliQueue } from "./use-queue";
 import { TeamPanel } from "./TeamPanel";
-import { isRunLive, isWorkerWorking, TEAM_WORKER_STATUS_LABEL, type CliTeamRunView, type TeamWorkerBinding } from "./team";
+import { isRunLive, isWorkerWorking, TEAM_WORKER_STATUS_LABEL, visibleTeamWorkers, type CliTeamRunView, type TeamWorkerBinding } from "./team";
 import type { BackStep } from "../android-back";
 
 export interface SessionPaneProps {
@@ -322,12 +322,14 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
   const stop = () => stopSession(session.key, crypto.randomUUID());
   const resume = () => resumeQueue(session.key);
   const activeTeamRun = teamRuns?.find((run) => isRunLive(run.status));
+  const visibleActiveWorkers = activeTeamRun ? visibleTeamWorkers(activeTeamRun.workers) : [];
+  const hasVisibleHistoryRuns = Boolean(teamRuns?.some((run) => run.id !== activeTeamRun?.id && visibleTeamWorkers(run.workers).length > 0));
+  const showTeamControl = !compact && Boolean(activeTeamRun || hasVisibleHistoryRuns);
   const teamDotTone = !activeTeamRun ? null
-    : activeTeamRun.workers.some((worker) => worker.status === "failed") ? "failed"
-      : activeTeamRun.limitHit || activeTeamRun.heldCount || activeTeamRun.workers.some((worker) => worker.status === "waiting") ? "alert"
-        : activeTeamRun.status === "paused" ? "paused"
-          : activeTeamRun.workers.some((worker) => isWorkerWorking(worker.status)) ? "running"
-            : null;
+    : activeTeamRun.limitHit || activeTeamRun.heldCount || visibleActiveWorkers.some((worker) => worker.status === "waiting") ? "alert"
+      : activeTeamRun.status === "paused" ? "paused"
+        : visibleActiveWorkers.some((worker) => isWorkerWorking(worker.status)) ? "running"
+          : null;
   const workerStatusTone = !workerBinding ? null
     : pendingRequests.length > 0 || shown.state === "waiting" || workerBinding.worker.status === "waiting" ? "waiting"
       : shown.online && (shown.state === "running" || workerBinding.worker.status === "starting") ? "running"
@@ -344,7 +346,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
 
         </div>
         {(!shown.online||shown.state==="running")?<span className="cli-chip" data-tone={sessionTone(shown)}>{sessionStatusLabel(shown)}</span>:null}
-        {!compact && teamRuns && teamRuns.length > 0 ? (
+        {showTeamControl ? (
           <button
             type="button"
             ref={teamToggle}
@@ -352,18 +354,12 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
             data-muted={activeTeamRun ? undefined : "1"}
             aria-controls={teamPanelId}
             aria-expanded={teamOpen}
-            aria-label={activeTeamRun ? (() => {
-              const count = activeTeamRun.workers.filter((w) => !(w.status === "failed" && !w.sessionKey)).length;
-              return count > 0 ? `协作 ${count}` : "协作";
-            })() : "协作记录"}
+            aria-label={activeTeamRun ? (visibleActiveWorkers.length > 0 ? `协作 ${visibleActiveWorkers.length}` : "协作") : "协作记录"}
             title={activeTeamRun ? "协作详情" : "历史协作"}
             onClick={() => { setWorkspaceOpen(false); setTeamOpen((open) => !open); }}
           >
             <Network size={14} aria-hidden="true" />
-            <span>{activeTeamRun ? (() => {
-              const count = activeTeamRun.workers.filter((w) => !(w.status === "failed" && !w.sessionKey)).length;
-              return count > 0 ? `协作 ${count}` : "协作";
-            })() : "协作"}</span>
+            <span>{activeTeamRun ? (visibleActiveWorkers.length > 0 ? `协作 ${visibleActiveWorkers.length}` : "协作") : "协作"}</span>
             {teamDotTone ? <i className="na-team-trigger-dot" data-tone={teamDotTone} aria-hidden="true" /> : null}
           </button>
         ) : null}
@@ -409,7 +405,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
         <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} guides={guides} queueEntries={queue?.entries} pending={[...visibleEchoes.filter(row => !guides.some(guide => guide.id === row.queueId)), ...(uploadPreview ? [{ id: "upload", text: uploadPreview }] : [])]} deliveryLabel={deliveryLabel} working={working} onItems={setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} onSelectSession={onSelectSession} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
-        {!compact && teamRuns && teamRuns.length > 0 ? (
+        {showTeamControl && teamRuns ? (
           <div
             ref={teamLayer}
             id={teamPanelId}

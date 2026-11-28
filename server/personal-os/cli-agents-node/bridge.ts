@@ -277,6 +277,7 @@ export class CliAgentBridge {
   private hooksStarting: Promise<HookServer | null> | null = null;
   private pluginDir: string | null | undefined;
   private teamConfig: CliTeamDeviceConfig = { ...DEFAULT_TEAM_DEVICE_CONFIG };
+  private readonly activeLeadRefs = new Set<CliSessionRef>();
   private teamBin: TeamBinPaths | null = null;
   private readonly pendingTeamCalls = new Map<string, { resolve: (result: HookTeamResult) => void; timer: NodeJS.Timeout }>();
   private readonly turns: TurnTracker;
@@ -314,6 +315,7 @@ export class CliAgentBridge {
         });
       },
       teamConfig: () => this.teamConfig,
+      isActiveTeamLead: (ref) => this.isActiveTeamLead(ref),
       teamEnv: (sessionId) => this.teamSessionEnv(cliRef("agy", sessionId)),
       onTeamBound: (pendingId, realId) => {
         this.hooks?.aliasSession(cliRef("agy", pendingId), cliRef("agy", realId));
@@ -594,6 +596,10 @@ export class CliAgentBridge {
         return;
       case "cli.team.config":
         this.teamConfig = message.config;
+        if (message.config.activeLeadRefs !== undefined) {
+          this.activeLeadRefs.clear();
+          for (const ref of message.config.activeLeadRefs) this.activeLeadRefs.add(ref);
+        }
         return;
       case "cli.team.result":
         this.onTeamResult(message);
@@ -622,6 +628,10 @@ export class CliAgentBridge {
     }
   }
 
+  private isActiveTeamLead(ref: CliSessionRef): boolean {
+    return this.activeLeadRefs.has(ref);
+  }
+
   private isTeamSessionLive(ref: CliSessionRef): boolean {
     if (this.nexbotTerminals().has(ref)) return true;
     if (ref.startsWith("agy:") && this.agy.hasManagedSession(ref.slice(4))) return true;
@@ -634,17 +644,22 @@ export class CliAgentBridge {
     }
     const callId = randomUUID();
     return new Promise((resolve) => {
+      const finish = (result: HookTeamResult) => {
+        if (result.ok && command === "start") this.activeLeadRefs.add(ref);
+        else if (result.ok && command === "done") this.activeLeadRefs.delete(ref);
+        resolve(result);
+      };
       const timer = setTimeout(() => {
         if (!this.pendingTeamCalls.delete(callId)) return;
-        resolve({ ok: false, uncertain: true, error: "Core 响应超时，请运行 `nex status` 确认状态" });
+        finish({ ok: false, uncertain: true, error: "Core 响应超时，请运行 `nex status` 确认状态" });
       }, 60_000);
       timer.unref?.();
-      this.pendingTeamCalls.set(callId, { resolve, timer });
+      this.pendingTeamCalls.set(callId, { resolve: finish, timer });
       const sent = this.sendJson({ type: "cli.team.call", callId, ref, command, args });
       if (!sent) {
         this.pendingTeamCalls.delete(callId);
         clearTimeout(timer);
-        resolve({ ok: false, error: "当前电脑未连接到 Core" });
+        finish({ ok: false, error: "当前电脑未连接到 Core" });
       }
     });
   }
@@ -909,6 +924,7 @@ export class CliAgentBridge {
             return (addr ? this.terminals.get(addr)?.cwd : undefined) ?? this.discovery.get(ref)?.cwd;
           },
           allowNexInAsk: () => this.teamConfig.allowNexInAsk,
+          isActiveTeamLead: (ref) => this.isActiveTeamLead(ref),
           teamCall: (ref, command, args) => this.callCoreTeam(ref, command, args),
           platform: this.platform,
           ...(this.options.hookSocketDir ? { socketDir: this.options.hookSocketDir } : {}),

@@ -14,15 +14,23 @@ import {
   TEAM_FINDING_SEVERITY_LABEL,
   TEAM_RUN_STATUS_LABEL,
   TEAM_WORKER_STATUS_LABEL,
+  buildTeamReportBrief,
+  formatFindingCountsSummary,
   isRunLive,
   isWorkerLive,
+  isWorkerVisible,
   isWorkerWorking,
+  normalizeFindingSeverity,
   parseTeamRun,
   parseTeamRuns,
   parseTeamSettings,
   parseTeamWorker,
+  stripTeamMessageFraming,
+  summarizeFindingCounts,
+  visibleTeamWorkers,
   type CliTeamDispatchMode,
   type CliTeamFinding,
+  type CliTeamFindingCount,
   type CliTeamRunStatus,
   type CliTeamRunView,
   type CliTeamSettings,
@@ -36,15 +44,22 @@ export {
   TEAM_FINDING_SEVERITY_LABEL,
   TEAM_RUN_STATUS_LABEL,
   TEAM_WORKER_STATUS_LABEL,
+  buildTeamReportBrief,
+  formatFindingCountsSummary,
   isRunLive,
   isWorkerLive,
+  isWorkerVisible,
   isWorkerWorking,
   parseTeamRun,
   parseTeamRuns,
   parseTeamSettings,
   parseTeamWorker,
+  stripTeamMessageFraming,
+  summarizeFindingCounts,
+  visibleTeamWorkers,
   type CliTeamDispatchMode,
   type CliTeamFinding,
+  type CliTeamFindingCount,
   type CliTeamRunStatus,
   type CliTeamRunView,
   type CliTeamSettings,
@@ -127,6 +142,7 @@ export function activeWorkingWorkers(
   let working = 0;
   let waiting = 0;
   for (const worker of run.workers) {
+    if (!isWorkerVisible(worker)) continue;
     const session = worker.sessionKey ? sessionsByKey.get(worker.sessionKey) : undefined;
     const hasPending = worker.sessionKey ? (pending?.get(worker.sessionKey) ?? 0) > 0 : false;
     if (hasPending || worker.status === "waiting" || (session?.online && session.state === "waiting")) {
@@ -164,6 +180,10 @@ export interface CliTeamCard {
   sourceSessionKey?: CliSessionKey;
   role?: string;
   outcome?: "succeeded" | "failed";
+  /** Concise briefing ("简报") rendered on report/review cards instead of full essays. */
+  brief?: string;
+  /** Severity breakdown for review cards (e.g., 2 P1, 1 P2). */
+  findingCounts?: CliTeamFindingCount[];
   body?: string;
   files?: string[];
   findings?: CliTeamFinding[];
@@ -179,13 +199,31 @@ const PLAIN_NUDGE_RE = /^\[NexAgent\]\s+(Your turn ended without a report\.[\s\S
 const PLAIN_ASSIGN_RE = /^\[NexAgent\]\s+The lead assigned you a task\.[\s\S]*$/;
 const PLAIN_INBOX_RE = /^\[NexAgent\]\s+You have (\d+) new team messages?\.[\s\S]*$/;
 
+function parseFindingCounts(value: unknown): CliTeamFindingCount[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: CliTeamFindingCount[] = [];
+  for (const entry of value.slice(0, 20)) {
+    const row = asRecord(entry);
+    if (!row || typeof row.severity !== "string" || typeof row.count !== "number" || !Number.isFinite(row.count) || row.count <= 0) continue;
+    const normalized = normalizeFindingSeverity(row.severity);
+    out.push({
+      severity: normalized.severity,
+      label: typeof row.label === "string" && row.label.trim() ? row.label.trim().slice(0, 16) : normalized.label,
+      count: Math.round(row.count),
+    });
+  }
+  return out.length ? out : undefined;
+}
+
 export function parseTeamCard(text: string): CliTeamCard | null {
   const envelope = CARD_ENVELOPE_RE.exec(text);
   if (envelope) {
     try {
       const meta = asRecord(JSON.parse(envelope[1]!.trim()));
-      const body = envelope[2]?.trim() || (typeof meta?.body === "string" ? meta.body.trim() : undefined);
+      const rawBody = envelope[2]?.trim() || (typeof meta?.body === "string" ? meta.body.trim() : undefined);
+      const cleanedBody = rawBody ? stripTeamMessageFraming(rawBody) : undefined;
       if (meta && typeof meta.kind === "string" && (CARD_KINDS as readonly string[]).includes(meta.kind) && typeof meta.heading === "string") {
+        const kind = meta.kind as CliTeamCardKind;
         const findings: CliTeamFinding[] | undefined = Array.isArray(meta.findings)
           ? meta.findings
             .map((entry) => asRecord(entry))
@@ -198,8 +236,23 @@ export function parseTeamCard(text: string): CliTeamCard | null {
             }))
           : undefined;
         const files = Array.isArray(meta.files) ? meta.files.filter((entry): entry is string => typeof entry === "string" && !!entry.trim()) : undefined;
+        const outcome = meta.outcome === "succeeded" || meta.outcome === "failed" ? meta.outcome : undefined;
+        const explicitBrief = typeof meta.brief === "string" && meta.brief.trim() ? meta.brief.trim() : undefined;
+        const metaCounts = parseFindingCounts(meta.findingCounts);
+        const isReportLike = kind === "report" || kind === "review";
+        const summary = isReportLike
+          ? buildTeamReportBrief({
+            brief: explicitBrief,
+            body: cleanedBody,
+            findings,
+            isReview: kind === "review",
+            outcome,
+          })
+          : null;
+        const findingCounts = metaCounts ?? (summary?.findingCounts.length ? summary.findingCounts : undefined);
+        const brief = summary?.brief || explicitBrief;
         return {
-          kind: meta.kind as CliTeamCardKind,
+          kind,
           heading: meta.heading,
           ...(typeof meta.subtitle === "string" && meta.subtitle.trim() ? { subtitle: meta.subtitle.trim() } : {}),
           ...(isCliEngine(meta.actorEngine) ? { actorEngine: meta.actorEngine } : {}),
@@ -209,8 +262,10 @@ export function parseTeamCard(text: string): CliTeamCard | null {
           ...(typeof meta.targetSessionKey === "string" && isCliKey(meta.targetSessionKey) ? { targetSessionKey: meta.targetSessionKey } : {}),
           ...(typeof meta.sourceSessionKey === "string" && isCliKey(meta.sourceSessionKey) ? { sourceSessionKey: meta.sourceSessionKey } : {}),
           ...(typeof meta.role === "string" ? { role: meta.role } : {}),
-          ...(meta.outcome === "succeeded" || meta.outcome === "failed" ? { outcome: meta.outcome } : {}),
-          ...(body ? { body } : {}),
+          ...(outcome ? { outcome } : {}),
+          ...(brief ? { brief } : {}),
+          ...(findingCounts?.length ? { findingCounts } : {}),
+          ...(cleanedBody ? { body: cleanedBody } : {}),
           ...(files?.length ? { files } : {}),
           ...(findings?.length ? { findings } : {}),
         };
@@ -225,13 +280,19 @@ export function parseTeamCard(text: string): CliTeamCard | null {
   if (plain) {
     const [, sender, rawType, subject, body] = plain;
     const type = rawType!.toLowerCase();
+    const cleanedBody = body ? stripTeamMessageFraming(body) : undefined;
+    const looksLikeReview = type === "report" && (
+      /审|review/i.test(subject ?? "") ||
+      (cleanedBody ? summarizeFindingCounts(undefined, cleanedBody).length > 0 : false)
+    );
     const kind: CliTeamCardKind =
-      type === "report" ? "report"
-        : type === "task" ? "task"
-          : type === "question" ? "question"
-            : type === "answer" ? "answer"
-              : type === "escalation" ? "escalation"
-                : type === "message" ? "followup" : "report";
+      looksLikeReview ? "review"
+        : type === "report" ? "report"
+          : type === "task" ? "task"
+            : type === "question" ? "question"
+              : type === "answer" ? "answer"
+                : type === "escalation" ? "escalation"
+                  : type === "message" ? "followup" : "report";
     const typeLabel: Record<CliTeamCardKind, string> = {
       task: "任务派发",
       report: "完成报告",
@@ -243,12 +304,18 @@ export function parseTeamCard(text: string): CliTeamCard | null {
       escalation: "异常升级",
       done: "交付摘要",
     };
+    const isReportLike = kind === "report" || kind === "review";
+    const summary = isReportLike
+      ? buildTeamReportBrief({ body: cleanedBody, isReview: kind === "review" })
+      : null;
     return {
       kind,
       heading: `${sender} · ${typeLabel[kind]}`,
       subtitle: subject?.trim(),
       actorLabel: sender,
-      body: body?.trim() || undefined,
+      ...(summary?.brief ? { brief: summary.brief } : {}),
+      ...(summary?.findingCounts.length ? { findingCounts: summary.findingCounts } : {}),
+      body: cleanedBody || undefined,
     };
   }
 

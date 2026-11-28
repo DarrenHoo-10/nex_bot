@@ -23,7 +23,8 @@
 // for this prompt (permission_suggestions) for the rest of the session only.
 import net from "node:net";
 
-const MODES = new Set(["question", "nex_pre", "permission", "post", "stop"]);
+const MODES = new Set(["question", "nex_pre", "lead_guard", "permission", "post", "stop"]);
+const LEAD_GUARD_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const STDIN_LIMIT = 8 * 1024 * 1024;
 const REPLY_LIMIT = 256 * 1024;
 const DELIVER_WAIT_MS = 3000;
@@ -158,6 +159,9 @@ async function main() {
   }
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   if (mode === "question" && (input.hook_event_name !== "PreToolUse" || input.tool_name !== "AskUserQuestion")) return null;
+  if (mode === "lead_guard") {
+    if (input.hook_event_name !== "PreToolUse" || !LEAD_GUARD_TOOLS.has(input.tool_name)) return null;
+  }
   if (mode === "nex_pre") {
     if (input.hook_event_name !== "PreToolUse" || (input.tool_name !== "Bash" && input.tool_name !== "PowerShell")) return null;
     // Validate raw command length BEFORE slim() so a >MAX_STRING payload can never be truncated into a false allow.
@@ -170,7 +174,10 @@ async function main() {
     if (hasCmdLine && typeof rawToolInput.CommandLine !== "string") return null;
     if (hasCmd && hasCmdLine && rawToolInput.command !== rawToolInput.CommandLine) return null;
     const rawCmd = hasCmd ? rawToolInput.command : rawToolInput.CommandLine;
-    if (!rawCmd || rawCmd.length > MAX_STRING) return null;
+    if (!rawCmd) return null;
+    // For oversized commands (>MAX_STRING), mark truncated so the bridge never auto-allows them,
+    // while still letting active collaboration lead guards inspect the command header/redirections.
+    if (rawCmd.length > MAX_STRING) input.tool_input = { ...rawToolInput, __oversized: true };
   }
   const sent = {
     hook_event_name: input.hook_event_name,
@@ -187,12 +194,31 @@ async function main() {
   const reply = await exchange(pipe, line, waitMs, interactive);
   if (!reply || reply.v !== 1) return null;
   if (mode === "nex_pre") {
+    if (reply.decision === "deny") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: reply.message || "Blocked in collaboration lead mode.",
+        },
+      };
+    }
     if (reply.decision !== "allow") return null;
     return {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "allow",
         permissionDecisionReason: "Allowed standalone nex collaboration command",
+      },
+    };
+  }
+  if (mode === "lead_guard") {
+    if (reply.decision !== "deny") return null;
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: reply.message || "Blocked in collaboration lead mode.",
       },
     };
   }

@@ -9,6 +9,7 @@ import {
   isWorkerLive,
   TEAM_RUN_STATUS_LABEL,
   TEAM_WORKER_STATUS_LABEL,
+  visibleTeamWorkers,
   type CliTeamRunView,
   type CliTeamWorkerView,
 } from "./team";
@@ -129,7 +130,11 @@ export function TeamPanel({
   const [error, setError] = useState("");
 
   const activeRun = runs.find((run) => isRunLive(run.status));
-  const historyRuns = runs.filter((run) => run.id !== activeRun?.id);
+  const activeWorkers = activeRun ? visibleTeamWorkers(activeRun.workers) : [];
+  const historyRuns = runs
+    .filter((run) => run.id !== activeRun?.id)
+    .map((run) => ({ run, workers: visibleTeamWorkers(run.workers) }))
+    .filter((entry) => entry.workers.length > 0);
 
   async function runAction(key: string, fn: () => Promise<void>) {
     setBusyKey(key);
@@ -175,7 +180,7 @@ export function TeamPanel({
             {error ? <div className="na-team-panel-error" role="alert">{error}</div> : null}
 
             <div className="na-team-worker-list">
-              {activeRun.workers.map((worker) => (
+              {activeWorkers.map((worker) => (
                 <WorkerRow
                   key={worker.id}
                   worker={worker}
@@ -255,7 +260,7 @@ export function TeamPanel({
                 <ChevronDown size={13} />
               </summary>
               <div className="na-team-history-runs">
-                {historyRuns.map((run) => (
+                {historyRuns.map(({ run, workers }) => (
                   <div key={run.id} className="na-team-history-run">
                     <div className="na-team-history-run-head">
                       <strong title={run.title}>{run.title}</strong>
@@ -265,7 +270,7 @@ export function TeamPanel({
                     </div>
                     {run.summary ? <p className="na-team-history-summary">{run.summary}</p> : null}
                     <div className="na-team-worker-list">
-                      {run.workers.map((worker) => (
+                      {workers.map((worker) => (
                         <WorkerRow
                           key={worker.id}
                           worker={worker}
@@ -284,7 +289,7 @@ export function TeamPanel({
             </details>
           ) : (
             <div className="na-team-history-runs">
-              {historyRuns.map((run) => (
+              {historyRuns.map(({ run, workers }) => (
                 <div key={run.id} className="na-team-history-run">
                   <div className="na-team-history-run-head">
                     <strong title={run.title}>{run.title}</strong>
@@ -294,7 +299,7 @@ export function TeamPanel({
                   </div>
                   {run.summary ? <p className="na-team-history-summary">{run.summary}</p> : null}
                   <div className="na-team-worker-list">
-                    {run.workers.map((worker) => (
+                    {workers.map((worker) => (
                       <WorkerRow
                         key={worker.id}
                         worker={worker}

@@ -87,11 +87,13 @@ export interface CliTeamSettings {
   };
 }
 
-/** Subset pushed to online device executors so lead prompts and ask-mode allowlists
- * reflect user preferences without querying Core on every hook call. */
+/** Subset pushed to online device executors so lead prompts, ask-mode allowlists,
+ * and active lead edit-guards reflect Core state without querying Core on every hook call. */
 export interface CliTeamDeviceConfig {
   dispatchMode: CliTeamDispatchMode;
   allowNexInAsk: boolean;
+  /** Lead session refs currently owning an active or paused collaboration run on this device. */
+  activeLeadRefs?: CliSessionRef[];
 }
 
 /** Metadata sent with `cli.op start` when Core launches a team worker. */
@@ -145,10 +147,21 @@ export const TEAM_DISPATCH_MODE_LABEL: Record<CliTeamDispatchMode, string> = {
 };
 
 export const TEAM_FINDING_SEVERITY_LABEL: Record<string, string> = {
+  p0: "P0",
+  p1: "P1",
+  p2: "P2",
+  p3: "P3",
+  critical: "P0",
   high: "高",
   medium: "中",
   low: "低",
 };
+
+export interface CliTeamFindingCount {
+  severity: string;
+  label: string;
+  count: number;
+}
 
 export function isRunLive(status: CliTeamRunStatus): boolean {
   return status === "active" || status === "paused";
@@ -160,6 +173,220 @@ export function isWorkerLive(status: CliTeamWorkerStatus): boolean {
 
 export function isWorkerWorking(status: CliTeamWorkerStatus): boolean {
   return status === "starting" || status === "running";
+}
+
+/** Failed collaborators are hidden from UI lists/panels while kept in the ledger for auditing. */
+export function isWorkerVisible(worker: Pick<CliTeamWorkerView, "status">): boolean {
+  return worker.status !== "failed";
+}
+
+export function visibleTeamWorkers<T extends Pick<CliTeamWorkerView, "status">>(workers: readonly T[]): T[] {
+  return workers.filter(isWorkerVisible);
+}
+
+// ---------------------------------------------------------------------------
+// Concise report/review briefing extraction (shared by Core & Web UI)
+
+const TEAM_HEADER_LINE_RE = /^\s*\[NexAgent team\]\s+From\s+[^\n]+(?:\r?\n)*/;
+const TEAM_FOOTER_LINE_RE = /(?:\r?\n)+(?:如需跟进请运行|如果修改请运行|主控提示（|答复方式：|完成后请(?:再次)?运行|全部完成后运行)[^\n]*\s*$/;
+const REVIEW_STOP_HEADING_RE = /^(?:#{1,6}\s*|\*\*)?(?:验证范围|测试范围|测试情况|测试结果|复现环境|环境说明|验证记录|检查范围|详细过程|详细日志|verification(?:\s+scope)?|test(?:ing)?(?:\s+scope|\s+plan)?|environment)\b/i;
+const REPORT_STOP_HEADING_RE = /^(?:#{1,6}\s*|\*\*)?(?:验证范围|详细日志|完整输出|修改细节|verification(?:\s+scope)?|detailed\s+logs?|raw\s+output)\b/i;
+const FINDING_LINE_RE = /^\s*(?:\d+[.)、]|[-*•])\s*(?:\*\*)?(?:\[(P[0-3]|critical|high|medium|low|阻塞|严重|高|中|低)\]|(P[0-3]|critical|high|medium|low)(?=(?:\*\*)?[\s:：\-–—）)\u4e00-\u9fff])|(阻塞|严重|高|中|低)(?=优先级|(?:\*\*)?[\s:：\-–—）)]))/i;
+const CONCLUSION_LINE_RE = /^(?:\*\*)?(?:交付结论|审查结论|复审结论|总体结论|结论|摘要|简报|总结|summary|verdict|conclusion)\s*[:：]\s*(.+)$/i;
+
+const SEVERITY_ORDER: Record<string, number> = {
+  p0: 0,
+  p1: 1,
+  p2: 2,
+  p3: 3,
+  high: 4,
+  medium: 5,
+  low: 6,
+};
+
+export function normalizeFindingSeverity(raw: string): { severity: string; label: string } {
+  const clean = raw.trim().toLowerCase();
+  if (clean === "p0" || clean === "critical" || clean === "blocker" || clean === "阻塞") return { severity: "p0", label: "P0" };
+  if (clean === "p1" || clean === "严重") return { severity: "p1", label: "P1" };
+  if (clean === "p2") return { severity: "p2", label: "P2" };
+  if (clean === "p3") return { severity: "p3", label: "P3" };
+  if (clean === "high" || clean === "高") return { severity: "high", label: "高" };
+  if (clean === "medium" || clean === "中") return { severity: "medium", label: "中" };
+  if (clean === "low" || clean === "低") return { severity: "low", label: "低" };
+  return { severity: clean || "medium", label: TEAM_FINDING_SEVERITY_LABEL[clean] ?? raw.trim().toUpperCase() };
+}
+
+/** Strips machine-directed `[NexAgent team] From ...` headers and command hint footers. */
+export function stripTeamMessageFraming(text: string): string {
+  let out = text.trim();
+  out = out.replace(TEAM_HEADER_LINE_RE, "");
+  // Strip one or more trailing command-hint lines added for the receiving LLM.
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(TEAM_FOOTER_LINE_RE, "");
+    if (next === out) break;
+    out = next;
+  }
+  return out.trim();
+}
+
+function stripMarkdownLine(line: string): string {
+  return line
+    .replace(/^\s*#{1,6}\s+/, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function clipBriefText(text: string, max: number): string {
+  const clean = text.trim();
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** Counts review issues grouped by normalized severity from structured findings or bulleted text. */
+export function summarizeFindingCounts(
+  findings?: readonly CliTeamFinding[],
+  fallbackText?: string,
+): CliTeamFindingCount[] {
+  const counts = new Map<string, CliTeamFindingCount>();
+  const add = (rawSeverity: string) => {
+    const { severity, label } = normalizeFindingSeverity(rawSeverity);
+    const entry = counts.get(severity);
+    if (entry) entry.count += 1;
+    else counts.set(severity, { severity, label, count: 1 });
+  };
+
+  if (findings?.length) {
+    for (const finding of findings) add(finding.severity || "medium");
+  } else if (fallbackText) {
+    const cleaned = stripTeamMessageFraming(fallbackText);
+    let inCode = false;
+    for (const line of cleaned.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("```")) {
+        inCode = !inCode;
+        continue;
+      }
+      if (inCode) continue;
+      if (REVIEW_STOP_HEADING_RE.test(trimmed)) break;
+      const match = FINDING_LINE_RE.exec(line);
+      const severity = match?.[1] ?? match?.[2] ?? match?.[3];
+      if (severity) add(severity);
+    }
+  }
+
+  return [...counts.values()].sort(
+    (a, b) => (SEVERITY_ORDER[a.severity] ?? 99) - (SEVERITY_ORDER[b.severity] ?? 99) || a.label.localeCompare(b.label),
+  );
+}
+
+export function formatFindingCountsSummary(counts: readonly CliTeamFindingCount[]): string {
+  if (!counts.length) return "未发现问题";
+  const parts = counts.map((entry) => {
+    const isP = /^P\d$/i.test(entry.label);
+    return isP ? `${entry.count} 个 ${entry.label}` : `${entry.count} 个${entry.label}优先级`;
+  });
+  return `发现 ${parts.join("、")}问题`;
+}
+
+/** Builds a short user-facing briefing ("简报") for collaborator reports and reviews. */
+export function buildTeamReportBrief(input: {
+  brief?: string;
+  body?: string;
+  findings?: readonly CliTeamFinding[];
+  isReview?: boolean;
+  outcome?: "succeeded" | "failed";
+}): { brief: string; findingCounts: CliTeamFindingCount[] } {
+  const cleanedBody = input.body ? stripTeamMessageFraming(input.body) : "";
+  const findingCounts = summarizeFindingCounts(input.findings, input.isReview ? cleanedBody : undefined);
+
+  const explicit = input.brief ? stripTeamMessageFraming(input.brief) : "";
+  if (explicit) {
+    const lines = explicit
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 4);
+    return {
+      brief: clipBriefText(lines.join("\n"), 320),
+      findingCounts,
+    };
+  }
+
+  const rawLines = cleanedBody.split(/\r?\n/);
+  const contentLines: string[] = [];
+  let inCode = false;
+  for (const raw of rawLines) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("```")) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode || !trimmed) continue;
+    if (input.isReview ? REVIEW_STOP_HEADING_RE.test(trimmed) : REPORT_STOP_HEADING_RE.test(trimmed)) break;
+    contentLines.push(trimmed);
+  }
+
+  if (input.isReview) {
+    // Prefer an explicit verdict/conclusion line; otherwise first concise non-heading sentence.
+    for (const line of contentLines) {
+      const clean = stripMarkdownLine(line);
+      const match = CONCLUSION_LINE_RE.exec(clean);
+      if (match?.[1]) {
+        return { brief: clipBriefText(match[1].trim(), 160), findingCounts };
+      }
+    }
+    const prose = contentLines.find((line) => !/^#{1,6}\s/.test(line) && !FINDING_LINE_RE.test(line));
+    if (prose) {
+      const clean = stripMarkdownLine(prose);
+      // Skip bare title-only first lines when a better next line exists.
+      const nextProse = contentLines.find((line) => line !== prose && !/^#{1,6}\s/.test(line) && !FINDING_LINE_RE.test(line));
+      const chosen = clean.length <= 24 && !/[。！？.!?]/.test(clean) && nextProse ? stripMarkdownLine(nextProse) : clean;
+      if (chosen) return { brief: clipBriefText(chosen, 160), findingCounts };
+    }
+    if (findingCounts.length) {
+      return { brief: `${formatFindingCountsSummary(findingCounts)}，详情可点进会话查看。`, findingCounts };
+    }
+    const fallback = contentLines[0] ? stripMarkdownLine(contentLines[0]) : "";
+    return {
+      brief: clipBriefText(fallback || (input.outcome === "failed" ? "审查未能完成" : "审查完成，未发现阻塞问题。"), 160),
+      findingCounts,
+    };
+  }
+
+  // Implementer / general collaborator report: keep concise summary + up to 3 short bullet points.
+  const picked: string[] = [];
+  for (let i = 0; i < contentLines.length; i++) {
+    const line = contentLines[i]!;
+    const isHeading = /^#{1,6}\s/.test(line);
+    const clean = stripMarkdownLine(line);
+    if (!clean) continue;
+    if (isHeading && i === 0 && contentLines.length > 1) continue;
+    if (isHeading) {
+      if (picked.length > 0) break;
+      continue;
+    }
+    const isBullet = /^\s*(?:[-*•]|\d+[.)、])\s+/.test(line);
+    if (isBullet) {
+      const bulletBody = stripMarkdownLine(line.replace(/^\s*(?:[-*•]|\d+[.)、])\s+/, ""));
+      if (!bulletBody) continue;
+      // Keep only the first concise sentence of each bullet to avoid essays.
+      const firstSentence = bulletBody.split(/(?<=[。！？；])\s*|(?<=[.!?])\s+/)[0] ?? bulletBody;
+      picked.push(`- ${clipBriefText(firstSentence, 90)}`);
+    } else {
+      const match = CONCLUSION_LINE_RE.exec(clean);
+      const sentence = match?.[1]?.trim() || clean;
+      picked.push(clipBriefText(sentence, 140));
+    }
+    if (picked.length >= 3) break;
+  }
+
+  return {
+    brief: clipBriefText(picked.join("\n") || (input.outcome === "failed" ? "任务执行失败" : "任务已完成。"), 280),
+    findingCounts,
+  };
 }
 
 export function isCliTeamCommand(value: unknown): value is CliTeamCommand {
@@ -422,8 +649,12 @@ export function parseTeamDeviceConfig(value: unknown): CliTeamDeviceConfig | nul
   if (!row) return null;
   if (typeof row.dispatchMode !== "string" || !(CLI_TEAM_DISPATCH_MODES as readonly string[]).includes(row.dispatchMode)) return null;
   if (typeof row.allowNexInAsk !== "boolean") return null;
+  const activeLeadRefs = Array.isArray(row.activeLeadRefs)
+    ? [...new Set(row.activeLeadRefs.slice(0, 100).filter(isRef))]
+    : undefined;
   return {
     dispatchMode: row.dispatchMode as CliTeamDispatchMode,
     allowNexInAsk: row.allowNexInAsk,
+    ...(activeLeadRefs !== undefined ? { activeLeadRefs } : {}),
   };
 }

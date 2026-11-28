@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import type { CliSessionKey } from "../../../shared/cli-agents";
 import { HarnessMark } from "./tokendance/HarnessMark";
-import { TEAM_FINDING_SEVERITY_LABEL, type CliTeamCard, type CliTeamCardKind } from "./team";
+import { type CliTeamCard, type CliTeamCardKind } from "./team";
 
 const RichText = lazy(() => import("../AgentDesktop").then((module) => ({ default: module.RichText })));
 
@@ -55,6 +55,15 @@ function cardIcon(card: CliTeamCard) {
   }
 }
 
+const MAX_BRIEF_FILES = 4;
+
+function severityTone(severity: string): "high" | "medium" | "low" {
+  const sev = severity.toLowerCase();
+  if (sev === "p0" || sev === "p1" || sev === "critical" || sev === "high") return "high";
+  if (sev === "p2" || sev === "medium") return "medium";
+  return "low";
+}
+
 export function TeamMessageCard({
   card,
   onSelectSession,
@@ -65,14 +74,22 @@ export function TeamMessageCard({
   const Icon = cardIcon(card);
   const jumpKey = card.sourceSessionKey ?? card.targetSessionKey;
   const badge = card.outcome === "failed" ? "失败" : CARD_KIND_BADGE[card.kind];
-  const hasContent = Boolean(card.body || card.findings?.length || card.files?.length);
+  const isBriefing = card.kind === "report" || card.kind === "review";
+  const displayText = isBriefing ? (card.brief || card.body) : card.body;
+  const findingCounts = card.findingCounts ?? [];
+  const totalFindings = findingCounts.reduce((sum, entry) => sum + entry.count, 0);
+  const showReviewStrip = card.kind === "review" && (findingCounts.length > 0 || card.outcome !== "failed");
+  const visibleFiles = card.files?.slice(0, MAX_BRIEF_FILES) ?? [];
+  const hiddenFiles = Math.max(0, (card.files?.length ?? 0) - visibleFiles.length);
+  const hasContent = Boolean(displayText || showReviewStrip || visibleFiles.length);
 
   return (
     <article
       className="na-team-card"
       data-kind={card.kind}
       data-outcome={card.outcome}
-      data-has-findings={card.findings?.length ? "1" : undefined}
+      data-brief={isBriefing ? "1" : undefined}
+      data-has-findings={totalFindings > 0 ? "1" : undefined}
       data-testid="cli-team-card"
     >
       <header className="na-team-card-head">
@@ -106,43 +123,40 @@ export function TeamMessageCard({
 
       {hasContent ? (
         <div className="na-team-card-content">
-          {card.body ? (
+          {showReviewStrip ? (
+            <div className="na-team-brief-counts" aria-label="审查问题简报">
+              {findingCounts.length > 0 ? (
+                <>
+                  <span className="na-team-brief-total">发现 {totalFindings} 个问题</span>
+                  {findingCounts.map((entry) => (
+                    <span key={entry.severity} className="na-team-severity-pill" data-severity={severityTone(entry.severity)}>
+                      {/^P\d$/i.test(entry.label) ? `${entry.count} 个 ${entry.label}` : `${entry.count} 个${entry.label}优先级`}
+                    </span>
+                  ))}
+                </>
+              ) : (
+                <span className="na-team-severity-pill" data-severity="clean">未发现问题</span>
+              )}
+            </div>
+          ) : null}
+
+          {displayText ? (
             <div className="na-team-card-body markdown">
-              <Suspense fallback={<p className="cli-plain">{card.body}</p>}>
-                <RichText value={card.body} />
+              <Suspense fallback={<p className="cli-plain">{displayText}</p>}>
+                <RichText value={displayText} />
               </Suspense>
             </div>
           ) : null}
 
-          {card.findings?.length ? (
-            <ul className="na-team-findings" aria-label="审查问题列表">
-              {card.findings.map((finding, index) => {
-                const sev = finding.severity.toLowerCase();
-                return (
-                  <li key={`${finding.file}:${finding.line ?? index}`} className="na-team-finding">
-                    <span className="na-team-severity" data-severity={sev}>
-                      {TEAM_FINDING_SEVERITY_LABEL[sev] ?? finding.severity}
-                    </span>
-                    <div className="na-team-finding-detail">
-                      <code className="na-team-finding-loc">
-                        {finding.file}{finding.line ? `:${finding.line}` : ""}
-                      </code>
-                      <span>{finding.issue}</span>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : null}
-
-          {card.files?.length ? (
+          {visibleFiles.length ? (
             <div className="na-team-files" aria-label="涉及文件">
-              {card.files.map((file) => (
+              {visibleFiles.map((file) => (
                 <span key={file} className="na-team-file">
                   <FileCode2 size={12} aria-hidden="true" />
                   <span>{file}</span>
                 </span>
               ))}
+              {hiddenFiles > 0 ? <span className="na-team-file">+{hiddenFiles} 个文件</span> : null}
             </div>
           ) : null}
         </div>

@@ -4,9 +4,13 @@
 //
 // Zero global CLI config mutations: everything lives inside the executor's own
 // data directory and is injected per launched session via PATH/env/argv.
-import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parsePureNexCommand, type CliTeamDispatchMode } from "../../../shared/cli-team.ts";
+
+export const LEAD_EDIT_GUARD_MESSAGE =
+  "当前会话处于协作模式（主控角色）：主 Agent 只做规划、派发与决策，不能直接编写或修改项目文件。请将实现或修复任务派发给协作者（使用 `nex send <工人> --file .nex-team/fixes.md` 或 `nex start <agent> ...`），等其汇报后再请审查员复审；若需为 `nex --file` 准备临时说明文件，请写入工作区 `.nex-team/` 目录或系统临时目录。";
 
 /** Returns true when `target` is equal to or lexically inside `root`. */
 export function isInsideDir(root: string, target: string, platform: NodeJS.Platform = process.platform): boolean {
@@ -51,6 +55,230 @@ export function isSafeAutoApproveNexCommand(
   return true;
 }
 
+/** Returns true ONLY when `filePath` targets a temporary collaboration spec file inside
+ * `<sessionCwd>/.nex-team/` or the OS temp directory (never a project source/deliverable file). */
+export function isLeadAllowedTempFilePath(
+  filePath: unknown,
+  sessionCwd: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+  tmpDir: string = os.tmpdir(),
+): boolean {
+  if (typeof filePath !== "string") return false;
+  const raw = filePath.trim();
+  if (!raw || raw.includes("\0") || raw.startsWith("~") || /^[\\/]{2}/.test(raw)) return false;
+
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  // Allow POSIX `/tmp/...` paths (e.g. Git Bash on Windows) when lexically clean without `..`.
+  if (raw.startsWith("/tmp/") || raw.startsWith("/var/tmp/")) {
+    const normalizedPosix = path.posix.normalize(raw);
+    if (
+      (normalizedPosix.startsWith("/tmp/") && normalizedPosix.length > 5) ||
+      (normalizedPosix.startsWith("/var/tmp/") && normalizedPosix.length > 9)
+    ) {
+      if (platform !== "win32") {
+        const root = normalizedPosix.startsWith("/var/tmp/") ? "/var/tmp" : "/tmp";
+        return ancestorInsideRoot(normalizedPosix, root, path.posix, platform);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  let candidate: string;
+  if (pathApi.isAbsolute(raw)) {
+    candidate = pathApi.resolve(raw);
+  } else {
+    if (!sessionCwd || !pathApi.isAbsolute(sessionCwd)) return false;
+    candidate = pathApi.resolve(sessionCwd, raw);
+  }
+
+  const allowedRoots: Array<{ root: string; baseReal?: string }> = [];
+  if (sessionCwd && pathApi.isAbsolute(sessionCwd)) {
+    allowedRoots.push({ root: pathApi.join(pathApi.resolve(sessionCwd), ".nex-team"), baseReal: pathApi.resolve(sessionCwd) });
+  }
+  if (tmpDir && pathApi.isAbsolute(tmpDir)) {
+    allowedRoots.push({ root: pathApi.resolve(tmpDir) });
+  }
+
+  for (const { root, baseReal } of allowedRoots) {
+    if (!isInsideDir(root, candidate, platform)) continue;
+    // Never allow overwriting the allowed directory itself.
+    if (pathApi.relative(platform === "win32" ? root.toLowerCase() : root, platform === "win32" ? candidate.toLowerCase() : candidate) === "") {
+      return false;
+    }
+    if (ancestorInsideRoot(candidate, root, pathApi, platform, baseReal)) return true;
+  }
+  return false;
+}
+
+function ancestorInsideRoot(
+  candidate: string,
+  root: string,
+  pathApi: typeof path.posix | typeof path.win32,
+  platform: NodeJS.Platform,
+  parentRoot?: string,
+): boolean {
+  let cursor = candidate;
+  for (let depth = 0; depth < 32; depth++) {
+    if (existsSync(cursor)) {
+      try {
+        const realCursor = realpathSync(cursor);
+        if (existsSync(root)) {
+          return isInsideDir(realpathSync(root), realCursor, platform);
+        }
+        // `.nex-team/` does not exist yet: ensure the existing ancestor doesn't escape `sessionCwd` via symlink.
+        if (parentRoot && existsSync(parentRoot)) {
+          return isInsideDir(realpathSync(parentRoot), realCursor, platform);
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    const parent = pathApi.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return false;
+}
+
+const LEAD_MUTATING_INPLACE_RE = /(?:^|[\s;&|()])(?:sed\s+-[A-Za-z]*i|perl\s+-[A-Za-z]*i|git\s+apply\b|apply_patch\b|patch\b)/i;
+const LEAD_PWSH_WRITE_RE = /\b(?:Set-Content|Add-Content|Out-File|WriteAllText|WriteAllLines|WriteAllBytes)\b/i;
+const LEAD_INLINE_SCRIPT_WRITE_RE = /\b(?:python3?|py|node)\b[\s\S]*?(?:\s-(?:c|e)\b|--eval\b)[\s\S]*?(?:writeFile|appendFile|createWriteStream|write_text|write_bytes|open\s*\([^)]*['"][wa+])/i;
+
+function isNullDevice(token: string): boolean {
+  const clean = token.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  return clean === "/dev/null" || clean === "nul" || clean === "$null";
+}
+
+function isAllowedShellWriteTarget(
+  token: string,
+  sessionCwd: string | undefined,
+  platform: NodeJS.Platform,
+  tmpDir: string,
+): boolean {
+  const clean = token.trim().replace(/^['"]|['"]$/g, "");
+  if (!clean) return false;
+  if (isNullDevice(clean)) return true;
+  if (/^(?:\$TMPDIR|\$\{TMPDIR\}|\$TEMP|\$TMP|\$env:TEMP|\$env:TMP|%TEMP%|%TMP%)[\\/]/i.test(clean) && !clean.includes("..")) {
+    return true;
+  }
+  return isLeadAllowedTempFilePath(clean, sessionCwd, platform, tmpDir);
+}
+
+/** Extracts unquoted `>` / `>>` redirection targets from a shell command string. */
+function extractShellRedirectTargets(command: string): string[] {
+  const targets: string[] = [];
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote) {
+      if (ch === "\\" && quote === '"' && i + 1 < command.length) {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch !== ">") continue;
+    // Skip `>&` (fd duplication like `2>&1`)
+    if (command[i + 1] === "&") {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    if (command[j] === ">") j++;
+    if (command[j] === "|") j++; // noclobber `>|`
+    if (command[j] === "&") continue;
+    while (j < command.length && /\s/.test(command[j]!)) j++;
+    let target = "";
+    let tq: "'" | '"' | null = null;
+    while (j < command.length) {
+      const c = command[j]!;
+      if (tq) {
+        if (c === tq) tq = null;
+        else target += c;
+        j++;
+        continue;
+      }
+      if (c === "'" || c === '"') {
+        tq = c;
+        j++;
+        continue;
+      }
+      if (/[\s;&|<>()]/.test(c)) break;
+      target += c;
+      j++;
+    }
+    if (target) targets.push(target);
+    i = j - 1;
+  }
+  return targets;
+}
+
+/** Removes heredoc body lines so content written into an allowed temp spec never false-triggers,
+ * while preserving all command lines before and after the heredoc for inspection. */
+function stripHeredocBodies(command: string): string {
+  const lines = command.split(/\r?\n/);
+  const out: string[] = [];
+  let delimiter: string | null = null;
+  for (const line of lines) {
+    if (delimiter !== null) {
+      if (line.trim() === delimiter) delimiter = null;
+      continue;
+    }
+    out.push(line);
+    const match = /<<-?\s*['"]?([A-Za-z0-9_]+)['"]?/.exec(line);
+    if (match?.[1]) delimiter = match[1];
+  }
+  return out.join("\n");
+}
+
+/** Returns true when a shell command executed by an active collaboration lead attempts to
+ * mutate project files directly instead of delegating to a worker. Standalone `nex`
+ * commands, read-only inspections, and writing temp files into `.nex-team/` or temp dir pass. */
+export function isLeadBlockedShellCommand(
+  command: unknown,
+  sessionCwd: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+  tmpDir: string = os.tmpdir(),
+): boolean {
+  if (typeof command !== "string") return false;
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  if (parsePureNexCommand(trimmed) !== null) return false;
+
+  const shellOnly = stripHeredocBodies(trimmed);
+  const targets = extractShellRedirectTargets(shellOnly);
+  if (targets.some((t) => !isAllowedShellWriteTarget(t, sessionCwd, platform, tmpDir))) {
+    return true;
+  }
+
+  if (LEAD_MUTATING_INPLACE_RE.test(shellOnly)) return true;
+
+  for (const segment of shellOnly.split(/[;\r\n]+|&&|\|\|/)) {
+    if (LEAD_PWSH_WRITE_RE.test(segment)) {
+      const allowedHint = /(?:^|[\s"'(=])(?:\.nex-team[\\/]|(?:\$env:TEMP|\$env:TMP|%TEMP%|%TMP%)[\\/])/i.test(segment);
+      if (!allowedHint) return true;
+    }
+    const teeMatch = /(?:^|[\s|()])tee\s+(?:-[a-z]+\s+)*([^\s|()]+)/i.exec(segment);
+    if (teeMatch && (!teeMatch[1] || !isAllowedShellWriteTarget(teeMatch[1], sessionCwd, platform, tmpDir))) {
+      return true;
+    }
+  }
+
+  if (LEAD_INLINE_SCRIPT_WRITE_RE.test(shellOnly)) {
+    const touchesOnlyTemp = /\.nex-team[\\/]|\/tmp\/|os\.tmpdir|tempfile/i.test(shellOnly);
+    if (!touchesOnlyTemp) return true;
+  }
+
+  return false;
+}
+
 export interface TeamBinPaths {
   binDir: string;
   mcpScript: string;
@@ -82,9 +310,9 @@ export const NEX_MCP_TOOL_NAMES = [
 export function leadInstruction(mode: CliTeamDispatchMode): string {
   if (mode === "off") return "";
   if (mode === "auto") {
-    return "支持 NexAgent 协作模式（`nex` / `nex_*`）：用户要求协作或适合并行/独立审查时，先执行 `nex guide`。";
+    return "支持 NexAgent 协作模式（`nex` / `nex_*`）：用户要求协作或适合并行/独立审查时，先执行 `nex guide`；开启协作后主会话只做规划、派发与决策，不直接修改项目代码。";
   }
-  return "支持 NexAgent 协作模式（`nex` / `nex_*`）：仅在用户要求多 Agent 协作或独立审查时，先执行 `nex guide`。";
+  return "支持 NexAgent 协作模式（`nex` / `nex_*`）：仅在用户要求多 Agent 协作或独立审查时，先执行 `nex guide`；开启协作后主会话只做规划、派发与决策，不直接修改项目代码。";
 }
 
 /** Single-launch Codex `-c` overrides to mount the out-of-sandbox MCP bridge
@@ -229,7 +457,7 @@ function parseCliArgs(argv) {
   let json = false;
   const positional = [];
   const flags = Object.create(null);
-  const valueFlags = new Set(["file", "findings", "title", "role", "in", "after", "model", "effort", "permissions", "outcome", "files", "text", "options", "reason", "limit"]);
+  const valueFlags = new Set(["file", "findings", "title", "role", "in", "after", "model", "effort", "permissions", "outcome", "files", "text", "brief", "options", "reason", "limit"]);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -267,7 +495,7 @@ function buildPayload(command, positional, flags) {
     if (positional[0]) args.mailId = positional[0];
   }
 
-  for (const key of ["title", "role", "in", "after", "model", "effort", "permissions", "outcome", "files", "text", "options", "reason"]) {
+  for (const key of ["title", "role", "in", "after", "model", "effort", "permissions", "outcome", "files", "text", "brief", "options", "reason"]) {
     if (flags[key] !== undefined) args[key] = flags[key];
   }
   if (flags.limit !== undefined) {
@@ -534,18 +762,19 @@ const TOOLS = [
     },
   },
   {
-    name: "nex_report", command: "report", description: "向主会话提交本次任务的最终汇报（工人用）。",
+    name: "nex_report", command: "report", description: "向主会话提交本次任务的最终汇报（工人用）。请提供精炼简报 brief。",
     inputSchema: {
       type: "object",
       properties: {
         outcome: { type: "string", enum: ["succeeded", "failed"] },
-        body: { type: "string", description: "汇报正文（直接传 UTF-8 字符串）" },
+        brief: { type: "string", description: "面向用户展示的 1–3 句精炼简报（实现者说明实现了哪些功能/修复了哪些 bug；审查员说明发现了几个 P1/P2 问题）" },
+        body: { type: "string", description: "汇报正文（直接传 UTF-8 字符串，供主会话决策使用）" },
         files: { type: "array", items: { type: "string" } },
         findings: {
           type: "array",
           items: {
             type: "object",
-            properties: { severity: { type: "string" }, file: { type: "string" }, line: { type: "integer" }, issue: { type: "string" } },
+            properties: { severity: { type: "string", description: "推荐 P0/P1/P2/P3" }, file: { type: "string" }, line: { type: "integer" }, issue: { type: "string" } },
             required: ["file", "issue"],
           },
         },

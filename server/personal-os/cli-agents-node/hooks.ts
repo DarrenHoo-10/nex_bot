@@ -28,7 +28,12 @@ import {
   type CliTurnReason,
   type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
-import { isSafeAutoApproveNexCommand } from "./team-cli.ts";
+import {
+  LEAD_EDIT_GUARD_MESSAGE,
+  isLeadAllowedTempFilePath,
+  isLeadBlockedShellCommand,
+  isSafeAutoApproveNexCommand,
+} from "./team-cli.ts";
 import { clipUnits, summarizeInput } from "./items.ts";
 
 /** A request stays open this long. Claude Code ends the hook at 1800 s (hooks.json), so ours ends first. */
@@ -62,6 +67,7 @@ export function locateHookPlugin(options: { env?: NodeJS.ProcessEnv; moduleUrl?:
 const HOOK_EVENTS = [
   { event: "PreToolUse", mode: "question", matcher: "AskUserQuestion", timeout: 1800, async: false },
   { event: "PreToolUse", mode: "nex_pre", matcher: "Bash|PowerShell", timeout: 10, async: false },
+  { event: "PreToolUse", mode: "lead_guard", matcher: "Edit|Write|MultiEdit|NotebookEdit", timeout: 10, async: false },
   { event: "PermissionRequest", mode: "permission", matcher: "*", timeout: 1800, async: false },
   { event: "PostToolUse", mode: "post", matcher: "*", timeout: 10, async: true },
   { event: "Stop", mode: "stop", matcher: undefined, timeout: 10, async: true },
@@ -196,6 +202,8 @@ export interface HookServerOptions {
   sessionCwd?: (ref: CliSessionRef) => string | undefined;
   /** Whether ask-mode auto-allows standalone `nex` commands in Claude Bash|PowerShell PreToolUse. */
   allowNexInAsk?: () => boolean;
+  /** Whether the session currently leads an active/paused collaboration run (enforces planner-only guard). */
+  isActiveTeamLead?: (ref: CliSessionRef) => boolean;
   /** Forwarded `nex` collaboration command from a managed session to Core. */
   teamCall?: (ref: CliSessionRef, command: string, args: Record<string, unknown>) => Promise<HookTeamResult>;
   /** Bind a loopback HTTP fallback on 127.0.0.1:0 (used when Windows restricted sandbox blocks named pipes). */
@@ -634,8 +642,9 @@ export class HookServer {
     const input = message.input as HookInput;
     switch (message.event) {
       case "nex_pre": {
-        if ((this.options.allowNexInAsk?.() ?? true) && this.options.active()) {
+        if (this.options.active()) {
           const toolInput = isRec(input.tool_input) ? input.tool_input : null;
+          const oversized = toolInput?.__oversized === true;
           const hasCmd = toolInput && typeof toolInput.command === "string";
           const hasCmdLine = toolInput && typeof toolInput.CommandLine === "string";
           const consistent = !hasCmd || !hasCmdLine || toolInput.command === toolInput.CommandLine;
@@ -643,9 +652,39 @@ export class HookServer {
           const cwd = this.options.sessionCwd
             ? this.options.sessionCwd(ref)
             : typeof input.cwd === "string" ? input.cwd : undefined;
-          if (cmd && isSafeAutoApproveNexCommand(cmd, cwd, this.platform)) {
+          if (!oversized && (this.options.allowNexInAsk?.() ?? true) && cmd && isSafeAutoApproveNexCommand(cmd, cwd, this.platform)) {
             this.reply(socket, { decision: "allow" });
             return;
+          }
+          if (this.options.isActiveTeamLead?.(ref) && cmd && isLeadBlockedShellCommand(cmd, cwd, this.platform)) {
+            this.reply(socket, { decision: "deny", message: LEAD_EDIT_GUARD_MESSAGE });
+            return;
+          }
+        }
+        this.reply(socket, { decision: "pass" });
+        return;
+      }
+      case "lead_guard": {
+        if (this.options.active() && this.options.isActiveTeamLead?.(ref)) {
+          const tool = typeof input.tool_name === "string" ? input.tool_name : "";
+          if (tool === "Edit" || tool === "MultiEdit" || tool === "NotebookEdit") {
+            this.reply(socket, { decision: "deny", message: LEAD_EDIT_GUARD_MESSAGE });
+            return;
+          }
+          if (tool === "Write") {
+            const toolInput = isRec(input.tool_input) ? input.tool_input : null;
+            const filePath = toolInput && typeof toolInput.file_path === "string"
+              ? toolInput.file_path
+              : toolInput && typeof toolInput.path === "string"
+                ? toolInput.path
+                : "";
+            const cwd = this.options.sessionCwd
+              ? this.options.sessionCwd(ref)
+              : typeof input.cwd === "string" ? input.cwd : undefined;
+            if (!isLeadAllowedTempFilePath(filePath, cwd, this.platform)) {
+              this.reply(socket, { decision: "deny", message: LEAD_EDIT_GUARD_MESSAGE });
+              return;
+            }
           }
         }
         this.reply(socket, { decision: "pass" });
