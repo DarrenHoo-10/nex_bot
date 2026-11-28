@@ -22,6 +22,8 @@ import {
   CLI_OPS,
   clampTermSize,
   cliKey,
+  cliModelDisplayLabel,
+  cliModelProviderGroups,
   cliRef,
   isAbsoluteCwd,
   isCliEngine,
@@ -37,6 +39,7 @@ import {
   parseCliItem,
   parseCliItems,
   parseCliKey,
+  parseCliModelCatalog,
   parseCliOpArgs,
   parseCliOpResult,
   parseCliRef,
@@ -549,7 +552,11 @@ describe("parseCliOpResult", () => {
     expect(parseCliOpResult("watch", {})).toEqual({});
     expect(parseCliOpResult("unwatch", { x: 1 })).toEqual({});
     expect(parseCliOpResult("start", { ref, terminal: "t-1" })).toEqual({ ref, terminal: "t-1" });
+    expect(parseCliOpResult("start", { ref: `agy:${UUID}`, cwd: "D:\\work" })).toEqual({ ref: `agy:${UUID}`, cwd: "D:\\work" });
+    expect(parseCliOpResult("start", { ref: `zcode:${UUID}`, cwd: "D:\\work" })).toEqual({ ref: `zcode:${UUID}`, cwd: "D:\\work" });
     expect(parseCliOpResult("continue", { ref, terminal: "t-1" })).toEqual({ ref, terminal: "t-1" });
+    expect(parseCliOpResult("continue", { ref: `agy:${UUID}` })).toEqual({ ref: `agy:${UUID}` });
+    expect(parseCliOpResult("continue", { ref: `zcode:${UUID}` })).toEqual({ ref: `zcode:${UUID}` });
     expect(parseCliOpResult("send", { turn: 3, started: false })).toEqual({ turn: 3, started: false });
     const queued = { turn: 0, started: false, delivery: "unconfirmed", nativeQueued: true };
     expect(parseCliOpResult("send", queued)).toEqual(queued);
@@ -1019,13 +1026,38 @@ describe("launch options", () => {
     for (const engine of ["claude", "codex"] as const) for (const model of CLI_MODELS[engine]) expect(isCliModel(model.id)).toBe(true);
   });
   it("accepts model names and an engine's own efforts only", () => {
-    for (const ok of ["opus", "opus[1m]", "claude-opus-5-5", "gpt-6.2-sol", "us.anthropic.x:1"]) expect(isCliModel(ok), ok).toBe(true);
-    for (const bad of ["", "-m", "has space", "a;b", "a\"b", "x".repeat(101), 5]) expect(isCliModel(bad), String(bad)).toBe(false);
+    for (const ok of ["opus", "opus[1m]", "claude-opus-5-5", "gpt-6.2-sol", "us.anthropic.x:1", "account:bigmodel-individual-coding-plan/GLM-5.3", "x".repeat(120)]) expect(isCliModel(ok), ok).toBe(true);
+    for (const bad of ["", "-m", "has space", "a;b", "a\"b", "x".repeat(201), 5]) expect(isCliModel(bad), String(bad)).toBe(false);
     expect(isCliEffort("claude", "max")).toBe(true);
     expect(isCliEffort("claude", "ultra")).toBe(false);
     expect(isCliEffort("codex", "ultra")).toBe(true);
     expect(isCliEffort("zcode", "low")).toBe(true);
     expect(isCliEffort("zcode", "turbo")).toBe(false);
+  });
+  it("parses provider/plan metadata in model catalogs, groups plans before APIs, and disambiguates duplicate labels", () => {
+    const parsed = parseCliModelCatalog({
+      current: "account:bigmodel-start-plan/GLM-5.3-Flash",
+      currentEffort: "max",
+      models: [
+        { id: "06d54a34-df54-4b8a-a434-e5e9504b9be6/glm-5.3", label: "GLM-5.3", description: "智谱", provider: "06d54a34-df54-4b8a-a434-e5e9504b9be6", providerLabel: "智谱", providerBadge: "API", providerKind: "api", efforts: ["high"] },
+        { id: "account:bigmodel-individual-coding-plan/GLM-5.3", label: "GLM-5.3", description: "BigModel", provider: "account:bigmodel-individual-coding-plan", providerLabel: "BigModel", providerBadge: "个人", providerKind: "plan", efforts: ["high", "max"] },
+        { id: "account:bigmodel-team-coding-plan/GLM-5.3", label: "GLM-5.3", description: "BigModel", provider: "account:bigmodel-team-coding-plan", providerLabel: "BigModel", providerBadge: "团队", providerKind: "plan", efforts: ["high", "max"] },
+        { id: "account:bigmodel-start-plan/GLM-5.3-Flash", label: "GLM-5.3-Flash", description: "Start Plan", provider: "account:bigmodel-start-plan", providerLabel: "Start Plan", providerBadge: "免费", providerKind: "plan", efforts: ["low", "max"] },
+      ],
+    });
+    expect(parsed?.currentEffort).toBe("max");
+    const groups = cliModelProviderGroups(parsed!.models);
+    expect(groups.map((g) => [g.id, g.label, g.badge, g.kind])).toEqual([
+      ["account:bigmodel-individual-coding-plan", "BigModel", "个人", "plan"],
+      ["account:bigmodel-team-coding-plan", "BigModel", "团队", "plan"],
+      ["account:bigmodel-start-plan", "Start Plan", "免费", "plan"],
+      ["06d54a34-df54-4b8a-a434-e5e9504b9be6", "智谱", "API", "api"],
+    ]);
+    expect(cliModelDisplayLabel(parsed!.models, "account:bigmodel-start-plan/GLM-5.3-Flash")).toBe("GLM-5.3-Flash");
+    expect(cliModelDisplayLabel(parsed!.models, "06d54a34-df54-4b8a-a434-e5e9504b9be6/glm-5.3")).toBe("智谱 · GLM-5.3");
+    expect(cliModelDisplayLabel(parsed!.models, "account:bigmodel-individual-coding-plan/GLM-5.3")).toBe("BigModel 个人 · GLM-5.3");
+    expect(cliModelDisplayLabel(parsed!.models, "account:bigmodel-team-coding-plan/GLM-5.3")).toBe("BigModel 团队 · GLM-5.3");
+    expect(cliModelDisplayLabel([], "account:bigmodel-start-plan/GLM-5.3-Flash")).toBe("Start Plan · GLM-5.3-Flash");
   });
   it("carries model and effort on start and continue, and rejects what the engine lacks", () => {
     expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", model: "opus", effort: "xhigh" })).toEqual({ engine: "claude", cwd: "/x", model: "opus", effort: "xhigh" });

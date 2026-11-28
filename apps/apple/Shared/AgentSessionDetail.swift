@@ -1612,7 +1612,7 @@ private struct AgentComposer: View {
     private var modelTitle: String {
         let id = chosenModel.isEmpty ? (session.model ?? catalog.current ?? "") : chosenModel
         guard !id.isEmpty else { return "默认模型" }
-        return catalog.models.first { $0.id == id }?.label ?? id
+        return CliLaunches.modelDisplayLabel(catalog.models, id: id)
     }
 
     /// The model on one line left of the context ring, cut at its width; it opens the model choices.
@@ -1626,8 +1626,7 @@ private struct AgentComposer: View {
                 .accessibilityLabel("模型设置").accessibilityValue(modelTitle)
             #else
             Menu {
-                modelRow("", title: "默认模型")
-                ForEach(catalog.models) { option in modelRow(option.id, title: option.label) }
+                AgentMacModelMenuContent(catalog: catalog, selection: $chosenModel, fallback: session.model ?? catalog.current ?? "")
             } label: { modelChipLabel }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .frame(maxWidth: 180)
@@ -1644,14 +1643,6 @@ private struct AgentComposer: View {
             #endif
             .frame(height: 34).contentShape(Rectangle())
     }
-
-    #if os(macOS)
-    private func modelRow(_ id: String, title: String) -> some View {
-        Button { chosenModel = id } label: {
-            if chosenModel == id { Label(title, systemImage: "checkmark") } else { Text(title) }
-        }
-    }
-    #endif
 
     private func setEffort(_ level: String) {
         effort = level

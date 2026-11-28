@@ -41,6 +41,29 @@ final class CliLaunchLogicTests: XCTestCase {
         let old = try JSONDecoder().decode(CliCapability.self, from: Data(#"{"version":1,"engines":["claude"],"terminal":{"name":"herdr-core","version":"1","ready":true}}"#.utf8))
         XCTAssertEqual(old.features, [])
     }
+
+    func testProviderGroupsAndDisplayLabels() throws {
+        let json = """
+        {
+          "current": "account:bigmodel-start-plan/GLM-5.3-Flash",
+          "currentEffort": "max",
+          "models": [
+            {"id":"p-zhipu/glm-5.3","label":"GLM-5.3","description":"智谱","provider":"p-zhipu","providerLabel":"智谱","providerBadge":"API","providerKind":"api","efforts":["high"]},
+            {"id":"account:bigmodel-individual-coding-plan/GLM-5.3","label":"GLM-5.3","description":"BigModel","provider":"account:bigmodel-individual-coding-plan","providerLabel":"BigModel","providerBadge":"个人","providerKind":"plan","efforts":["high","max"]},
+            {"id":"account:bigmodel-start-plan/GLM-5.3-Flash","label":"GLM-5.3-Flash","description":"Start Plan","provider":"account:bigmodel-start-plan","providerLabel":"Start Plan","providerBadge":"免费","providerKind":"plan","efforts":["low","max"]}
+          ]
+        }
+        """
+        let catalog = try JSONDecoder().decode(CliModelCatalog.self, from: Data(json.utf8))
+        let groups = CliLaunches.providerGroups(catalog.models)
+        XCTAssertEqual(groups.map(\.id), ["account:bigmodel-individual-coding-plan", "account:bigmodel-start-plan", "p-zhipu"])
+        XCTAssertEqual(groups.map(\.displayTitle), ["BigModel · 个人", "Start Plan · 免费", "智谱 · API"])
+        XCTAssertEqual(groups.map(\.isPlan), [true, true, false])
+        XCTAssertEqual(CliLaunches.modelDisplayLabel(catalog.models, id: "account:bigmodel-start-plan/GLM-5.3-Flash"), "GLM-5.3-Flash")
+        XCTAssertEqual(CliLaunches.modelDisplayLabel(catalog.models, id: "p-zhipu/glm-5.3"), "智谱 · GLM-5.3")
+        XCTAssertEqual(CliLaunches.modelDisplayLabel(catalog.models, id: "account:bigmodel-individual-coding-plan/GLM-5.3"), "BigModel · GLM-5.3")
+        XCTAssertEqual(CliLaunches.modelDisplayLabel([], id: "account:bigmodel-start-plan/GLM-5.3-Flash"), "Start Plan · GLM-5.3-Flash")
+    }
 }
 
 /// Answers the requests of one launch test; counts what it saw.

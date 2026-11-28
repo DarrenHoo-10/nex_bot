@@ -617,9 +617,13 @@ export const CLI_MODELS: Record<CliEngine, readonly { id: string; label: string 
   agy: [],
 };
 
-// an alias or full model name (`opus[1m]`, `gpt-6.2-sol`, a gateway's `auto/claude-opus-5-5[1m]`);
-// it starts alphanumeric so it can never read as a flag, and carries nothing a shell or cmd.exe interprets
-export const CLI_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/\-[\]]{0,99}$/;
+// an alias or full model name (`opus[1m]`, `gpt-6.2-sol`, a gateway's `auto/claude-opus-5-5[1m]`,
+// or ZCode's `<providerId>/<modelId>`); it starts alphanumeric so it can never read as a flag,
+// and carries nothing a shell or cmd.exe interprets
+export const CLI_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/\-[\]]{0,199}$/;
+
+export type CliModelProviderKind = "plan" | "api";
+export const CLI_MODEL_PROVIDER_KINDS: readonly CliModelProviderKind[] = ["plan", "api"];
 
 /** One row of a CLI's own model picker, as the computer reads it from the CLI's settings. */
 export interface CliModelOption {
@@ -629,6 +633,80 @@ export interface CliModelOption {
   description?: string;
   /** effort levels this model takes; absent when the CLI does not say (every level of the engine is offered) */
   efforts?: string[];
+  /** stable provider / plan id when a CLI organizes models under plans or providers (e.g. ZCode) */
+  provider?: string;
+  /** human-readable provider / plan name (e.g. `Start Plan`, `BigModel`, `智谱`, `CPA`) */
+  providerLabel?: string;
+  /** concise badge for the provider / plan (e.g. `免费`, `个人`, `套餐`, `API`) */
+  providerBadge?: string;
+  /** separates subscription plans ("plan") from API-key providers ("api") */
+  providerKind?: CliModelProviderKind;
+}
+
+export interface CliModelProviderGroup {
+  id: string;
+  label: string;
+  badge?: string;
+  kind: CliModelProviderKind;
+  models: CliModelOption[];
+}
+
+const ZCODE_ACCOUNT_PROVIDER_INFO: Record<string, { label: string; badge: string }> = {
+  "account:bigmodel-individual-coding-plan": { label: "BigModel", badge: "个人" },
+  "account:bigmodel-team-coding-plan": { label: "BigModel", badge: "团队" },
+  "account:bigmodel-start-plan": { label: "Start Plan", badge: "免费" },
+  "account:bigmodel-offpeak-idle-plan": { label: "BigModel", badge: "闲时" },
+  "account:bigmodel-highspeed-card": { label: "BigModel", badge: "高速" },
+  "account:zai-individual-coding-plan": { label: "Z.AI", badge: "个人" },
+  "account:zai-team-coding-plan": { label: "Z.AI", badge: "团队" },
+  "account:zai-start-plan": { label: "Start Plan", badge: "免费" },
+  "account:zai-offpeak-idle-plan": { label: "Z.AI", badge: "闲时" },
+  "account:zai-highspeed-card": { label: "Z.AI", badge: "高速" },
+};
+
+/** Groups provider-scoped models (e.g. ZCode plans & API providers), placing plans before API providers. */
+export function cliModelProviderGroups(models: readonly CliModelOption[]): CliModelProviderGroup[] {
+  if (!models.some((row) => row.provider?.trim())) return [];
+  const byId = new Map<string, CliModelProviderGroup>();
+  const order: CliModelProviderGroup[] = [];
+  for (const row of models) {
+    const id = row.provider?.trim() || "__other__";
+    let group = byId.get(id);
+    if (!group) {
+      const label = row.providerLabel?.trim() || row.description?.trim() || (id === "__other__" ? "其他" : id);
+      const badge = row.providerBadge?.trim() || undefined;
+      const kind: CliModelProviderKind = row.providerKind === "plan" ? "plan" : "api";
+      group = { id, label, ...(badge ? { badge } : {}), kind, models: [] };
+      byId.set(id, group);
+      order.push(group);
+    }
+    group.models.push(row);
+  }
+  return [...order.filter((g) => g.kind === "plan"), ...order.filter((g) => g.kind !== "plan")];
+}
+
+/** Display label for a chosen or running model id, adding the plan/provider name when multiple providers share a label. */
+export function cliModelDisplayLabel(models: readonly CliModelOption[], id: string): string {
+  const row = models.find((entry) => entry.id === id);
+  if (row) {
+    const providerLabel = row.providerLabel?.trim();
+    if (providerLabel && row.provider) {
+      const key = row.label.trim().toLowerCase();
+      const duplicates = models.filter((entry) => entry.provider !== row.provider && entry.label.trim().toLowerCase() === key);
+      if (duplicates.length > 0) {
+        const sameProviderLabel = duplicates.some((entry) => entry.providerLabel?.trim() === providerLabel);
+        const prefix = sameProviderLabel && row.providerBadge ? `${providerLabel} ${row.providerBadge}` : providerLabel;
+        return `${prefix} · ${row.label}`;
+      }
+    }
+    return row.label;
+  }
+  const slash = id.indexOf("/");
+  if (slash > 0 && slash < id.length - 1) {
+    const known = ZCODE_ACCOUNT_PROVIDER_INFO[id.slice(0, slash)];
+    if (known) return `${known.label} · ${id.slice(slash + 1)}`;
+  }
+  return id;
 }
 
 export const CLI_REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -661,7 +739,7 @@ export interface CliModelCatalog {
   currentEffort?: string;
 }
 
-export const CLI_MODEL_LIMITS = { models: 200, label: 120, description: 200 } as const;
+export const CLI_MODEL_LIMITS = { models: 200, label: 120, description: 200, provider: 120, providerLabel: 120, providerBadge: 32 } as const;
 
 export function isCliModel(value: unknown): value is string {
   return typeof value === "string" && CLI_MODEL_RE.test(value);
@@ -1667,17 +1745,19 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
   unwatch: () => ({}),
   start: (o) => {
     const session = ref(o.ref);
+    const protocol = session.startsWith("agy:") || session.startsWith("zcode:");
     return pick({
       ref: session,
-      terminal: session.startsWith("agy:") ? optStr(o, "terminal", CLI_LIMITS.terminal, 1) : str(o.terminal, CLI_LIMITS.terminal, 1),
+      terminal: protocol ? optStr(o, "terminal", CLI_LIMITS.terminal, 1) : str(o.terminal, CLI_LIMITS.terminal, 1),
       cwd: optStr(o, "cwd", CLI_LIMITS.cwd, 1),
     });
   },
   continue: (o) => {
     const session = ref(o.ref);
+    const protocol = session.startsWith("agy:") || session.startsWith("zcode:");
     return pick({
       ref: session,
-      terminal: session.startsWith("agy:") ? optStr(o, "terminal", CLI_LIMITS.terminal, 1) : str(o.terminal, CLI_LIMITS.terminal, 1),
+      terminal: protocol ? optStr(o, "terminal", CLI_LIMITS.terminal, 1) : str(o.terminal, CLI_LIMITS.terminal, 1),
     });
   },
   send: (o) =>
@@ -1824,7 +1904,11 @@ function modelCatalog(o: Rec): CliModelCatalog {
     const label = typeof row.label === "string" && row.label.trim() ? row.label.trim().slice(0, CLI_MODEL_LIMITS.label) : row.id;
     const description = typeof row.description === "string" && row.description.trim() ? row.description.trim().slice(0, CLI_MODEL_LIMITS.description) : undefined;
     const efforts = Array.isArray(row.efforts) ? [...new Set(row.efforts.filter((level): level is string => typeof level === "string" && level.length <= 32))].slice(0, 16) : undefined;
-    models.push(pick({ id: row.id, label, description, efforts }));
+    const provider = typeof row.provider === "string" && row.provider.trim() ? row.provider.trim().slice(0, CLI_MODEL_LIMITS.provider) : undefined;
+    const providerLabel = typeof row.providerLabel === "string" && row.providerLabel.trim() ? row.providerLabel.trim().slice(0, CLI_MODEL_LIMITS.providerLabel) : undefined;
+    const providerBadge = typeof row.providerBadge === "string" && row.providerBadge.trim() ? row.providerBadge.trim().slice(0, CLI_MODEL_LIMITS.providerBadge) : undefined;
+    const providerKind: CliModelProviderKind | undefined = row.providerKind === "plan" || row.providerKind === "api" ? row.providerKind : undefined;
+    models.push(pick({ id: row.id, label, description, efforts, provider, providerLabel, providerBadge, providerKind }));
   }
   return pick({
     models,

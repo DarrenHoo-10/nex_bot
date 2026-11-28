@@ -378,8 +378,7 @@ struct AgentNewSessionPage: View {
                 if canChoose {
                     // compact like the session's own model button: the name of the choice, the list on click
                     Menu {
-                        Button { chosenModel = "" } label: { menuLabel(fallbackModel.isEmpty ? "默认" : "默认（\(label(fallbackModel))）", on: chosenModel.isEmpty) }
-                        ForEach(catalog.models) { row in Button { chosenModel = row.id } label: { menuLabel(row.label, on: chosenModel == row.id) } }
+                        AgentMacModelMenuContent(catalog: catalog, selection: $chosenModel, fallback: fallbackModel)
                     } label: {
                         HStack(spacing: 4) {
                             Text(chosenModel.isEmpty ? (fallbackModel.isEmpty ? "默认模型" : label(fallbackModel)) : label(chosenModel)).lineLimit(1)
@@ -403,11 +402,7 @@ struct AgentNewSessionPage: View {
         .shadow(color: Theme.shadowInk.opacity(0.06), radius: 10, y: 3)
     }
 
-    private func label(_ id: String) -> String { catalog.models.first { $0.id == id }?.label ?? id }
-
-    @ViewBuilder private func menuLabel(_ text: String, on: Bool) -> some View {
-        if on { Label(text, systemImage: "checkmark") } else { Text(text) }
-    }
+    private func label(_ id: String) -> String { CliLaunches.modelDisplayLabel(catalog.models, id: id) }
 
     private func start() {
         guard ready, let dir else { return }
@@ -422,6 +417,61 @@ struct AgentNewSessionPage: View {
     }
 }
 
+#if os(macOS)
+/// Model menu content shared by New Session and Session Detail on macOS: cascades by plan/provider when grouped.
+struct AgentMacModelMenuContent: View {
+    let catalog: CliModelCatalog
+    @Binding var selection: String
+    var fallback: String = ""
+
+    private var groups: [CliModelProviderGroup] { CliLaunches.providerGroups(catalog.models) }
+
+    var body: some View {
+        let defaultTitle = fallback.isEmpty ? "默认" : "默认（\(CliLaunches.modelDisplayLabel(catalog.models, id: fallback))）"
+        Button { selection = "" } label: { itemLabel(defaultTitle, on: selection.isEmpty) }
+        if groups.count > 1 {
+            let plans = groups.filter(\.isPlan)
+            let apis = groups.filter { !$0.isPlan }
+            if !plans.isEmpty {
+                Section("套餐") {
+                    ForEach(plans) { group in providerSubmenu(group) }
+                }
+            }
+            if !apis.isEmpty {
+                Section("API") {
+                    ForEach(apis) { group in providerSubmenu(group) }
+                }
+            }
+        } else if let only = groups.first {
+            Section(only.displayTitle) {
+                ForEach(only.models) { row in
+                    Button { selection = row.id } label: { itemLabel(row.label, on: selection == row.id) }
+                }
+            }
+        } else {
+            ForEach(catalog.models) { row in
+                Button { selection = row.id } label: { itemLabel(row.label, on: selection == row.id) }
+            }
+        }
+    }
+
+    private func providerSubmenu(_ group: CliModelProviderGroup) -> some View {
+        Menu {
+            ForEach(group.models) { row in
+                Button { selection = row.id } label: { itemLabel(row.label, on: selection == row.id) }
+            }
+        } label: {
+            let active = group.models.contains { $0.id == selection }
+            itemLabel(group.displayTitle, on: active)
+        }
+    }
+
+    @ViewBuilder private func itemLabel(_ text: String, on: Bool) -> some View {
+        if on { Label(text, systemImage: "checkmark") } else { Text(text) }
+    }
+}
+#endif
+
 #if os(iOS)
 struct AgentComposerModelOptions: View {
     let catalog: CliModelCatalog
@@ -430,16 +480,86 @@ struct AgentComposerModelOptions: View {
     let selection: String?
     let chooseEffort: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var pickedProvider = ""
+    @State private var query = ""
+
+    private var groups: [CliModelProviderGroup] { CliLaunches.providerGroups(catalog.models) }
+    private var defaultProviderId: String {
+        catalog.models.first { $0.id == catalog.current }?.provider ?? groups.first?.id ?? ""
+    }
+    private var activeProviderId: String {
+        if !pickedProvider.isEmpty && groups.contains(where: { $0.id == pickedProvider }) { return pickedProvider }
+        if let found = catalog.models.first(where: { $0.id == model })?.provider, groups.contains(where: { $0.id == found }) { return found }
+        return defaultProviderId
+    }
+    private var activeGroup: CliModelProviderGroup? { groups.first { $0.id == activeProviderId } ?? groups.first }
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var visibleModels: [CliModelOption] {
+        if !trimmedQuery.isEmpty {
+            let terms = trimmedQuery.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+            return catalog.models.filter { option in
+                let hay = "\(option.id) \(option.label) \(option.description ?? "") \(option.providerLabel ?? "") \(option.providerBadge ?? "")".lowercased()
+                return terms.allSatisfy { hay.contains($0) }
+            }
+        }
+        return activeGroup?.models ?? catalog.models
+    }
+
+    private var listHeader: String? {
+        if !trimmedQuery.isEmpty { return "搜索结果" }
+        return groups.count == 1 ? groups[0].displayTitle : nil
+    }
+
+    private func modelSubtitle(_ option: CliModelOption) -> String? {
+        if !trimmedQuery.isEmpty, let p = option.providerLabel {
+            if let badge = option.providerBadge, !badge.isEmpty { return "\(p) · \(badge)" }
+            return p
+        }
+        return activeGroup == nil ? option.description : nil
+    }
 
     var body: some View {
         NavigationStack {
             List {
+                if groups.count > 1 {
+                    let plans = groups.filter(\.isPlan)
+                    let apis = groups.filter { !$0.isPlan }
+                    Section {
+                        Picker("套餐与供应商", selection: Binding(get: { activeProviderId }, set: { pickedProvider = $0 })) {
+                            if !plans.isEmpty {
+                                Section("套餐") {
+                                    ForEach(plans) { group in Text(group.displayTitle).tag(group.id) }
+                                }
+                            }
+                            if !apis.isEmpty {
+                                Section("API") {
+                                    ForEach(apis) { group in Text(group.displayTitle).tag(group.id) }
+                                }
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
                 if !levels.isEmpty {
                     ChatEffortChoices(levels: levels, selection: selection, label: CliLaunches.effortLabel,
                                       tint: Theme.nexAgentAccent, choose: chooseEffort)
                 }
-                row("", title: "默认模型")
-                ForEach(catalog.models) { option in row(option.id, title: option.label) }
+                if catalog.models.count > 8 || !trimmedQuery.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
+                        TextField("搜索模型", text: $query).textFieldStyle(.plain)
+                    }
+                }
+                Section {
+                    if trimmedQuery.isEmpty && (activeGroup == nil || activeGroup?.id == defaultProviderId) {
+                        row("", title: "默认模型", subtitle: catalog.current.map { CliLaunches.modelDisplayLabel(catalog.models, id: $0) })
+                    }
+                    ForEach(visibleModels) { option in
+                        row(option.id, title: option.label, subtitle: modelSubtitle(option))
+                    }
+                } header: {
+                    if let header = listHeader { Text(header) }
+                }
             }
             .navigationTitle("模型").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -447,10 +567,22 @@ struct AgentComposerModelOptions: View {
         .presentationDetents([.medium, .large])
     }
 
-    private func row(_ id: String, title: String) -> some View {
-        Button { model = id } label: {
+    private func row(_ id: String, title: String, subtitle: String? = nil) -> some View {
+        Button {
+            if let provider = catalog.models.first(where: { $0.id == id })?.provider, !provider.isEmpty {
+                pickedProvider = provider
+            } else if id.isEmpty {
+                pickedProvider = ""
+            }
+            model = id
+        } label: {
             HStack {
-                Text(title).foregroundStyle(Theme.foreground)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).foregroundStyle(Theme.foreground)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle).font(.caption).foregroundStyle(Theme.muted)
+                    }
+                }
                 Spacer()
                 if model == id { Image(systemName: "checkmark").foregroundStyle(Theme.nexAgentAccent) }
             }

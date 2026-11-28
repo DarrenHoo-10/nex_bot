@@ -395,6 +395,77 @@ describe("session pane", () => {
     expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model auto/claude-opus-5-5[1m]", "/effort high", "继续"]);
   });
 
+  it("groups ZCode models by plan and API provider with a top switcher and disambiguates duplicate names", async () => {
+    fixture.fetchModels.mockResolvedValue({
+      current: "account:bigmodel-start-plan/GLM-5.3-Flash",
+      currentEffort: "max",
+      models: [
+        {
+          id: "account:bigmodel-individual-coding-plan/GLM-5.3",
+          label: "GLM-5.3",
+          description: "BigModel",
+          provider: "account:bigmodel-individual-coding-plan",
+          providerLabel: "BigModel",
+          providerBadge: "个人",
+          providerKind: "plan",
+          efforts: ["low", "high", "max"],
+        },
+        {
+          id: "account:bigmodel-start-plan/GLM-5.3-Flash",
+          label: "GLM-5.3-Flash",
+          description: "Start Plan",
+          provider: "account:bigmodel-start-plan",
+          providerLabel: "Start Plan",
+          providerBadge: "免费",
+          providerKind: "plan",
+          efforts: ["low", "max"],
+        },
+        {
+          id: "06d54a34-df54-4b8a-a434-e5e9504b9be6/glm-5.3",
+          label: "GLM-5.3",
+          description: "智谱",
+          provider: "06d54a34-df54-4b8a-a434-e5e9504b9be6",
+          providerLabel: "智谱",
+          providerBadge: "API",
+          providerKind: "api",
+          efforts: ["high"],
+        },
+      ],
+    });
+    const capable = device({ cliAgents: { ...device().cliAgents!, engines: ["zcode"], features: ["launchOptions", "models"] } });
+    const zcodeSession = session({
+      key: "dev1:zcode:s1",
+      engine: "zcode",
+      nativeId: "s1",
+      state: "stopped",
+      terminal: undefined,
+      model: undefined,
+    });
+    await mount({ devices: [capable], sessions: [zcodeSession] }, "dev1:zcode:s1");
+    expect(fixture.fetchModels).toHaveBeenCalledWith("dev1", "zcode");
+    const trigger = container.querySelector('button[aria-label="模型设置"]')!;
+    expect(trigger.textContent).toContain("GLM-5.3-Flash");
+    expect(trigger.textContent).toContain("最高");
+
+    await click(trigger);
+    const providerBtn = document.querySelector<HTMLButtonElement>('.na-model-menu button[aria-label="套餐与供应商"]')!;
+    expect(providerBtn.textContent).toContain("Start Plan");
+    expect(providerBtn.textContent).toContain("免费");
+    expect([...document.querySelectorAll(".na-model-menu [role=option] .model-menu-name")].map((el) => el.textContent)).toEqual([
+      "默认",
+      "GLM-5.3-Flash",
+    ]);
+
+    // Switch to the API provider 智谱 and choose its GLM-5.3
+    await click(providerBtn);
+    const providerOptions = [...document.querySelectorAll<HTMLButtonElement>('.na-model-menu [aria-label="套餐与供应商"] [role=option]')];
+    expect(providerOptions.map((el) => el.querySelector(".model-menu-name")?.textContent)).toEqual(["BigModel", "Start Plan", "智谱"]);
+    await click(providerOptions[2]!);
+    expect([...document.querySelectorAll(".na-model-menu [role=option] .model-menu-name")].map((el) => el.textContent)).toEqual(["GLM-5.3"]);
+    await click(document.querySelector<HTMLButtonElement>(".na-model-menu [role=option]")!);
+    expect(trigger.textContent).toContain("智谱 · GLM-5.3");
+  });
+
   it("sends a message with Enter and shows Core's error text", async () => {
     await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
     const box = container.querySelector("textarea") as HTMLTextAreaElement;

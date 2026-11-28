@@ -46,6 +46,51 @@ const fail = (id, code, message) => send({ id, error: { code, message } });
 // Match real ZCode `BLi`: `sessionId`, `type`, `payload` are directly on `params`.
 const emit = (sessionId, type, payload = {}) => send({ method: "session/event", params: { sessionId, type, payload } });
 
+const EXTRA_PLAN_MODELS = process.env.ZCODE_FIXTURE_PLANS === "1"
+  ? [
+      {
+        ref: { providerId: "account:bigmodel-individual-coding-plan", modelId: "GLM-5.3" },
+        label: "GLM-5.3",
+        providerLabel: "BigModel Individual Coding Plan",
+        contextWindow: 200000,
+        reasoning: {
+          levels: [{ value: "low", label: "Low" }, { value: "high", label: "High" }, { value: "max", label: "Max" }],
+          defaultLevel: "high",
+        },
+        properties: { inputFormat: { supportsImage: true } },
+      },
+      {
+        ref: { providerId: "account:bigmodel-start-plan", modelId: "GLM-5.3-Flash" },
+        label: "GLM-5.3-Flash",
+        providerLabel: "Start Plan",
+        contextWindow: 200000,
+        reasoning: {
+          levels: [{ value: "low", label: "Low" }, { value: "max", label: "Max" }],
+          defaultLevel: "max",
+        },
+        properties: { inputFormat: { supportsImage: true } },
+      },
+      {
+        ref: { providerId: "coding-key-1", modelId: "GLM-5.3" },
+        label: "GLM-5.3",
+        providerLabel: "我的智谱",
+        contextWindow: 200000,
+        reasoning: {
+          levels: [{ value: "high", label: "High" }],
+          defaultLevel: "high",
+        },
+        properties: { inputFormat: { supportsImage: true } },
+      },
+      {
+        ref: { providerId: "disabled-plan", modelId: "GLM-5.3" },
+        label: "GLM-5.3",
+        providerLabel: "Disabled",
+        disabledReason: "coding_plan_not_entitled",
+        properties: { inputFormat: { supportsImage: true } },
+      },
+    ]
+  : [];
+
 const AVAILABLE_MODELS = [
   {
     ref: { providerId: "magpie", modelId: "zcode/GLM-5.3-Flash" },
@@ -66,6 +111,7 @@ const AVAILABLE_MODELS = [
     reasoning: { levels: [], defaultLevel: undefined },
     properties: { inputFormat: { supportsImage: false } },
   },
+  ...EXTRA_PLAN_MODELS,
 ];
 
 const sessions = new Map();
@@ -100,7 +146,9 @@ function settingsOf(s) {
   return {
     mode: { current: s.mode },
     model: { current: s.model, available: AVAILABLE_MODELS },
-    thoughtLevel: s.thoughtLevel,
+    thoughtLevel: process.env.ZCODE_FIXTURE_OBJECT_THOUGHT === "1"
+      ? { available: [{ label: "low", value: "low" }, { label: "high", value: "high" }, { label: "max", value: "max" }], current: s.thoughtLevel, enabled: true }
+      : s.thoughtLevel,
   };
 }
 
