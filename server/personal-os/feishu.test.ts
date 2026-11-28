@@ -562,7 +562,8 @@ describe("feishu connector in disposable Core", () => {
     );
     const orphanTask = f.app.agents.send(String(f.bot.id), "读一下孤儿连接器", "orphan-feishu-read").taskId;
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", orphanTask)?.status === "succeeded");
-    expect(f.app.store.get("SELECT status FROM tool_calls WHERE task_id=?", orphanTask)?.status).toBe("failed");
+    expect(f.app.store.all("SELECT id FROM tool_calls WHERE task_id=? AND status='unknown'", orphanTask)).toHaveLength(0);
+    expect(f.model.requests.at(-1)?.body).toContain("飞书应用不存在或已失效");
 
     const run = f.app.store.get("SELECT * FROM task_runs WHERE task_id=? ORDER BY started_at DESC LIMIT 1", orphanTask)!;
     const makeCall = (callId: string, tool: string, apiPath: string, body?: Record<string, unknown>) => {

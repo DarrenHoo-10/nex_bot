@@ -109,7 +109,7 @@ type Bridge = {
   installUpdate?(): Promise<void>;
   onUpdateState?(callback: (state: ClientUpdateState) => void): (() => void) | void;
 };
-export const desktop = (window as unknown as { nex?: Bridge }).nex;
+export const desktop = typeof window === "undefined" ? undefined : (window as unknown as { nex?: Bridge }).nex;
 /** NexAgent runs in plain browsers, the Windows client (its UI keeps the Core origin and session, so the stream connects directly) and the Android app (native socket relay). */
 export const agentModeAvailable = !desktop || desktop.mode === "client" || desktop.platform === "android";
 export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {
