@@ -13,7 +13,7 @@ public struct CliFolderGroup: Sendable, Hashable, Identifiable {
     /// every folder the project joins, first used last (empty for the scratch group)
     public var roots: [String] = []
     public var scratch: Bool = false
-    public var id: String { scratch ? "\u{0000}scratch" : label.lowercased() }
+    public var id: String { scratch ? CliSessions.scratchKey : label.lowercased() }
 }
 
 public struct CliDeviceGroup: Sendable, Hashable, Identifiable {
@@ -54,7 +54,7 @@ public enum CliSessions {
     }
 
     public static let scratchLabel = "未关联项目"
-    private static let scratchKey = "\u{0000}scratch"
+    public static let scratchKey = "/scratch"
 
     public static func folderLabel(_ cwd: String) -> String {
         let parts = cwd.split(whereSeparator: { $0 == "/" || $0 == "\\" })

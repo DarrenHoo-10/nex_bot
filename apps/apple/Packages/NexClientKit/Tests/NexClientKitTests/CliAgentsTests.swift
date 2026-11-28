@@ -287,6 +287,8 @@ final class CliAgentsTests: XCTestCase {
         let office = CliSessions.group(devices: [CliDevice(id: "d1", name: "Office", online: true)], sessions: sessions)[0]
         XCTAssertEqual(office.folders.map(\.label), ["nex_bot", "未关联项目"])
         XCTAssertTrue(office.folders[1].scratch)
+        XCTAssertEqual(office.folders[1].id, CliSessions.scratchKey)
+        XCTAssertFalse(office.folders[1].id.utf8.contains(0))
         XCTAssertEqual(office.folders[1].cwd, "")
         XCTAssertEqual(office.folders[1].sessions.map(\.key), ["d1:agy:empty", "d1:zcode:tmp", "d1:codex:scratch"])
         XCTAssertEqual(CliSessions.projectLabel(sessions[0]), "未关联项目")

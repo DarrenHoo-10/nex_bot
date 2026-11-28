@@ -690,8 +690,9 @@ struct AgentSessionList: View {
                     let folderSessions = listed(folder.sessions)
                     let rows = treeRows(allEntries: folderSessions, folderLabel: folder.label, root: folder.cwd)
                     if !rows.isEmpty {
-                        let folderNodeId = "proj:\(group.device.id):\(folder.id)"
-                        let dragPayload = "\(group.device.id)\n\(folder.id)"
+                        let folderId = folder.id
+                        let folderNodeId = "proj:\(group.device.id):\(folderId)"
+                        let dragPayload = "\(group.device.id)\n\(folderId)"
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 5) {
                                 Button { toggleNode(folderNodeId) } label: {
