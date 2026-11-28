@@ -161,8 +161,11 @@ struct AgentSessionsView: View {
 
     #if os(macOS)
     private var layout: some View {
-        VStack(spacing: 0) {
-            header
+        let showingDetail = composing != nil || model.selectedLaunch != nil || (model.selectedKey != nil && model.selected != nil)
+        return VStack(spacing: 0) {
+            if !showingDetail || !linkText.isEmpty {
+                header
+            }
             banner.padding(.horizontal, 16).padding(.bottom, 6)
             Group {
                 if let target = composing {
@@ -170,7 +173,14 @@ struct AgentSessionsView: View {
                 } else if let launch = model.selectedLaunch {
                     AgentLaunchDetail(model: model, launch: launch).id(launch.id)
                 } else if let key = model.selectedKey, model.selected != nil {
-                    AgentSessionDetail(model: model, workspace: workspace, key: key, openAssistant: openAssistant) { model.select($0) }
+                    AgentSessionDetail(
+                        model: model,
+                        workspace: workspace,
+                        key: key,
+                        openAssistant: openAssistant,
+                        onToggleBell: { Task { await toggleBell() } },
+                        onOpenSettings: { sheet = .supervision }
+                    ) { model.select($0) }
                         .id(key)
                 } else {
                     VStack(spacing: 10) {
@@ -193,7 +203,7 @@ struct AgentSessionsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), strong: true, lift: .card)
+        .glass(RoundedRectangle(cornerRadius: 18, style: .continuous), strong: true, lift: .card)
     }
     #else
     private var layout: some View {
@@ -269,6 +279,10 @@ struct AgentSessionList: View {
     @State private var pendingForkRequestId: [CliSessionKey: String] = [:]
     @State private var actionBusy = false
     @State private var actionError = ""
+    #if os(macOS)
+    @State private var hoveredSession: CliSessionKey?
+    @State private var hoveredFolder: String?
+    #endif
     @FocusState private var searchFocused: Bool
 
     private var query: String { filter.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -705,6 +719,18 @@ struct AgentSessionList: View {
                                 Text(folder.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
                                 Spacer()
                                 if !archivedMode {
+                                    #if os(macOS)
+                                    let showFolderAdd = hoveredFolder == folderNodeId
+                                    Button { onNew(group.device.id, folder.cwd) } label: {
+                                        Image(systemName: "plus").font(.system(size: 11.5)).frame(width: 22, height: 22)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
+                                    .opacity(showFolderAdd ? 1 : 0)
+                                    .allowsHitTesting(showFolderAdd)
+                                    .help("新建会话")
+                                    .accessibilityLabel("在 \(folder.label) 中新建会话")
+                                    #else
                                     Button { onNew(group.device.id, folder.cwd) } label: {
                                         Image(systemName: "plus").font(.system(size: 12)).frame(width: 24, height: 24)
                                             .contentShape(Rectangle())
@@ -712,11 +738,18 @@ struct AgentSessionList: View {
                                     .buttonStyle(.plain).foregroundStyle(Theme.muted)
                                     .help("新建会话")
                                     .accessibilityLabel("在 \(folder.label) 中新建会话")
+                                    #endif
                                 }
                                 Text("\(rows.count)").font(.system(size: 11)).foregroundStyle(Theme.muted)
                             }
                             .padding(.horizontal, 4).padding(.top, 6).padding(.bottom, 2)
                             .contentShape(Rectangle())
+                            #if os(macOS)
+                            .onHover { inside in
+                                if inside { hoveredFolder = folderNodeId }
+                                else if hoveredFolder == folderNodeId { hoveredFolder = nil }
+                            }
+                            #endif
                             .opacity(draggingProject == dragPayload ? 0.5 : 1)
                             .help(folder.roots.count > 1 ? folder.roots.joined(separator: "\n") : folder.cwd)
                             .draggable(dragPayload) {
@@ -827,6 +860,11 @@ struct AgentSessionList: View {
         let waitingLabel = asked > 1 ? "等你处理 \(asked)" : "等你处理"
         let title = model.displayTitle(for: session)
         let branchNodeId = "branch:\(session.key)"
+        let isSelected = selected == session.key
+        #if os(macOS)
+        let isHovered = hoveredSession == session.key
+        let showMenu = isHovered || isSelected
+        #endif
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 if hasChildren {
@@ -840,9 +878,8 @@ struct AgentSessionList: View {
                 }
                 Button { onSelect(session.key) } label: {
                     HStack(spacing: 7) {
-                        // the dot is the state: green breathing while it runs, amber while it waits for you
-                        AgentStateDot(tone: tone)
-                        Text(title).font(.system(size: 13, weight: selected == session.key ? .semibold : .regular))
+                        AgentEngineIcon(engine: session.engine, tone: tone)
+                        Text(title).font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                             .foregroundStyle(Theme.foreground).lineLimit(1)
                         Spacer(minLength: 4)
                         if let context { Text(context).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1) }
@@ -860,13 +897,15 @@ struct AgentSessionList: View {
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 12))
-                            .foregroundStyle(Theme.muted.opacity(0.75))
+                            .foregroundStyle(Theme.muted.opacity(0.8))
                             .frame(width: 20, height: 20)
                             .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                     .fixedSize()
+                    .opacity(showMenu ? 1 : 0)
+                    .allowsHitTesting(showMenu)
                     .accessibilityLabel("\(title) 的操作")
                     #else
                     Menu {
@@ -887,17 +926,88 @@ struct AgentSessionList: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.muted)
                     .lineLimit(2)
-                    .padding(.leading, 16)
+                    .padding(.leading, 22)
             }
         }
         .padding(.leading, CGFloat(min(depth, 6) * 14) + 8)
         .padding(.trailing, 6)
-        .padding(.vertical, 6)
-        .background(selected == session.key ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(alignment: .leading) { if selected == session.key { Rectangle().fill(Theme.nexAgentAccent).frame(width: 2.5).padding(.vertical, 4) } }
+        .padding(.vertical, 5.5)
+        .background {
+            #if os(macOS)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(isSelected ? Theme.nexAgentSoft : isHovered ? Theme.wash.opacity(0.75) : .clear)
+            #else
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(isSelected ? Theme.nexAgentSoft : .clear)
+            #endif
+        }
+        .overlay(alignment: .leading) {
+            if depth > 0 {
+                Rectangle()
+                    .fill(Theme.border.opacity(0.7))
+                    .frame(width: 1)
+                    .padding(.leading, CGFloat(min(depth, 6) * 14) - 2)
+                    .padding(.vertical, 3)
+            }
+        }
+        #if os(macOS)
+        .onHover { inside in
+            if inside { hoveredSession = session.key }
+            else if hoveredSession == session.key { hoveredSession = nil }
+        }
+        #endif
         .opacity(model.isArchived(session) ? 0.65 : 1)
         .contextMenu { if !CliLaunches.isLaunchKey(session.key) { sessionMenuItems(for: session) } }
         .help("\(agentName(session.engine)) · \(CliSessions.statusLabel(session))")
+    }
+}
+
+/// Compact colored engine badge with a live status indicator dot when running or waiting.
+struct AgentEngineIcon: View {
+    let engine: CliEngine
+    var tone: CliTone = .idle
+    var size: CGFloat = 15
+    @State private var breathing = false
+
+    private var accent: Color {
+        switch engine {
+        case .claude: Color(red: 0.85, green: 0.47, blue: 0.34)
+        case .codex: Color(red: 0.36, green: 0.43, blue: 0.96)
+        case .agy: Color(red: 0.06, green: 0.73, blue: 0.51)
+        case .zcode: Color(red: 0.55, green: 0.36, blue: 0.96)
+        }
+    }
+
+    private var symbol: String {
+        switch engine {
+        case .claude: "sparkle"
+        case .codex: "chevron.left.forwardslash.chevron.right"
+        case .agy: "sparkles"
+        case .zcode: "terminal.fill"
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.68, weight: .semibold))
+                .foregroundStyle(tone == .offline ? Theme.offline : accent)
+                .frame(width: size, height: size)
+            if tone == .running || tone == .waiting {
+                Circle()
+                    .fill(tone == .running ? Theme.nexAgentAccent : Theme.approval)
+                    .frame(width: 6, height: 6)
+                    .overlay(Circle().stroke(Theme.card, lineWidth: 1))
+                    .overlay(Circle().stroke(tone == .running ? Theme.nexAgentAccent.opacity(breathing ? 0 : 0.45) : .clear, lineWidth: breathing ? 4 : 1))
+                    .offset(x: 2, y: 2)
+                    .onAppear {
+                        if tone == .running {
+                            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) { breathing = true }
+                        }
+                    }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

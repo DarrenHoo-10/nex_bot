@@ -44,9 +44,15 @@ struct AgentComposerAdd: View {
                 .pickerStyle(.menu)
             }
         } label: {
-            Image(systemName: "plus").font(.system(size: 17, weight: .medium))
-                .foregroundStyle(Theme.muted).frame(width: 36, height: 36)
+            Image(systemName: "plus").font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Theme.muted).frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
+        #if os(macOS)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        #endif
         .accessibilityLabel("添加")
         .fileImporter(isPresented: $picking, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
             switch result {

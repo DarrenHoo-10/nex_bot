@@ -17,13 +17,13 @@ struct MainView: View {
         _agents = State(initialValue: CliAgentsModel(client: { workspace.client }, cacheScope: { workspace.contentCacheScope }))
     }
 
-    private static let panel = RoundedRectangle(cornerRadius: 22, style: .continuous)
+    private static let panel = RoundedRectangle(cornerRadius: 18, style: .continuous)
     private var panelOpen: Bool {
         !ui.todosVisible && !ui.agentsVisible && ui.inspectorVisible && workspace.selectedBotID.map { workspace.bot($0) != nil } == true
     }
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             ZStack(alignment: .trailing) {
                 ContactsList(workspace: workspace, agents: agents)
                     .frame(width: ui.railOpen ? (ui.agentsVisible ? ui.agentRailWidth : 252) : 74)
@@ -76,7 +76,7 @@ struct MainView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .padding(14)
+        .padding(10)
         .background { WorkspaceSurface(kind: .stage) }
         .animation(.timingCurve(0.3, 0.7, 0.2, 1, duration: 0.36), value: ui.railOpen)
         .animation(.timingCurve(0.3, 0.7, 0.2, 1, duration: 0.36), value: panelOpen)

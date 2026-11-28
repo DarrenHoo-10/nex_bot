@@ -53,6 +53,8 @@ struct AgentSessionDetail: View {
     let workspace: WorkspaceStore
     let key: CliSessionKey
     let openAssistant: (String) -> Void
+    var onToggleBell: (() -> Void)? = nil
+    var onOpenSettings: (() -> Void)? = nil
     /// The session continues under another key.
     let onKeyChange: (CliSessionKey) -> Void
     @State private var tab: AgentTab = .terminal
@@ -177,39 +179,143 @@ struct AgentSessionDetail: View {
     }
 
     private func header(_ session: CliSession, attach: Bool, shown: AgentTab) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.displayTitle(for: session)).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                    Text([session.engine.label, CliSessions.projectLabel(session), session.gitBranch ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+        let tone = CliSessions.tone(session)
+        let metaText = [session.engine.label, CliSessions.projectLabel(session), session.gitBranch ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        #if os(macOS)
+        return VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                AgentEngineIcon(engine: session.engine, tone: tone, size: 17)
+                Text(model.displayTitle(for: session))
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                    .help(metaText)
+                if let branch = session.gitBranch, !branch.isEmpty {
+                    Text(branch)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Theme.wash, in: Capsule())
                 }
-                Spacer(minLength: 4)
-                let tone = CliSessions.tone(session)
-                if tone != .waiting { CliChip(text: CliSessions.statusLabel(session), tone: tone) }
+                Spacer(minLength: 8)
+                if tone == .running || tone == .offline || tone == .stopped {
+                    CliChip(text: CliSessions.statusLabel(session), tone: tone)
+                }
+                if attach {
+                    HStack(spacing: 2) {
+                        headerModeButton("对话", active: tab == .chat) { tab = .chat }
+                        headerModeButton("终端", active: tab == .terminal) { tab = .terminal }
+                    }
+                    .padding(2)
+                    .background(Theme.wash, in: Capsule())
+                }
                 actions(session)
             }
-            if attach {
-                PillTabs(items: [AgentTab.terminal, .chat], title: { $0 == .terminal ? "终端" : "对话" }, selection: $tab)
-                    .frame(maxWidth: 180)
-            }
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            Divider().opacity(0.6)
         }
-        .padding(14)
+        #else
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                AgentEngineIcon(engine: session.engine, tone: tone, size: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.displayTitle(for: session))
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .lineLimit(1)
+                    if let branch = session.gitBranch, !branch.isEmpty {
+                        Text(branch)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                if tone == .running || tone == .offline || tone == .stopped {
+                    CliChip(text: CliSessions.statusLabel(session), tone: tone)
+                }
+                if attach {
+                    HStack(spacing: 2) {
+                        headerModeButton("对话", active: tab == .chat) { tab = .chat }
+                        headerModeButton("终端", active: tab == .terminal) { tab = .terminal }
+                    }
+                    .padding(2)
+                    .background(Theme.wash, in: Capsule())
+                }
+                actions(session)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            Divider().opacity(0.6)
+        }
+        #endif
+    }
+
+    private func headerModeButton(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11.5, weight: active ? .semibold : .medium))
+                .foregroundStyle(active ? Theme.foreground : Theme.muted)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(active ? Theme.card : .clear, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private func actions(_ session: CliSession) -> some View {
         let canFork = !workspace.bots.isEmpty
         #if os(macOS)
-        Button {
-            if inspectorOpen && inspectorTab == .git { inspectorOpen = false } else { inspectorTab = .git; inspectorOpen = true }
-        } label: {
-            Image(systemName: "sidebar.right")
-                .foregroundStyle(inspectorOpen ? Theme.nexAgentAccent : Theme.muted)
+        HStack(spacing: 4) {
+            if canFork {
+                Button { forking = true } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.muted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("交给助手")
+                .accessibilityLabel("交给助手")
+            }
+            Button {
+                if inspectorOpen && inspectorTab == .git { inspectorOpen = false } else { inspectorTab = .git; inspectorOpen = true }
+            } label: {
+                Image(systemName: "sidebar.right")
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(inspectorOpen ? Theme.nexAgentAccent : Theme.muted)
+                    .frame(width: 28, height: 28)
+                    .background(inspectorOpen ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(inspectorOpen ? "收起工作区面板" : "打开 Git / 笔记 / 侧聊面板")
+            .accessibilityLabel(inspectorOpen ? "收起工作区面板" : "打开工作区面板")
+            if let onToggleBell {
+                Button(action: onToggleBell) {
+                    Image(systemName: model.notificationsOn ? "bell.fill" : "bell.slash")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(model.notificationsOn ? Theme.nexAgentAccent : Theme.muted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(model.notificationsOn ? "关闭通知" : "开启通知")
+                .accessibilityLabel(model.notificationsOn ? "关闭通知" : "开启通知")
+            }
+            if let onOpenSettings {
+                Button(action: onOpenSettings) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Theme.muted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("自动处理设置")
+                .accessibilityLabel("自动处理设置")
+            }
         }
-        .buttonStyle(.bordered)
-        .help(inspectorOpen ? "收起工作区面板" : "打开 Git / 笔记 / 侧聊面板")
-        if canFork { Button("交给助手") { forking = true }.buttonStyle(.bordered) }
         #else
         Button { inspectorOpen = true } label: { Image(systemName: "info.circle") }
         if canFork {
@@ -1532,7 +1638,7 @@ private struct AgentComposer: View {
             case .send(let running):
                 sendRow(running: running)
             case .stopped(let hint):
-                HStack {
+                HStack(spacing: 8) {
                     #if os(iOS)
                     if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex || session.engine == .zcode ? { showingSkills = true } : nil, permissions: permissionChoice) }
                     #endif
@@ -1545,11 +1651,21 @@ private struct AgentComposer: View {
                     Button(sending ? "正在继续…" : "继续") { Task { await resume() } }
                         .buttonStyle(.borderedProminent).tint(Theme.nexAgentSolid).disabled(hint != nil || sending)
                 }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
             case .blocked(let hint):
                 Text(hint).font(.footnote).foregroundStyle(Theme.muted)
+                    .padding(.horizontal, 4)
             }
         }
-        .padding(14)
+        #if os(macOS)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18).padding(.top, 4).padding(.bottom, 14)
+        #else
+        .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 10)
+        #endif
         .onAppear {
             draft = AgentDrafts.texts[session.key] ?? ""
             effort = AgentDrafts.efforts[session.key]
@@ -1639,29 +1755,47 @@ private struct AgentComposer: View {
     }
 
     private func sendRow(running: Bool) -> some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex || session.engine == .zcode ? { showingSkills = true } : nil, permissions: permissionChoice)
-            TextField("发消息", text: $draft, axis: .vertical)
-                .lineLimit(1...5).textFieldStyle(.plain)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("发消息，或输入 / 使用技能", text: $draft, axis: .vertical)
+                .lineLimit(2...6)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13.5))
+                .frame(minHeight: 34, alignment: .topLeading)
+                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 2)
                 .onSubmit { if canSend { Task { await send() } } }
-            if tooLong { Text("内容太长").font(.caption).foregroundStyle(Theme.danger) }
-            modelChip
-            AgentContextRing(usage: session.context)
-            #if os(macOS)
-            if (canSetOnSend || canConfigureProtocol) && !effortLevels.isEmpty { effortButton }
-            #endif
-            // one button: Stop while a turn runs and the box is empty, Send once there is something to send
-            if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty {
-                Button { Task { await interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 26)) }
+
+            HStack(spacing: 8) {
+                AgentComposerAdd(
+                    images: $images,
+                    error: $error,
+                    openSkills: session.engine == .claude || session.engine == .codex || session.engine == .zcode ? { showingSkills = true } : nil,
+                    permissions: permissionChoice
+                )
+                if tooLong { Text("内容太长").font(.caption).foregroundStyle(Theme.danger) }
+                Spacer(minLength: 8)
+                modelChip
+                #if os(macOS)
+                if (canSetOnSend || canConfigureProtocol) && !effortLevels.isEmpty { effortButton }
+                #endif
+                AgentContextRing(usage: session.context)
+                if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty {
+                    Button { Task { await interrupt() } } label: {
+                        Image(systemName: "stop.circle.fill").font(.system(size: 26))
+                    }
                     .buttonStyle(.plain).foregroundStyle(Theme.foreground).accessibilityLabel("停止")
-            } else {
-                Button { Task { await send() } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 26)) }
+                } else {
+                    Button { Task { await send() } } label: {
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 26))
+                    }
                     .buttonStyle(.plain).foregroundStyle(canSend ? Theme.nexAgentSolid : Theme.offline)
                     .disabled(!canSend).accessibilityLabel("发送")
+                }
             }
+            .padding(.horizontal, 10).padding(.bottom, 8)
         }
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
     }
 
     /// The model the next message or continue uses, by the name the catalog gives it.
@@ -1692,12 +1826,22 @@ private struct AgentComposer: View {
     }
 
     private var modelChipLabel: some View {
-        Text(modelTitle).font(.footnote).foregroundStyle(Theme.muted)
-            .lineLimit(1).truncationMode(.tail)
-            #if os(iOS)
-            .frame(maxWidth: 110, alignment: .trailing)
+        HStack(spacing: 3) {
+            Text(modelTitle).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                .lineLimit(1).truncationMode(.tail)
+            #if os(macOS)
+            if canSetOnResume || canSetOnSend {
+                Image(systemName: "chevron.down").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.muted.opacity(0.8))
+            }
             #endif
-            .frame(height: 34).contentShape(Rectangle())
+        }
+        #if os(iOS)
+        .frame(maxWidth: 110, alignment: .trailing)
+        .frame(height: 34)
+        #else
+        .padding(.horizontal, 6).frame(height: 28)
+        #endif
+        .contentShape(Rectangle())
     }
 
     private func setEffort(_ level: String) {
@@ -1707,13 +1851,14 @@ private struct AgentComposer: View {
 
     private var effortButton: some View {
         Button { showingEffort.toggle() } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Text(CliLaunches.effortLabel(selectedEffort))
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                Image(systemName: "chevron.down").font(.system(size: 8.5, weight: .semibold))
             }
-            .font(.footnote)
-            .padding(.horizontal, 8).frame(height: 34)
-            .background(Theme.wash, in: RoundedRectangle(cornerRadius: 9))
+            .font(.system(size: 12))
+            .foregroundStyle(Theme.muted)
+            .padding(.horizontal, 7).frame(height: 28)
+            .background(Theme.wash.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("思考强度")
