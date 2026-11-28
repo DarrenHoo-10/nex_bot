@@ -444,7 +444,7 @@ public final class CliAgentsModel {
             if target == nil {
                 let key = try await clientProvider().cliStart(deviceId: request.deviceId, engine: request.engine, cwd: request.cwd, worktreeBranch: request.branch,
                                                               requestId: entry.requestId, model: request.model, effort: request.effort, createDir: request.createDir,
-                                                              permissions: request.permissions)
+                                                              permissions: request.permissions, branch: request.switchBranch, worktreeBaseBranch: request.baseBranch)
                 target = key
                 updateLaunch(id) { $0.target = key }
                 await refresh()
@@ -500,6 +500,12 @@ public final class CliAgentsModel {
             return CliDirListing(path: path, parent: path.isEmpty ? nil : CliPaths.parent(path), exists: true, entries: [])
         }
         return try await clientProvider().cliDirs(deviceId: deviceId, path: path)
+    }
+
+    /// Local Git branches of a folder on a computer, or nil when the executor does not support branch listing or fails.
+    public func branches(deviceId: String, cwd: String) async -> CliGitBranches? {
+        guard device(deviceId)?.cliAgents?.features.contains("gitBranch") == true else { return nil }
+        return try? await clientProvider().cliBranches(deviceId: deviceId, cwd: cwd)
     }
 
     /// Running or waiting sessions on every computer, pinned above the projects.

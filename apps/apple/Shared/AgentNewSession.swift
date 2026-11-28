@@ -46,6 +46,9 @@ struct AgentNewSessionPage: View {
     @State private var engine: CliEngine = .claude
     @State private var dir: AgentDirChoice?
     @State private var git = false
+    @State private var branchInfo: CliGitBranches?
+    @State private var selectedBranch = ""
+    @State private var baseBranch = ""
     @State private var branch: String?
     @State private var message = ""
     @State private var chosenModel = ""
@@ -78,7 +81,14 @@ struct AgentNewSessionPage: View {
         if permissionModes.contains(preferred) { return preferred }
         return permissionModes.contains(.full) ? .full : permissionModes.first ?? .full
     }
-    private var branchError: String? { branch.flatMap { CliLaunches.branchProblem($0) } }
+    private var canPickBranch: Bool { device?.cliAgents?.features.contains("gitBranch") == true }
+    private var switchingInPlace: Bool { branch == nil && !selectedBranch.isEmpty && selectedBranch != branchInfo?.current }
+    private var dirtySwitchError: String? { switchingInPlace && branchInfo?.dirty == true ? "当前目录有未提交改动，请先提交或改用 Worktree" : nil }
+    private var branchError: String? { branch.flatMap { CliLaunches.branchProblem($0) } ?? dirtySwitchError }
+    private var optionsHelp: String {
+        if let branch { return baseBranch.isEmpty ? (branch.isEmpty ? "Worktree" : branch) : "Worktree（基于 \(baseBranch)）· \(branch)" }
+        return selectedBranch.isEmpty ? "分支、Worktree 与权限" : "分支 · \(selectedBranch)"
+    }
     private var text: String { message.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var tooLong: Bool { text.utf8.count > CoreClient.cliMaxSendBytes }
     private var canChoose: Bool { device?.cliAgents?.features.contains("launchOptions") == true }
@@ -148,7 +158,7 @@ struct AgentNewSessionPage: View {
             guard !deviceId.isEmpty else { return }
             catalog = await model.models(deviceId: deviceId, engine: engine)
         }
-        .task(id: dir) { await checkGit() }
+        .task(id: "\(deviceId)\n\(dir?.path ?? "")\n\(dir?.create ?? false)\n\(canPickBranch)") { await checkGit() }
     }
 
     private func setUp() {
@@ -165,12 +175,33 @@ struct AgentNewSessionPage: View {
         dir = start.map { AgentDirChoice(path: $0, create: false) }
     }
 
-    /// A worktree needs a Git folder that exists.
+    /// A worktree or branch switch needs a Git folder that exists.
     private func checkGit() async {
+        branchInfo = nil
+        selectedBranch = ""
+        baseBranch = ""
         guard let dir, !dir.create else { git = false; branch = nil; return }
         let listing = try? await model.dirs(deviceId: deviceId, path: dir.path)
-        git = listing?.git ?? false
-        if !git { branch = nil }
+        guard !Task.isCancelled else { return }
+        if listing?.git == true { git = true }
+        else if !canPickBranch { git = false; branch = nil }
+        guard canPickBranch else { return }
+        if let info = await model.branches(deviceId: deviceId, cwd: dir.path) {
+            guard !Task.isCancelled else { return }
+            branchInfo = info
+            if info.git {
+                git = true
+                let initial = info.current.flatMap { info.branches.contains($0) ? $0 : nil } ?? ""
+                selectedBranch = initial
+                baseBranch = initial
+            } else {
+                git = false
+                branch = nil
+            }
+        } else if !Task.isCancelled, listing?.git != true {
+            git = false
+            branch = nil
+        }
     }
 
     private var options: some View {
@@ -214,20 +245,23 @@ struct AgentNewSessionPage: View {
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .accessibilityLabel("运行工具")
 
-            // the third tab: worktree, its branch and permissions, in one panel
+            // the third tab: branch, worktree and permissions, in one panel
             Button { picker = picker == .options ? nil : .options } label: {
                 AgentPickChip(active: picker == .options) {
-                    // a branch icon while the session runs in the folder itself; "Worktree" once it gets its own
-                    Image(systemName: "arrow.triangle.branch").foregroundStyle(branch == nil ? Theme.muted : Theme.nexAgentAccent)
-                    if branch != nil { Text("Worktree") }
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(branch != nil || switchingInPlace ? Theme.nexAgentAccent : Theme.muted)
+                    if branch != nil {
+                        Text("Worktree")
+                    } else if !selectedBranch.isEmpty {
+                        Text(selectedBranch).truncationMode(.middle)
+                    }
                     if canChoosePermissions && selectedPermissions != .full {
                         Image(systemName: "exclamationmark.shield").foregroundStyle(Theme.approval)
                     }
                     Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
                 }
             }
-            .buttonStyle(.plain).fixedSize()
-            .help("Worktree 与权限")
+            .buttonStyle(.plain)
+            .help(optionsHelp)
             .accessibilityLabel("会话选项")
             .popover(isPresented: presenting(.options), arrowEdge: .bottom) {
                 sessionOptions
@@ -241,29 +275,66 @@ struct AgentNewSessionPage: View {
         .padding(.horizontal, 4)
     }
 
-    /// Worktree (a Git folder only; on, the session starts in a new worktree on nexagent/<random>, renamable here) and,
+    /// Branch selection (in-place switch when clean, or a new worktree off a chosen base branch) and,
     /// where the CLI supports it, permissions: full access (the default) or the CLI's own prompts, which arrive as cards.
     private var sessionOptions: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Toggle(isOn: Binding(get: { branch != nil }, set: { branch = $0 ? CliLaunches.randomBranch() : nil })) {
+        let branches = branchInfo?.branches ?? []
+        let current = branchInfo?.current
+        let hasCurrentOption = current.map { branches.contains($0) } == true
+        return VStack(alignment: .leading, spacing: 14) {
+            Toggle(isOn: Binding(get: { branch != nil }, set: { on in
+                if on {
+                    branch = CliLaunches.randomBranch()
+                    baseBranch = !selectedBranch.isEmpty ? selectedBranch : (hasCurrentOption ? (current ?? "") : "")
+                } else {
+                    branch = nil
+                }
+            })) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Worktree").font(.system(size: 13, weight: .semibold))
                     if !git { Text("不是 Git 仓库").font(.caption).foregroundStyle(Theme.muted) }
                 }
             }
             .toggleStyle(.switch).tint(Theme.nexAgentAccent).disabled(!git)
-            if branch != nil {
+            if git && branch == nil && !branches.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
-                    TextField("分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
+                    Text(branchInfo?.dirty == true ? "分支 · 有未提交改动" : "分支")
+                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                    SwiftUI.Picker("选择分支", selection: $selectedBranch) {
+                        if !hasCurrentOption { Text("当前 HEAD").tag("") }
+                        ForEach(branches, id: \.self) { name in
+                            Text(name == current ? "\(name)（当前）" : name).tag(name)
+                        }
+                    }
+                    .pickerStyle(.menu).labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if branch != nil {
+                if !branches.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("基准分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                        SwiftUI.Picker("基准分支", selection: $baseBranch) {
+                            if !hasCurrentOption { Text("当前 HEAD").tag("") }
+                            ForEach(branches, id: \.self) { name in
+                                Text(name == current ? "\(name)（当前）" : name).tag(name)
+                            }
+                        }
+                        .pickerStyle(.menu).labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("新分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                    TextField("新分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
                         .textFieldStyle(.roundedBorder).font(.system(size: 13, design: .monospaced)).autocorrectionDisabled()
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         #endif
                         .onSubmit { picker = nil }
-                    if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
                 }
             }
+            if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
             if canChoosePermissions {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("权限").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
@@ -340,9 +411,13 @@ struct AgentNewSessionPage: View {
 
     private func start() {
         guard ready, let dir else { return }
-        let key = model.launch(CliLaunchRequest(deviceId: deviceId, engine: engine, cwd: dir.path, branch: branch?.trimmingCharacters(in: .whitespacesAndNewlines),
+        let wtBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = model.launch(CliLaunchRequest(deviceId: deviceId, engine: engine, cwd: dir.path,
+                                                branch: wtBranch,
                                                 message: text, model: canChoose ? chosenModel : "", effort: canChoose ? resolvedEffort ?? "" : "", createDir: dir.create,
-                                                permissions: canChoosePermissions ? selectedPermissions : nil, images: images))
+                                                permissions: canChoosePermissions ? selectedPermissions : nil, images: images,
+                                                baseBranch: wtBranch != nil && !baseBranch.isEmpty ? baseBranch : nil,
+                                                switchBranch: wtBranch == nil && switchingInPlace ? selectedBranch : nil))
         started(key)
     }
 }

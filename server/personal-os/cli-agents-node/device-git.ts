@@ -8,8 +8,8 @@ import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { isSafeCliArg } from "../../../shared/cli-agents.ts";
-import type { CliGitInfo } from "../../../shared/cli-agents.ts";
+import { CLI_BRANCH_LIMIT, isCliBranchName, isSafeCliArg } from "../../../shared/cli-agents.ts";
+import type { CliGitBranches, CliGitInfo } from "../../../shared/cli-agents.ts";
 
 export interface DeviceGitOptions {
   platform?: NodeJS.Platform;
@@ -76,12 +76,13 @@ export class DeviceGit {
         return "";
       });
     try {
-      const [head, branch, changes, stats, root] = await Promise.all([
+      const [head, branch, changes, stats, toplevel, commonDir] = await Promise.all([
         soft(this.run(cwd, ["rev-parse", "--short", "HEAD"])),
         soft(this.run(cwd, ["branch", "--show-current"])),
         soft(this.run(cwd, ["status", "--porcelain=v1", "--no-renames", "-z", "--untracked-files=all"])),
         soft(this.run(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", "HEAD", "--"])),
         soft(this.run(cwd, ["rev-parse", "--show-toplevel"])),
+        soft(this.run(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])),
       ]);
       if (!head && !branch) return { source: "none" };
       let added = 0;
@@ -93,10 +94,19 @@ export class DeviceGit {
           removed += Number(match[2]);
         }
       }
+      const platform = this.options.platform ?? process.platform;
+      const pathApi = platform === "win32" ? path.win32 : path.posix;
+      const worktree = toplevel.trim() || cwd;
+      let project: string | undefined = toplevel.trim() || undefined;
+      const commonRaw = commonDir.trim();
+      if (commonRaw) {
+        const resolvedCommon = pathApi.isAbsolute(commonRaw) ? pathApi.normalize(commonRaw) : pathApi.resolve(worktree, commonRaw);
+        if (/^\.git$/i.test(pathApi.basename(resolvedCommon))) project = pathApi.dirname(resolvedCommon);
+      }
       return {
         source: "worktree",
-        worktree: cwd,
-        ...(root ? { project: root.trim() } : {}),
+        worktree,
+        ...(project ? { project } : {}),
         branch: branch.trim() || "分离 HEAD",
         ...(head ? { head: head.trim() } : {}),
         files: changes.split("\0").filter(Boolean).map((entry) => entry.slice(3)).slice(0, 500),
@@ -108,22 +118,102 @@ export class DeviceGit {
     }
   }
 
+  /** Local branches and working-tree cleanliness of `cwd`, for the new-session options panel. */
+  async branches(cwd: string): Promise<CliGitBranches> {
+    const soft = (work: Promise<string>): Promise<string> =>
+      work.catch((error) => {
+        if (isGitMissing(error)) throw error;
+        return "";
+      });
+    try {
+      const [inside, currentRaw, refsRaw, statusRaw] = await Promise.all([
+        soft(this.run(cwd, ["rev-parse", "--is-inside-work-tree"])),
+        soft(this.run(cwd, ["branch", "--show-current"])),
+        soft(this.run(cwd, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads"])),
+        soft(this.run(cwd, ["status", "--porcelain=v1", "--no-renames", "--untracked-files=all"])),
+      ]);
+      if (inside.trim() !== "true") return { git: false, branches: [] };
+      const current = isCliBranchName(currentRaw.trim()) ? currentRaw.trim() : undefined;
+      const rawNames = refsRaw.split(/\r?\n/).map((line) => line.trim()).filter(isCliBranchName);
+      const ordered: string[] = [];
+      const add = (name: string | undefined) => {
+        if (name && !ordered.includes(name) && ordered.length < CLI_BRANCH_LIMIT) ordered.push(name);
+      };
+      if (current && rawNames.includes(current)) add(current);
+      for (const preferred of ["main", "master"]) if (rawNames.includes(preferred)) add(preferred);
+      for (const name of rawNames) add(name);
+      return {
+        git: true,
+        ...(current ? { current } : {}),
+        ...(statusRaw.trim() ? { dirty: true } : {}),
+        branches: ordered,
+      };
+    } catch {
+      return { git: false, branches: [] };
+    }
+  }
+
+  /** Switches `cwd` to an existing local branch when the working tree is clean.
+   * Already being on `branch` is a no-op even when there are uncommitted changes. */
+  async switchBranch(cwd: string, branch: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!isCliBranchName(branch) || !isSafeCliArg(branch)) return { ok: false, error: "分支名不合法" };
+    try {
+      const current = (await this.run(cwd, ["branch", "--show-current"]).catch((error) => {
+        if (isGitMissing(error)) throw error;
+        return "";
+      })).trim();
+      if (current === branch) return { ok: true };
+      const status = await this.run(cwd, ["status", "--porcelain=v1", "--no-renames", "--untracked-files=all"]);
+      if (status.trim()) return { ok: false, error: "当前目录有未提交改动，请先提交或改用 Worktree" };
+      const exists = await this.run(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).then(
+        () => true,
+        (error) => {
+          if (isGitMissing(error)) throw error;
+          return false;
+        },
+      );
+      if (!exists) return { ok: false, error: `找不到本地分支 ${branch}` };
+      await this.run(cwd, ["switch", branch]);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already used by worktree/i.test(message)) {
+        return { ok: false, error: `分支 ${branch} 已在其他工作树中检出，请改用其他分支或新建 Worktree` };
+      }
+      return { ok: false, error: shortReason(error) };
+    }
+  }
+
   /** Creates an independent worktree of the repository at `repoCwd`, deduped
    * by requestId: a retry returns the tree the first attempt built. The trees
    * live next to the repository under `.nexbot-worktrees/<repo>/`. */
-  async worktree(repoCwd: string, branch: string, requestId: string, options: { platform?: NodeJS.Platform } = {}): Promise<CliGitInfo> {
+  async worktree(repoCwd: string, branch: string, requestId: string, options: { platform?: NodeJS.Platform; baseBranch?: string } = {}): Promise<CliGitInfo> {
     const pathApi = (options.platform ?? this.options.platform ?? process.platform) === "win32" ? path.win32 : path.posix;
-    if (!isSafeCliArg(branch) || branch.startsWith("-")) return { source: "failed", error: "分支名不合法" };
+    if (!isCliBranchName(branch) || !isSafeCliArg(branch)) return { source: "failed", error: "分支名不合法" };
+    if (options.baseBranch !== undefined && (!isCliBranchName(options.baseBranch) || !isSafeCliArg(options.baseBranch))) {
+      return { source: "failed", error: "基准分支名不合法" };
+    }
     if (!/^[A-Za-z0-9-]{8,64}$/.test(requestId)) return { source: "failed", error: "创建请求无效" };
     const base = pathApi.join(pathApi.dirname(repoCwd), ".nexbot-worktrees", pathApi.basename(repoCwd));
     const slug = branch.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 60);
     const target = pathApi.join(base, `${slug}-${requestId.slice(0, 8)}`);
+    const startPoint = options.baseBranch ? `refs/heads/${options.baseBranch}` : "HEAD";
     try {
       if (!existsSync(target)) {
         try {
           // -b: the branch must not exist yet; a taken name is retried with it
-          await this.run(repoCwd, ["worktree", "add", "-b", branch, target, "HEAD"]);
+          await this.run(repoCwd, ["worktree", "add", "-b", branch, target, startPoint]);
         } catch {
+          if (options.baseBranch) {
+            const baseExists = await this.run(repoCwd, ["show-ref", "--verify", "--quiet", startPoint]).then(
+              () => true,
+              (error) => {
+                if (isGitMissing(error)) throw error;
+                return false;
+              },
+            );
+            if (!baseExists) return { source: "failed", error: `找不到基准分支 ${options.baseBranch}` };
+          }
           // the branch already exists (a retry with a new requestId): git
           // refuses to check a branch out twice, so the tree attaches detached
           await this.run(repoCwd, ["worktree", "add", "--detach", target, branch]);

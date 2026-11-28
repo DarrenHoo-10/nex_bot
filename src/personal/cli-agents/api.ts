@@ -13,6 +13,7 @@ import {
   parseSkillCatalog,
   parseCliDirListing,
   parseCliDeviceView,
+  parseCliGitBranches,
   parseCliItems,
   parseCliRequestView,
   parseCliSessionView,
@@ -20,6 +21,7 @@ import {
   type CliDeviceView,
   type CliEngine,
   type CliErrorCode,
+  type CliGitBranches,
   type CliItem,
   type CliLaunchOptions,
   type CliModelCatalog,
@@ -112,11 +114,18 @@ export async function translateReply(key: CliSessionKey, itemId: string, source:
 
 /** `parentId` binds the started session to a pending branch row; `forkFrom` makes it a real context fork of that session (same computer and tool).
  * `model` / `effort` (see CLI_MODELS / CLI_EFFORTS) need a computer whose capability lists `launchOptions`. */
-export const startSession = (deviceId: string, engine: CliEngine, cwd: string, options: { worktreeBranch?: string; requestId?: string; parentId?: string; forkFrom?: CliSessionKey; createDir?: boolean } & CliLaunchOptions = {}) =>
+export const startSession = (
+  deviceId: string,
+  engine: CliEngine,
+  cwd: string,
+  options: { branch?: string; worktreeBranch?: string; worktreeBaseBranch?: string; requestId?: string; parentId?: string; forkFrom?: CliSessionKey; createDir?: boolean } & CliLaunchOptions = {},
+) =>
   call<{ key: CliSessionKey; cwd?: string }>("/start", {
     deviceId, engine, cwd,
     ...(options.createDir ? { createDir: true } : {}),
+    ...(options.branch ? { branch: options.branch } : {}),
     ...(options.worktreeBranch ? { worktreeBranch: options.worktreeBranch } : {}),
+    ...(options.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
     ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.parentId ? { parentId: options.parentId } : {}),
     ...(options.forkFrom ? { forkFrom: options.forkFrom } : {}),
@@ -138,6 +147,14 @@ export async function listDirs(deviceId: string, path: string): Promise<CliDirLi
   const listing = parseCliDirListing(data);
   if (!listing) throw new CliApiError("目录格式不对");
   return listing;
+}
+
+/** Local Git branches and working-tree cleanliness of `cwd` on a computer. */
+export async function fetchBranches(deviceId: string, cwd: string, signal?: AbortSignal): Promise<CliGitBranches> {
+  const data = await call<unknown>(`/branches?deviceId=${encodeURIComponent(deviceId)}&cwd=${encodeURIComponent(cwd)}`, undefined, "GET", signal);
+  const result = parseCliGitBranches(data);
+  if (!result) throw new CliApiError("分支列表格式不对");
+  return result;
 }
 
 export async function fetchSkills(deviceId: string, engine: CliEngine, cwd: string, key: string | undefined, signal: AbortSignal) {

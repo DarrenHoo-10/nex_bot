@@ -14,6 +14,7 @@ import {
   CLI_SEARCH,
   MAX_SEND_TEXT,
   isAbsoluteCwd,
+  isCliBranchName,
   isCliDeviceId,
   isCliEffort,
   isCliEngine,
@@ -123,6 +124,7 @@ export class CliAgentRoutes {
           case "/api/cli-agents/skills": return await this.skills(request);
           case "/api/cli-agents/models": return await this.models(request);
           case "/api/cli-agents/dirs": return await this.dirs(request);
+          case "/api/cli-agents/branches": return await this.branches(request);
           default: return {
             status: 200,
             body: {
@@ -476,6 +478,14 @@ export class CliAgentRoutes {
     return { status: 200, body: await this.hub.dirs(request.sessionId, deviceId, path) };
   }
 
+  /** `GET /branches?deviceId=&cwd=`: local Git branches and cleanliness of `cwd` on the computer. */
+  private async branches(request: CliRouteRequest): Promise<CliRouteResult> {
+    const deviceId = request.search.get("deviceId");
+    const cwd = request.search.get("cwd") ?? "";
+    if (!isCliDeviceId(deviceId) || !isAbsoluteCwd(cwd)) return cliErrorResult("invalid");
+    return { status: 200, body: await this.hub.branches(request.sessionId, deviceId, cwd) };
+  }
+
   /** `POST /attach?key=&name=` with the file itself as the body. */
   private async attach(request: CliRouteRequest): Promise<CliRouteResult> {
     const key = this.key(request.search.get("key"));
@@ -516,13 +526,19 @@ export class CliAgentRoutes {
     const launch = this.launchOptions(data, engine);
     if (!launch) return cliErrorResult("invalid", "模型或推理强度不可用");
     const worktreeBranch = data.worktreeBranch;
+    const worktreeBaseBranch = data.worktreeBaseBranch;
     const requestId = data.requestId;
+    const switchBranch = data.branch;
     if (data.createDir !== undefined && typeof data.createDir !== "boolean") return cliErrorResult("invalid");
     const createDir = data.createDir === true;
-    const withWorktree = worktreeBranch !== undefined || requestId !== undefined;
+    const withWorktree = worktreeBranch !== undefined || requestId !== undefined || worktreeBaseBranch !== undefined;
     if (withWorktree) {
-      if (typeof worktreeBranch !== "string" || worktreeBranch.length < 1 || worktreeBranch.length > 120 || !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(worktreeBranch)) return cliErrorResult("invalid");
+      if (!isCliBranchName(worktreeBranch)) return cliErrorResult("invalid");
+      if (worktreeBaseBranch !== undefined && !isCliBranchName(worktreeBaseBranch)) return cliErrorResult("invalid");
       if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128) return cliErrorResult("invalid");
+    }
+    if (switchBranch !== undefined) {
+      if (!isCliBranchName(switchBranch) || withWorktree || createDir) return cliErrorResult("invalid");
     }
     // A fork is a session of the same device and engine, one this Core knows; the device
     // gets its ref and decides how to resume it (a worktree start and a fork do not mix)
@@ -530,16 +546,23 @@ export class CliAgentRoutes {
     if (data.forkFrom !== undefined) {
       const source = this.key(data.forkFrom);
       const parsed = source ? parseCliKey(source) : null;
-      if (!source || !parsed || withWorktree || createDir) return cliErrorResult("invalid");
+      if (!source || !parsed || withWorktree || createDir || switchBranch !== undefined) return cliErrorResult("invalid");
       if (parsed.deviceId !== deviceId || parsed.engine !== engine) return cliErrorResult("invalid");
       if (!this.hub.session(source)) return cliErrorResult("not_found");
       forkRef = parsed.ref;
     }
     if (createDir && withWorktree) return cliErrorResult("invalid", "新建目录不能同时新建工作树");
-    this.store.audit("cli.start", "device", deviceId, { engine, cwd, ...(createDir ? { createDir: true } : {}), ...(withWorktree ? { worktree: worktreeBranch } : {}), ...(forkRef ? { forkFrom: forkRef } : {}), ...launch, sessionId: request.sessionId });
+    this.store.audit("cli.start", "device", deviceId, {
+      engine, cwd,
+      ...(createDir ? { createDir: true } : {}),
+      ...(switchBranch ? { branch: switchBranch } : {}),
+      ...(withWorktree ? { worktree: worktreeBranch, ...(worktreeBaseBranch ? { worktreeBaseBranch } : {}) } : {}),
+      ...(forkRef ? { forkFrom: forkRef } : {}),
+      ...launch, sessionId: request.sessionId,
+    });
     const started = withWorktree && this.extras.workbench
-      ? await this.hub.startWorktree(request.sessionId, deviceId, engine, cwd, worktreeBranch as string, requestId as string, launch)
-      : await this.hub.start(request.sessionId, deviceId, engine, cwd, forkRef, launch, createDir);
+      ? await this.hub.startWorktree(request.sessionId, deviceId, engine, cwd, worktreeBranch as string, requestId as string, launch, worktreeBaseBranch as string | undefined)
+      : await this.hub.start(request.sessionId, deviceId, engine, cwd, forkRef, launch, createDir, switchBranch as string | undefined);
     // A start that belongs to a pending branch row binds it, so the tree shows
     // the child as soon as the device has the session.
     const parentId = this.workbenchRef(data);
@@ -697,6 +720,7 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/models",
   "/api/cli-agents/skills",
   "/api/cli-agents/dirs",
+  "/api/cli-agents/branches",
 ]);
 
 /** The delivery a workbench submit carries; absent means the legacy contract. */

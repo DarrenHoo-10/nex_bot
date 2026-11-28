@@ -35,6 +35,7 @@ import {
   type CliDeviceView,
   type CliEngine,
   type CliErrorCode,
+  type CliGitBranches,
   type CliGitInfo,
   type CliItem,
   type CliLaunchOptions,
@@ -921,24 +922,26 @@ export class CliAgentHub {
 
   /** `forkFrom` starts the session from that session's context. An executor that does not list the
    * engine in `forkEngines` would ignore the field and open a blank session, so it is refused here. */
-  async start(actor: string, deviceId: string, engine: CliEngine, cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}, createDir = false): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
+  async start(actor: string, deviceId: string, engine: CliEngine, cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}, createDir = false, branch?: string): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
     if (forkFrom) {
       const caps = this.caps.get(deviceId);
       if (caps && !caps.forkEngines?.includes(engine)) throw new CliOpError("invalid", FORK_UNSUPPORTED);
     }
     if (createDir) this.requireFeature(deviceId, "dirs");
+    if (branch) this.requireFeature(deviceId, "gitBranch");
     const options = this.launchOptions(deviceId, launch);
-    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}), ...(createDir ? { createDir: true } : {}), ...options });
+    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}), ...(createDir ? { createDir: true } : {}), ...(branch ? { branch } : {}), ...options });
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
   }
 
   /** Starts a session inside a fresh worktree of the repository at `cwd`; Core
    * and the device both dedup by requestId, so a retry after a slow checkout or
    * lost HTTP response returns the same session instead of launching a second one. */
-  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
+  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}, baseBranch?: string): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
+    if (baseBranch) this.requireFeature(deviceId, "gitBranch");
     const options = this.launchOptions(deviceId, launch);
     const dedupKey = `${deviceId}\0${requestId}`;
-    const fingerprint = JSON.stringify({ engine, cwd, branch, options });
+    const fingerprint = JSON.stringify({ engine, cwd, branch, ...(baseBranch ? { baseBranch } : {}), options });
     const ts = now();
     for (const [key, entry] of this.startRequests) {
       if (!entry.promise && entry.expiresAt <= ts) this.startRequests.delete(key);
@@ -949,7 +952,11 @@ export class CliAgentHub {
       if (existing.promise) return existing.promise;
       if (existing.result && existing.expiresAt > ts) return existing.result;
     }
-    const promise = this.op(actor, deviceId, null, "start", { engine, cwd, worktree: { branch, requestId }, ...options })
+    const promise = this.op(actor, deviceId, null, "start", {
+      engine, cwd,
+      worktree: { branch, requestId, ...(baseBranch ? { baseBranch } : {}) },
+      ...options,
+    })
       .then((result) => {
         const started = { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
         this.startRequests.set(dedupKey, { fingerprint, result: started, expiresAt: now() + START_DEDUP_MS });
@@ -1008,6 +1015,11 @@ export class CliAgentHub {
   async dirs(actor: string, deviceId: string, path: string): Promise<CliDirListing> {
     this.requireFeature(deviceId, "dirs");
     return this.op(actor, deviceId, null, "dirs", { path });
+  }
+
+  async branches(actor: string, deviceId: string, cwd: string): Promise<CliGitBranches> {
+    this.requireFeature(deviceId, "gitBranch");
+    return this.op(actor, deviceId, null, "branches", { cwd });
   }
 
   /** An executor that does not list `feature` would ignore or refuse it: say it needs an update instead. */

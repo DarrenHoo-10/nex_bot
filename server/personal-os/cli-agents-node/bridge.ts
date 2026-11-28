@@ -1330,6 +1330,8 @@ export class CliAgentBridge {
       }
       case "dirs":
         return listDirs((args as CliOpArgs["dirs"]).path, { platform: this.platform, ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
+      case "branches":
+        return this.git.branches((args as CliOpArgs["branches"]).cwd);
       default:
         throw new OpFailure("invalid", "this operation is not available on this computer yet");
     }
@@ -1573,6 +1575,9 @@ export class CliAgentBridge {
   private async runStart(args: CliOpArgs["start"], budget: number): Promise<CliOpResult["start"]> {
     refuseUnsupportedLaunchOptions(args.engine, args);
     const fork = this.forkSource(args);
+    if (args.branch && (fork || args.worktree || args.createDir)) {
+      throw new OpFailure("invalid", "切换分支不能与分叉、新建目录或新建工作树同时使用");
+    }
     if (args.createDir) {
       // a folder typed in the picker that did not exist yet; a worktree needs an existing repository
       if (fork || args.worktree) throw new OpFailure("invalid", "新建目录不能同时分叉或新建工作树");
@@ -1582,12 +1587,24 @@ export class CliAgentBridge {
     if (customStart) {
       let cwd = args.cwd;
       if (args.worktree) {
-        const built = await this.git.worktree(cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform });
+        const built = await this.git.worktree(cwd, args.worktree.branch, args.worktree.requestId, {
+          platform: this.platform,
+          ...(args.worktree.baseBranch ? { baseBranch: args.worktree.baseBranch } : {}),
+        });
         if (built.source === "failed" || !built.worktree) throw new OpFailure("invalid", built.error ?? "无法创建工作树");
         cwd = built.worktree;
       }
       cwd = await validateCwd(cwd, { platform: this.platform, env: this.options.env });
+      if (args.branch) {
+        const switched = await this.git.switchBranch(cwd, args.branch);
+        if (!switched.ok) throw new OpFailure("invalid", switched.error);
+      }
       return customStart(args, cwd, budget);
+    }
+    if (args.branch) {
+      const checkedCwd = await validateCwd(args.cwd, { platform: this.platform, env: this.options.env });
+      const switched = await this.git.switchBranch(checkedCwd, args.branch);
+      if (!switched.ok) throw new OpFailure("invalid", switched.error);
     }
     const size = clampTermSize(args.cols, args.rows);
     const features = harnessFor(args.engine)?.features;
@@ -1598,7 +1615,12 @@ export class CliAgentBridge {
     // A worktree start builds the tree here first; the requestId dedups so a
     // retried request reuses the tree it already created. Checking out a large
     // repository takes seconds, so the terminal, the CLI and the hooks get ready meanwhile.
-    const tree = args.worktree ? this.git.worktree(args.cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform }) : null;
+    const tree = args.worktree
+      ? this.git.worktree(args.cwd, args.worktree.branch, args.worktree.requestId, {
+          platform: this.platform,
+          ...(args.worktree.baseBranch ? { baseBranch: args.worktree.baseBranch } : {}),
+        })
+      : null;
     const [hc, executable, hooks, launchOptions] = await Promise.all([
       this.requireHc(),
       this.cliPath(args.engine),

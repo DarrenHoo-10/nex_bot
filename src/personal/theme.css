@@ -4067,6 +4067,32 @@
   .na-options-menu .model-menu-search input {
     font-family: ui-monospace, Consolas, monospace;
   }
+  .na-options-menu .na-option-select {
+    padding-right: 8px;
+  }
+  .na-options-menu .na-option-select select {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--na-ink, #11201b);
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .na-options-menu .na-option-select select option {
+    background: var(--na-paper, #ffffff);
+    color: var(--na-ink, #11201b);
+  }
+  .na-options-menu .na-option-select > svg:last-child {
+    pointer-events: none;
+  }
   .na-options-menu .model-menu-status {
     margin: -4px 4px 0;
   }

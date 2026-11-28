@@ -545,11 +545,29 @@ export interface CliError {
  * model and effort at launch (`model`/`effort` on `start` and `continue`),
  * attachments written to the computer (`attach`) and the models its CLIs offer
  * (`models`). Older executors send none. */
-/** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first. */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes" | "skills";
+/** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first.
+ * `gitBranch`: list local branches/dirty state (`branches`), switch `cwd` to a branch on `start`, and set `worktree.baseBranch`. */
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes" | "skills" | "gitBranch";
 /** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask".
  * `permissionModes`: it also takes each CLI's other permission modes (cliPermissionModes); without it only "full" and "ask". */
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills"];
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch"];
+
+export const CLI_BRANCH_RE = /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/;
+export const CLI_BRANCH_LIMIT = 200;
+
+export function isCliBranchName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 120 &&
+    CLI_BRANCH_RE.test(value) &&
+    !value.includes("..") &&
+    !value.includes("//") &&
+    !value.endsWith("/") &&
+    !value.endsWith(".") &&
+    !value.endsWith(".lock")
+  );
+}
 
 /** What the page shows when the computer's executor lacks a feature. */
 export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
@@ -740,6 +758,7 @@ export const CLI_OPS = [
   "models",
   "skills",
   "dirs",
+  "branches",
 ] as const;
 export type CliOp = (typeof CLI_OPS)[number];
 
@@ -759,7 +778,9 @@ export interface CliOpArgs {
     rows?: number;
     /** create an independent worktree of the repository at `cwd` first, then
      * run the CLI inside it; the device dedups by requestId */
-    worktree?: { branch: string; requestId: string };
+    worktree?: { branch: string; requestId: string; baseBranch?: string };
+    /** switch `cwd` to this existing local branch first (only when clean); only sent to executors that list `gitBranch` */
+    branch?: string;
     /** a real context fork of this session (same device and engine as `engine`):
      * the CLI resumes it into a new session id instead of starting blank. A device
      * that does not list the engine in `capability.forkEngines` must not be sent it. */
@@ -795,6 +816,8 @@ export interface CliOpArgs {
   skills: { engine: CliEngine; cwd: string; ref?: CliSessionRef };
   /** the sub-folders of an absolute folder; "" lists the roots (drives and the home folder) */
   dirs: { path: string };
+  /** local Git branches and working-tree cleanliness for `cwd` */
+  branches: { cwd: string };
 }
 
 export interface CliSearchHit {
@@ -820,6 +843,17 @@ export interface CliGitInfo {
   error?: string;
 }
 
+export interface CliGitBranches {
+  /** false when `cwd` is outside a Git repository */
+  git: boolean;
+  /** current local branch; absent on detached HEAD or outside Git */
+  current?: string;
+  /** true when the working tree has uncommitted changes */
+  dirty?: boolean;
+  /** local branches of the repository, current / main / master first */
+  branches: string[];
+}
+
 export interface CliOpResult {
   read: { items: CliItem[]; more: boolean };
   watch: Record<string, never>;
@@ -838,6 +872,7 @@ export interface CliOpResult {
   models: CliModelCatalog;
   skills: SkillCatalog;
   dirs: CliDirListing;
+  branches: CliGitBranches;
 }
 
 export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
@@ -859,6 +894,7 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   models: 8000,
   skills: 15_000,
   dirs: 8000,
+  branches: 8000,
 };
 
 /** Operations that change state: never re-sent after a timeout or a drop.
@@ -1501,12 +1537,24 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
   start: (o) => {
     const cwd = o.cwd;
     if (!isAbsoluteCwd(cwd)) fail();
-    let worktree: { branch: string; requestId: string } | undefined;
+    let worktree: { branch: string; requestId: string; baseBranch?: string } | undefined;
     if (present(o, "worktree")) {
       const tree = rec(o.worktree);
       const branch = str(tree.branch, 120, 1);
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(branch)) fail();
-      worktree = { branch, requestId: str(tree.requestId, 128, 1) };
+      if (!isCliBranchName(branch)) fail();
+      let baseBranch: string | undefined;
+      if (present(tree, "baseBranch")) {
+        const base = str(tree.baseBranch, 120, 1);
+        if (!isCliBranchName(base)) fail();
+        baseBranch = base;
+      }
+      worktree = pick({ branch, requestId: str(tree.requestId, 128, 1), baseBranch });
+    }
+    let branch: string | undefined;
+    if (present(o, "branch")) {
+      const target = str(o.branch, 120, 1);
+      if (!isCliBranchName(target)) fail();
+      branch = target;
     }
     const engine = oneOf(o.engine, CLI_ENGINES);
     let forkFrom: CliSessionRef | undefined;
@@ -1515,14 +1563,17 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
       // a fork resumes a session of the engine being started, never another one
       if (!forkFrom.startsWith(`${engine}:`)) fail();
     }
+    const createDir = present(o, "createDir") ? bool(o.createDir) || undefined : undefined;
+    if (branch && (worktree || forkFrom || createDir)) fail();
     return pick({
       engine,
       cwd,
       cols: present(o, "cols") ? cols(o.cols) : undefined,
       rows: present(o, "rows") ? rows(o.rows) : undefined,
       worktree,
+      branch,
       forkFrom,
-      createDir: present(o, "createDir") ? bool(o.createDir) || undefined : undefined,
+      createDir,
       ...launchOptions(o, engine),
     });
   },
@@ -1552,6 +1603,11 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     const path = str(o.path, CLI_LIMITS.cwd);
     if (path && !isAbsoluteCwd(path)) fail();
     return { path };
+  },
+  branches: (o) => {
+    const cwd = o.cwd;
+    if (!isAbsoluteCwd(cwd)) fail();
+    return { cwd };
   },
   history_image: (o) => {
     const locator = str(o.locator, 90);
@@ -1660,6 +1716,7 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
   models: (o) => modelCatalog(o),
   skills: (o) => skillCatalog(o),
   dirs: (o) => dirListing(o),
+  branches: (o) => gitBranches(o),
 };
 
 export interface SkillOption { name: string; description: string }
@@ -1696,6 +1753,28 @@ export const CLI_DIR_LIMIT = 500;
 
 export function parseCliDirListing(value: unknown): CliDirListing | null {
   return guard(() => dirListing(rec(value)));
+}
+
+export function parseCliGitBranches(value: unknown): CliGitBranches | null {
+  return guard(() => gitBranches(rec(value)));
+}
+
+function gitBranches(o: Rec): CliGitBranches {
+  const git = bool(o.git);
+  const branches: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of arr(o.branches, CLI_BRANCH_LIMIT)) {
+    if (typeof entry !== "string" || !isCliBranchName(entry) || seen.has(entry)) continue;
+    seen.add(entry);
+    branches.push(entry);
+  }
+  const current = present(o, "current") && isCliBranchName(o.current) ? o.current : undefined;
+  return pick({
+    git,
+    current,
+    dirty: o.dirty === true ? true : undefined,
+    branches,
+  });
 }
 
 function dirListing(o: Rec): CliDirListing {

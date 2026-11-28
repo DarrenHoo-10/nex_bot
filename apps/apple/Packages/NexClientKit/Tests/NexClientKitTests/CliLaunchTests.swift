@@ -25,6 +25,8 @@ final class CliLaunchLogicTests: XCTestCase {
         var failed = launch; failed.phase = .failed("x")
         XCTAssertEqual(CliLaunches.row(failed).state, .stopped)
         XCTAssertEqual(CliLaunches.row(CliLaunches.make(CliLaunchRequest(deviceId: "d1", engine: .claude, cwd: "/w"), now: 1)).title, "新会话")
+        let switched = CliLaunches.make(CliLaunchRequest(deviceId: "d1", engine: .claude, cwd: "/w", switchBranch: "dev"), now: 2)
+        XCTAssertEqual(CliLaunches.row(switched).gitBranch, "dev")
     }
 
     func testCatalogAndCapabilityDecode() throws {
@@ -89,7 +91,7 @@ final class CliLaunchModelTests: XCTestCase {
         let core = LaunchCore()
         core.sendNotFound = 2
         let (model, stub) = await model(core)
-        let key = model.launch(CliLaunchRequest(deviceId: "d1", engine: .claude, cwd: "/work/app", branch: "nexagent/abc123", message: "修一下登录页", model: "auto/claude-opus-5-5[1m]", effort: "high"))
+        let key = model.launch(CliLaunchRequest(deviceId: "d1", engine: .claude, cwd: "/work/app", branch: "nexagent/abc123", message: "修一下登录页", model: "auto/claude-opus-5-5[1m]", effort: "high", baseBranch: "release"))
         // no waiting: the placeholder is listed and selected right away
         XCTAssertEqual(model.selectedKey, key)
         XCTAssertEqual(model.selectedLaunch?.request.message, "修一下登录页")
@@ -101,6 +103,8 @@ final class CliLaunchModelTests: XCTestCase {
         XCTAssertEqual(core.lock.withLock { core.sends }, 3, "a not-yet-listed session is tried again")
         let body = stub.recorded("/api/cli-agents/start").first?.json
         XCTAssertEqual(body?["worktreeBranch"] as? String, "nexagent/abc123")
+        XCTAssertEqual(body?["worktreeBaseBranch"] as? String, "release")
+        XCTAssertNil(body?["branch"])
         XCTAssertEqual(body?["model"] as? String, "auto/claude-opus-5-5[1m]")
         XCTAssertEqual(body?["effort"] as? String, "high")
         XCTAssertNotNil(body?["requestId"] as? String)

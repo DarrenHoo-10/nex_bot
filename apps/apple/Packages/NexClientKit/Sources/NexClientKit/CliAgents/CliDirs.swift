@@ -39,6 +39,25 @@ public struct CliDirListing: Sendable, Hashable, Decodable {
     }
 }
 
+/// `GET /api/cli-agents/branches`: local branches and dirty state of a Git folder.
+public struct CliGitBranches: Sendable, Hashable, Decodable {
+    public var git: Bool
+    public var current: String?
+    public var dirty: Bool
+    public var branches: [String]
+    public init(git: Bool = false, current: String? = nil, dirty: Bool = false, branches: [String] = []) {
+        self.git = git; self.current = current; self.dirty = dirty; self.branches = branches
+    }
+    enum CodingKeys: String, CodingKey { case git, current, dirty, branches }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        git = (try? c.decodeIfPresent(Bool.self, forKey: .git)) ?? false
+        current = try? c.decodeIfPresent(String.self, forKey: .current)
+        dirty = (try? c.decodeIfPresent(Bool.self, forKey: .dirty)) ?? false
+        branches = (try? c.decodeIfPresent([String].self, forKey: .branches)) ?? []
+    }
+}
+
 public enum CliPaths {
     static func isDrive(_ path: String) -> Bool {
         let chars = Array(path)

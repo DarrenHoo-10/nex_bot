@@ -43,6 +43,20 @@ describe("git info", () => {
     expect(info.removed).toBe(0);
   });
 
+  it("reports the main checkout as project and the linked worktree path as worktree", async () => {
+    const repo = tempRepo();
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: path.join(repo, "cfg"), GIT_CONFIG_NOSYSTEM: "1" };
+    const linked = path.join(repo, ".claude", "worktrees", "feature-tree");
+    execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.test", "worktree", "add", "-b", "feat/tree", linked], { env, windowsHide: true });
+    const info = await new DeviceGit().info(linked);
+    const real = (p: string) => realpathSync.native(p).toLowerCase();
+    expect(info.source).toBe("worktree");
+    expect(info.branch).toBe("feat/tree");
+    expect(info.project && real(info.project)).toBe(real(repo));
+    expect(info.worktree && real(info.worktree)).toBe(real(linked));
+    expect(info.project && info.worktree && real(info.project) !== real(info.worktree)).toBe(true);
+  });
+
   it("answers none outside a repository and failed with a short reason on refusal", async () => {
     const plain = mkdtempSync(path.join(os.tmpdir(), "nex-device-git-plain-"));
     cleanups.push(() => rmSync(plain, { recursive: true, force: true }));
@@ -189,5 +203,77 @@ describe("worktree creation", () => {
     expect(await git.worktree(repo, "-oProxyCommand=evil", "abcdefgh1234")).toMatchObject({ source: "failed" });
     expect(await git.worktree(repo, "feat demo", "abcdefgh1234")).toMatchObject({ source: "failed" });
     expect(await git.worktree(repo, "ok-branch", "short")).toMatchObject({ source: "failed" });
+  });
+
+  it("creates a worktree from an explicit baseBranch and fails if baseBranch does not exist", async () => {
+    const repo = tempRepo();
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: path.join(repo, "cfg"), GIT_CONFIG_NOSYSTEM: "1" };
+    const run = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env, windowsHide: true }).trim();
+    run(["checkout", "-b", "release"]);
+    writeFileSync(path.join(repo, "rel.txt"), "release\n", "utf8");
+    run(["add", "--", "rel.txt"]);
+    run(["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-m", "release commit"]);
+    const releaseHead = run(["rev-parse", "--short", "HEAD"]);
+    run(["checkout", "main"]);
+    const mainHead = run(["rev-parse", "--short", "HEAD"]);
+    expect(releaseHead).not.toBe(mainHead);
+
+    const git = new DeviceGit();
+    const created = await git.worktree(repo, "feat/from-release", "basebranch1", { baseBranch: "release" });
+    expect(created.source).toBe("worktree");
+    expect(created.branch).toBe("feat/from-release");
+    expect(created.head).toBe(releaseHead);
+    expect(created.worktree && existsSync(path.join(created.worktree, "rel.txt"))).toBe(true);
+
+    const missing = await git.worktree(repo, "feat/missing-base", "basebranch2", { baseBranch: "no-such-branch" });
+    expect(missing).toEqual({ source: "failed", error: "找不到基准分支 no-such-branch" });
+  });
+});
+
+describe("branch listing and in-place switch", () => {
+  it("lists local branches with current first and reports dirty state", async () => {
+    const repo = tempRepo();
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: path.join(repo, "cfg"), GIT_CONFIG_NOSYSTEM: "1" };
+    const run = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env, windowsHide: true });
+    run(["branch", "dev"]);
+    run(["branch", "feature/a"]);
+    const git = new DeviceGit();
+    const dirtyInfo = await git.branches(repo);
+    expect(dirtyInfo.git).toBe(true);
+    expect(dirtyInfo.current).toBe("main");
+    expect(dirtyInfo.dirty).toBe(true);
+    expect(dirtyInfo.branches[0]).toBe("main");
+    expect(dirtyInfo.branches).toEqual(expect.arrayContaining(["main", "dev", "feature/a"]));
+
+    const plain = mkdtempSync(path.join(os.tmpdir(), "nex-device-git-plain-"));
+    cleanups.push(() => rmSync(plain, { recursive: true, force: true }));
+    expect(await git.branches(plain)).toEqual({ git: false, branches: [] });
+  });
+
+  it("blocks switching when dirty, allows staying on current branch, and switches when clean", async () => {
+    const repo = tempRepo();
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: path.join(repo, "cfg"), GIT_CONFIG_NOSYSTEM: "1" };
+    const run = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env, windowsHide: true }).trim();
+    run(["branch", "dev"]);
+    const git = new DeviceGit();
+
+    // already on main: allowed even when dirty
+    expect(await git.switchBranch(repo, "main")).toEqual({ ok: true });
+    // switching to another branch while dirty: blocked
+    expect(await git.switchBranch(repo, "dev")).toEqual({ ok: false, error: "当前目录有未提交改动，请先提交或改用 Worktree" });
+
+    // commit pending change so working tree is clean
+    run(["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-m", "clean"]);
+    expect((await git.branches(repo)).dirty).toBeUndefined();
+    expect(await git.switchBranch(repo, "missing")).toEqual({ ok: false, error: "找不到本地分支 missing" });
+    expect(await git.switchBranch(repo, "dev")).toEqual({ ok: true });
+    expect(run(["branch", "--show-current"])).toBe("dev");
+
+    // branch already checked out in another worktree: clear error
+    const other = path.join(repo, ".claude", "worktrees", "busy-wt");
+    run(["worktree", "add", "-b", "busy", other]);
+    const busyResult = await git.switchBranch(repo, "busy");
+    expect(busyResult.ok).toBe(false);
+    if (!busyResult.ok) expect(busyResult.error).toContain("已在其他工作树中检出");
   });
 });

@@ -15,6 +15,10 @@ export interface LaunchRequest {
   cwd: string;
   /** a new worktree on this branch; absent runs in `cwd` itself */
   branch?: string;
+  /** base branch to create the new worktree from (only with `branch`) */
+  baseBranch?: string;
+  /** switch `cwd` to this existing local branch before launching (only without `branch`) */
+  switchBranch?: string;
   /** make `cwd` first: it did not exist when it was picked */
   createDir?: boolean;
   /** the first message; may be empty */
@@ -67,7 +71,7 @@ export function launchRow(launch: Launch): CliSessionView {
     // a new worktree belongs to the repository it is made from
     repoRoot: launch.cwd,
     title: title || "新会话",
-    ...(launch.branch ? { gitBranch: launch.branch } : {}),
+    ...(launch.branch || launch.switchBranch ? { gitBranch: launch.branch || launch.switchBranch } : {}),
     state: launch.phase === "failed" ? "stopped" : "running",
     lastActivityAt: launch.createdAt,
     hidden: false,
@@ -121,7 +125,23 @@ export function useLaunches(sessions: readonly CliSessionView[], onSettled?: () 
           target = await review.run("worktree-start", review.initial, { deviceId: launch.deviceId, engine: launch.engine, cwd: launch.cwd, branch: launch.branch, requestId: attempt.requestId });
           if (!target) throw new Error("未取得新会话");
         } else {
-          target = (await startSession(launch.deviceId, launch.engine, launch.cwd, launch.branch ? { worktreeBranch: launch.branch, requestId: attempt.requestId, ...options } : { ...(launch.createDir ? { createDir: true } : {}), ...options })).key;
+          target = (await startSession(
+            launch.deviceId,
+            launch.engine,
+            launch.cwd,
+            launch.branch
+              ? {
+                  worktreeBranch: launch.branch,
+                  ...(launch.baseBranch ? { worktreeBaseBranch: launch.baseBranch } : {}),
+                  requestId: attempt.requestId,
+                  ...options,
+                }
+              : {
+                  ...(launch.createDir ? { createDir: true } : {}),
+                  ...(launch.switchBranch ? { branch: launch.switchBranch } : {}),
+                  ...options,
+                },
+          )).key;
         }
         // the composer of the new session keeps the model and effort it started with
         saveLaunch(target, launch.choice);

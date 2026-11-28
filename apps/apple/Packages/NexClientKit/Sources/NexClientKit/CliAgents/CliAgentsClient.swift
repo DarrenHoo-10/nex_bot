@@ -9,7 +9,9 @@ private struct CliKeyBody: Encodable { let key: String }
 private struct CliContinueBody: Encodable { let key: String; let effort: String?; let model: String?; var permissions: String? = nil }
 private struct CliStartBody: Encodable {
     let deviceId: String; let engine: String; let cwd: String
-    var worktreeBranch: String? = nil; var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
+    var branch: String? = nil
+    var worktreeBranch: String? = nil; var worktreeBaseBranch: String? = nil
+    var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
     var permissions: String? = nil
 }
 private struct CliSendBody: Encodable {
@@ -91,13 +93,22 @@ extension CoreClient {
         return (body.requests?.values ?? []).filter { $0.key == key }
     }
 
-    /// Starts a CLI in `cwd`, or in a new worktree of it on `worktreeBranch` (`requestId` makes a retry reuse that tree). A
-    /// worktree of a large repository takes a while to check out: this request waits longer than the others.
+    /// Starts a CLI in `cwd` (optionally switching it to `branch`), or in a new worktree of it on `worktreeBranch`
+    /// (off `worktreeBaseBranch`, with `requestId` making a retry reuse that tree). A worktree of a large repository
+    /// takes a while to check out: this request waits longer than the others.
     /// `permissions` is "full" or "ask"; nil leaves the computer's default (full access for a new session).
     public func cliStart(deviceId: String, engine: CliEngine, cwd: String, worktreeBranch: String? = nil, requestId: String? = nil, model: String? = nil, effort: String? = nil, createDir: Bool = false,
-                         permissions: CliPermissionMode? = nil) async throws -> CliSessionKey {
-        let body = CliStartBody(deviceId: deviceId, engine: engine.rawValue, cwd: cwd, worktreeBranch: worktreeBranch, requestId: worktreeBranch == nil ? nil : requestId,
-                                model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil, createDir: createDir && worktreeBranch == nil ? true : nil,
+                         permissions: CliPermissionMode? = nil, branch: String? = nil, worktreeBaseBranch: String? = nil) async throws -> CliSessionKey {
+        let trimmedWorktree = worktreeBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wtBranch = trimmedWorktree?.isEmpty == false ? trimmedWorktree : nil
+        let trimmedBase = worktreeBaseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wtBase = wtBranch != nil && trimmedBase?.isEmpty == false ? trimmedBase : nil
+        let trimmedBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let inPlaceBranch = wtBranch == nil && !createDir && trimmedBranch?.isEmpty == false ? trimmedBranch : nil
+        let body = CliStartBody(deviceId: deviceId, engine: engine.rawValue, cwd: cwd, branch: inPlaceBranch,
+                                worktreeBranch: wtBranch, worktreeBaseBranch: wtBase,
+                                requestId: wtBranch == nil ? nil : requestId,
+                                model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil, createDir: createDir && wtBranch == nil ? true : nil,
                                 permissions: permissions?.rawValue)
         let r: CliKeyResult = try await send(request(Self.cliBase + "/start", query: [], body: JSONEncoder().encode(body), timeout: 60), as: CliKeyResult.self)
         return r.key
@@ -106,6 +117,11 @@ extension CoreClient {
     /// `GET /api/cli-agents/dirs`: the sub-folders of an absolute folder on the computer; "" lists its drives and home folder.
     public func cliDirs(deviceId: String, path: String) async throws -> CliDirListing {
         try await get(Self.cliBase + "/dirs", query: [("deviceId", deviceId), ("path", path)])
+    }
+
+    /// `GET /api/cli-agents/branches`: local Git branches and dirty state of an absolute folder on the computer.
+    public func cliBranches(deviceId: String, cwd: String) async throws -> CliGitBranches {
+        try await get(Self.cliBase + "/branches", query: [("deviceId", deviceId), ("cwd", cwd)])
     }
 
     /// `GET /api/cli-agents/models`: the rows of that CLI's own `/model` picker on the computer.

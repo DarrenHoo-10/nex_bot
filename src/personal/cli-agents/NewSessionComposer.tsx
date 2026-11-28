@@ -3,8 +3,9 @@
 // permissions), and sending starts the session with that message.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, GitBranch, PanelLeftOpen, ShieldAlert, ShieldCheck } from "lucide-react";
-import { cliPermissionLabel, cliPermissionModes, type CliDeviceView, type CliEngine, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { cliPermissionLabel, cliPermissionModes, type CliDeviceView, type CliEngine, type CliGitBranches, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { useAnchoredPopover } from "../components/anchored-popover";
+import { fetchBranches } from "./api";
 import type { LaunchChoice } from "./CliModelMenu";
 import { Composer } from "./Composer";
 import { DirectoryPicker, type DirectoryChoice } from "./DirectoryPicker";
@@ -45,10 +46,16 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   const defaultPath = (initialDeviceId && initialDeviceId !== deviceId ? undefined : initialCwd) ?? recent[0];
   const [dir, setDir] = useState<DirectoryChoice | null>(() => deviceId && defaultPath ? { path: defaultPath, create: false } : null);
   const [git, setGit] = useState(false);
+  const [branchInfo, setBranchInfo] = useState<CliGitBranches | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [baseBranch, setBaseBranch] = useState("");
   const [branch, setBranch] = useState<string | null>(null);
   const [choice, setChoice] = useState<LaunchChoice>({ model: "", effort: "" });
   // each CLI keeps its own choice: full access by default, Antigravity asking (its full access is answered by the executor)
   const [modeOf, setModeOf] = useState<Partial<Record<CliEngine, CliPermissionMode>>>({});
+
+  const features = device?.cliAgents?.features ?? [];
+  const canPickBranch = features.includes("gitBranch");
 
   useEffect(() => {
     if (selectedDeviceId || !deviceId) return;
@@ -57,20 +64,49 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   }, [selectedDeviceId, deviceId, defaultPath]);
   useEffect(() => { if (engines.length && !engines.includes(engine)) setEngine(engines[0]); }, [engines, engine]);
   useEffect(() => { setChoice({ model: "", effort: "" }); }, [engine, deviceId]);
-  // a worktree needs a Git folder that exists
+  // a worktree or branch switch needs a Git folder that exists
   useEffect(() => {
     let live = true;
-    if (!dir || dir.create) { setGit(false); setBranch(null); return; }
-    source(deviceId).list(dir.path).then((listing) => { if (live) { setGit(!!listing.git); if (!listing.git) setBranch(null); } }).catch(() => undefined);
-    return () => { live = false; };
-  }, [dir, deviceId, source]);
+    const abort = new AbortController();
+    setBranchInfo(null);
+    setSelectedBranch("");
+    setBaseBranch("");
+    if (!dir || dir.create) { setGit(false); setBranch(null); return () => { live = false; abort.abort(); }; }
+    let listingGit: boolean | null = null;
+    source(deviceId).list(dir.path).then((listing) => {
+      if (!live) return;
+      listingGit = !!listing.git;
+      if (listing.git) setGit(true);
+      else if (!canPickBranch) { setGit(false); setBranch(null); }
+    }).catch(() => undefined);
+    if (canPickBranch) {
+      fetchBranches(deviceId, dir.path, abort.signal).then((info) => {
+        if (!live) return;
+        setBranchInfo(info);
+        if (info.git) {
+          setGit(true);
+          const initial = info.current && info.branches.includes(info.current) ? info.current : "";
+          setSelectedBranch(initial);
+          setBaseBranch(initial);
+        } else {
+          setGit(false);
+          setBranch(null);
+        }
+      }).catch(() => {
+        if (!live) return;
+        if (listingGit === false) { setGit(false); setBranch(null); }
+      });
+    }
+    return () => { live = false; abort.abort(); };
+  }, [dir, deviceId, source, canPickBranch]);
 
-  const features = device?.cliAgents?.features ?? [];
   const permissionModes = cliPermissionModes(engine, features);
   const preferred = modeOf[engine] ?? (engine === "agy" ? "ask" : "full");
   const selectedPermissions = permissionModes.includes(preferred) ? preferred : permissionModes.includes("full") ? "full" : permissionModes[0];
   const canChoosePermissions = permissionModes.length > 0;
-  const branchError = branch !== null ? branchProblem(branch) : null;
+  const switchingInPlace = branch === null && !!selectedBranch && selectedBranch !== branchInfo?.current;
+  const dirtySwitchError = switchingInPlace && branchInfo?.dirty ? "当前目录有未提交改动，请先提交或改用 Worktree" : null;
+  const branchError = branch !== null ? branchProblem(branch) : dirtySwitchError;
   const ready = !blocker && !!device && engines.includes(engine) && !!dir && !branchError;
   // the box below is the session's own message box: it only needs the computer, CLI and folder
   const draft: CliSessionView = useMemo(() => ({
@@ -82,7 +118,10 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
     if (!dir || !ready) return;
     onLaunch({
       deviceId, engine, cwd: dir.path, message, files, attach: features.includes("attach"),
-      ...(dir.create ? { createDir: true } : {}), ...(branch !== null ? { branch: branch.trim() } : {}),
+      ...(dir.create ? { createDir: true } : {}),
+      ...(branch !== null
+        ? { branch: branch.trim(), ...(baseBranch ? { baseBranch } : {}) }
+        : switchingInPlace ? { switchBranch: selectedBranch } : {}),
       choice: features.includes("launchOptions") ? choice : { model: "", effort: "" },
       ...(canChoosePermissions ? { permissions: selectedPermissions } : {}),
     });
@@ -116,7 +155,15 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
               deviceId={deviceId} onDevice={(id) => { setDeviceId(id); setDir(null); }} value={dir} onChange={setDir}
               source={source} recents={recent}/>
             <HarnessPicker engines={engines} value={engine} onChange={setEngine} disabled={!device?.online || !device.cliAgents} agyNeedsUpdate={device?.cliAgents?.agyNeedsUpdate}/>
-            <SessionOptions git={git} branch={branch} onBranch={setBranch} problem={branchError}
+            <SessionOptions git={git} branch={branch}
+              onBranch={(next) => {
+                setBranch(next);
+                if (next !== null) setBaseBranch(selectedBranch || (branchInfo?.current && branchInfo.branches.includes(branchInfo.current) ? branchInfo.current : ""));
+              }}
+              branches={branchInfo?.branches ?? []} currentBranch={branchInfo?.current} dirty={branchInfo?.dirty}
+              selectedBranch={selectedBranch} onSelectedBranch={setSelectedBranch}
+              baseBranch={baseBranch} onBaseBranch={setBaseBranch}
+              problem={branchError}
               engine={engine} modes={permissionModes} permissions={canChoosePermissions ? selectedPermissions : undefined}
               onPermissions={(mode) => setModeOf((current) => ({ ...current, [engine]: mode }))}/>
           </div>
@@ -130,23 +177,28 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   );
 }
 
-/** The third tab: how the session runs. It opens a panel with the worktree switch (a Git folder only; on, the
- * session starts in a new worktree on `nexagent/<random>`, renamable below it) and, where the CLI supports it,
- * permissions: the CLI's own modes, full access by default; any other mode asks for some actions, as request cards. */
-function SessionOptions({ git, branch, onBranch, problem, engine, modes, permissions, onPermissions }: {
-  git: boolean; branch: string | null; onBranch(next: string | null): void; problem: string | null;
+/** The third tab: how the session runs. It opens a panel with branch selection (in-place switch when clean, or
+ * a new worktree off a chosen base branch) and, where the CLI supports it, permissions. */
+function SessionOptions({ git, branch, onBranch, branches, currentBranch, dirty, selectedBranch, onSelectedBranch, baseBranch, onBaseBranch, problem, engine, modes, permissions, onPermissions }: {
+  git: boolean; branch: string | null; onBranch(next: string | null): void;
+  branches: readonly string[]; currentBranch?: string; dirty?: boolean;
+  selectedBranch: string; onSelectedBranch(next: string): void;
+  baseBranch: string; onBaseBranch(next: string): void;
+  problem: string | null;
   engine: CliEngine; modes: readonly CliPermissionMode[]; permissions?: CliPermissionMode; onPermissions(next: CliPermissionMode): void;
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false), 280);
   const on = branch !== null;
+  const switching = !on && !!selectedBranch && selectedBranch !== currentBranch;
+  const chipLabel = on ? "Worktree" : selectedBranch;
+  const chipTitle = on ? (baseBranch ? `Worktree（基于 ${baseBranch}）· ${branch || ""}` : branch || "Worktree") : (selectedBranch ? `分支 · ${selectedBranch}` : "分支、Worktree 与权限");
   const close = () => { setOpen(false); trigger.current?.focus(); };
   return <div className="model-menu-root" ref={root}>
-    <button ref={trigger} type="button" className="na-pick-chip na-options-chip" data-on={on || undefined} data-invalid={problem ? true : undefined}
-      aria-label="会话选项" aria-haspopup="dialog" aria-expanded={open} title={on ? branch || "Worktree" : "Worktree 与权限"} onClick={() => setOpen(!open)}>
-      {/* a branch icon while the session runs in the folder itself; "Worktree" once it gets its own */}
-      <GitBranch size={15}/>{on ? <span>Worktree</span> : null}
+    <button ref={trigger} type="button" className="na-pick-chip na-options-chip" data-on={on || switching || undefined} data-invalid={problem ? true : undefined}
+      aria-label="会话选项" aria-haspopup="dialog" aria-expanded={open} title={chipTitle} onClick={() => setOpen(!open)}>
+      <GitBranch size={15}/>{chipLabel ? <span>{chipLabel}</span> : null}
       {permissions && permissions !== "full" ? <ShieldAlert size={13} className="na-options-ask" aria-label={cliPermissionLabel(engine, permissions)}/> : null}<ChevronDown size={13}/>
     </button>
     {open && <div ref={panel} popover="manual" className="model-menu na-model-menu na-options-menu" role="dialog" aria-label="会话选项"
@@ -155,7 +207,29 @@ function SessionOptions({ git, branch, onBranch, problem, engine, modes, permiss
         <span className="na-option-text"><b>Worktree</b>{git ? null : <small>不是 Git 仓库</small>}</span>
         <input type="checkbox" role="switch" className="na-switch" checked={on} disabled={!git} onChange={(event) => onBranch(event.target.checked ? randomBranch() : null)}/>
       </label>
-      {on ? <label className="na-option-field"><span>分支</span>
+      {git && !on && branches.length > 0 ? <label className="na-option-field">
+        <span>分支{dirty ? " · 有未提交改动" : ""}</span>
+        <span className="model-menu-search na-option-select">
+          <GitBranch size={14}/>
+          <select aria-label="选择分支" value={selectedBranch} onChange={(event) => onSelectedBranch(event.target.value)}>
+            {!currentBranch || !branches.includes(currentBranch) ? <option value="">当前 HEAD</option> : null}
+            {branches.map((name) => <option key={name} value={name}>{name === currentBranch ? `${name}（当前）` : name}</option>)}
+          </select>
+          <ChevronDown size={13}/>
+        </span>
+      </label> : null}
+      {on && branches.length > 0 ? <label className="na-option-field">
+        <span>基准分支</span>
+        <span className="model-menu-search na-option-select">
+          <GitBranch size={14}/>
+          <select aria-label="基准分支" value={baseBranch} onChange={(event) => onBaseBranch(event.target.value)}>
+            {!currentBranch || !branches.includes(currentBranch) ? <option value="">当前 HEAD</option> : null}
+            {branches.map((name) => <option key={name} value={name}>{name === currentBranch ? `${name}（当前）` : name}</option>)}
+          </select>
+          <ChevronDown size={13}/>
+        </span>
+      </label> : null}
+      {on ? <label className="na-option-field"><span>新分支</span>
         <span className="model-menu-search"><GitBranch size={14}/><input aria-label="新分支名称" value={branch} spellCheck={false} autoComplete="off"
           onChange={(event) => onBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); close(); } }}/></span>
       </label> : null}

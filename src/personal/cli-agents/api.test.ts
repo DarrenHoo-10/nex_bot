@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as previewEncoder from "./image-preview";
 import { CLI_ERROR_TEXT } from "../../../shared/cli-agents";
-import { CliApiError, cliErrorText, continueSession, fetchSupervision, saveSupervision, searchSessions, sendMessage, startSession, uploadAttachment } from "./api";
+import { CliApiError, cliErrorText, continueSession, fetchBranches, fetchSupervision, saveSupervision, searchSessions, sendMessage, startSession, uploadAttachment } from "./api";
 
 const reply = (status: number, body: unknown) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status })));
 
@@ -116,16 +116,31 @@ describe("search, launch options and attachments", () => {
   it("sends model and effort only when picked", async () => {
     const fetchMock = capture({ key });
     await startSession("dev", "claude", "/w", { model: "opus", effort: "high" });
+    await startSession("dev", "claude", "/w", { branch: "dev" });
+    await startSession("dev", "claude", "/w", { worktreeBranch: "nexagent/a1", worktreeBaseBranch: "release", requestId: "req-12345678" });
     await startSession("dev", "claude", "/w");
     await continueSession(key, { effort: "low" });
     await continueSession(key);
     const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies).toEqual([
       { deviceId: "dev", engine: "claude", cwd: "/w", model: "opus", effort: "high" },
+      { deviceId: "dev", engine: "claude", cwd: "/w", branch: "dev" },
+      { deviceId: "dev", engine: "claude", cwd: "/w", worktreeBranch: "nexagent/a1", worktreeBaseBranch: "release", requestId: "req-12345678" },
       { deviceId: "dev", engine: "claude", cwd: "/w" },
       { key, effort: "low" },
       { key },
     ]);
+  });
+
+  it("fetches local Git branches for a directory and validates the payload", async () => {
+    const fetchMock = capture({ git: true, current: "main", dirty: true, branches: ["main", "dev"] });
+    const controller = new AbortController();
+    expect(await fetchBranches("dev", "/w/app", controller.signal)).toEqual({ git: true, current: "main", dirty: true, branches: ["main", "dev"] });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`/api/cli-agents/branches?deviceId=dev&cwd=${encodeURIComponent("/w/app")}`);
+    expect(init?.signal).toBe(controller.signal);
+    capture({ git: "yes" });
+    await expect(fetchBranches("dev", "/w/app")).rejects.toBeInstanceOf(CliApiError);
   });
 
   it("uploads images to the Core media endpoint and receives a private path", async () => {

@@ -445,6 +445,15 @@ describe("start", () => {
     expect(await t.call("start", { engine: "claude", cwd: workDir })).toMatchObject({ ok: false, error: { code: "hc_unavailable" } });
     expect(t.bridge.state().hc).toBe("error");
   });
+
+  it("advertises gitBranch and rejects combining in-place branch with createDir or worktree", async () => {
+    const t = setup();
+    await t.start();
+    expect(t.bridge.capability().features).toContain("gitBranch");
+    expect(await t.call("start", { engine: "claude", cwd: workDir, branch: "dev", createDir: true })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(await t.call("start", { engine: "claude", cwd: workDir, branch: "dev", worktree: { branch: "feat/x", requestId: "abcdefgh1234" } })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(hc.runs).toHaveLength(0);
+  });
 });
 
 describe("Codex session mapping", () => {

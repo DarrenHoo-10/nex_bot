@@ -50,8 +50,12 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
   const branch=git?.branch || checkout?.branch || session.gitBranch?.trim();
   // the device's own answer first; otherwise what the path and the reported branch tell
   const linked=worktreeName(session.cwd);
+  // older executors returned `--show-toplevel` as `git.project`, hiding linked worktrees as "主工作树"
+  const mainRoot=git?.project && (!session.repoRoot || !samePath(git.project, git.worktree ?? ""))
+    ? git.project
+    : session.repoRoot?.trim() || git?.project;
   const worktree=git?.worktree
-    ? (git.project && samePath(git.project,git.worktree) ? "主工作树" : folderLabel(git.worktree))
+    ? (mainRoot && samePath(mainRoot,git.worktree) ? "主工作树" : folderLabel(git.worktree))
     : checkout ? (checkout.worktree===checkout.project?"主工作树":folderLabel(checkout.worktree))
     : linked ?? (branch ? "主工作树" : "");
   const canOpenLocal = session.engine === "agy" && session.online && !session.writerUnknown &&
@@ -67,7 +71,7 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
       <header><GitBranch size={15}/><strong>Git 工作区</strong><small>{AGENT_LABEL[session.engine]}</small>
         {open && <button disabled={reading} aria-busy={reading} aria-label="刷新 Git 状态" title={reading?"正在读取…":"刷新 Git 状态"} onClick={()=>setRefresh(v=>v+1)}><RefreshCw className={reading?"na-busy-icon":undefined} size={14}/></button>}</header>
       <div className="na-info-row"><GitBranch size={15}/><span>分支</span><b>{branch || "—"}</b>{git?.head ? <code>{git.head}</code> : null}</div>
-      <div className="na-info-row"><Layers size={15}/><span>工作树</span><b title={linked ?? undefined}>{worktree || "—"}</b></div>
+      <div className="na-info-row"><Layers size={15}/><span>工作树</span><b title={git?.worktree || linked || undefined}>{worktree || "—"}</b></div>
       {git ? <details className="na-diff"><summary><FileDiff size={15}/><span>更改</span><b>{git.files.length} 个文件</b><em>+{git.added}</em><em>−{git.removed}</em></summary>
         {git.files.length?<ul>{git.files.map(file=><li key={file}>{file}</li>)}</ul>:<p>工作树干净</p>}</details> :
         <div className="na-info-row"><FileDiff size={15}/><span>更改</span><small>{reading ? "正在读取…" : error || "—"}</small></div>}

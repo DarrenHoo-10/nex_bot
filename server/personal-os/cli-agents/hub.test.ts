@@ -1308,4 +1308,45 @@ describe("search, launch options and attachments", () => {
     const conflict = await f.call("cli-agents/start", { ...body, worktreeBranch: "nexagent/other" });
     expect(conflict.status).toBe(409);
   });
+
+  it("lists Git branches, forwards in-place branch and worktreeBaseBranch, and enforces gitBranch capability", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "git-branch", { cap: { ...FULL, features: [...FULL.features, "dirs", "gitBranch"] } });
+    const old = await connectDevice(f, "git-branch-old", { cap: { ...FULL, features: [...FULL.features, "dirs"] } });
+    device.onOp = (message) => {
+      if (message.op === "branches") return { ok: true, result: { git: true, current: "main", dirty: true, branches: ["main", "dev", "bad name"] } };
+      if (message.op === "start") return { ok: true, result: { ref: "claude:new-br", terminal: "t" } };
+      return defaultOp(message);
+    };
+
+    const listed = await f.call(`cli-agents/branches?deviceId=${device.id}&cwd=${encodeURIComponent("C:\\proj")}`);
+    expect(listed).toEqual({ status: 200, data: { git: true, current: "main", dirty: true, branches: ["main", "dev"] } });
+    expect(device.ops("branches").at(-1)!.args).toEqual({ cwd: "C:\\proj" });
+    expect((await f.call(`cli-agents/branches?deviceId=${device.id}&cwd=relative`)).status).toBe(400);
+    expect((await f.call(`cli-agents/branches?deviceId=${old.id}&cwd=${encodeURIComponent("C:\\proj")}`)).status).toBe(400);
+    expect(old.ops("branches")).toHaveLength(0);
+
+    // in-place branch switch
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", branch: "dev" })).status).toBe(200);
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", branch: "dev" });
+
+    // worktree off an explicit base branch
+    expect((await f.call("cli-agents/start", {
+      deviceId: device.id, engine: "claude", cwd: "C:/proj",
+      worktreeBranch: "nexagent/feat1", worktreeBaseBranch: "dev", requestId: "req-base-1",
+    })).status).toBe(200);
+    expect(device.ops("start").at(-1)!.args).toEqual({
+      engine: "claude", cwd: "C:/proj",
+      worktree: { branch: "nexagent/feat1", requestId: "req-base-1", baseBranch: "dev" },
+    });
+
+    // invalid combinations and older executors without gitBranch
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", branch: "dev", createDir: true })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", branch: "dev", worktreeBranch: "nexagent/x", requestId: "req-bad-1" })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", worktreeBaseBranch: "dev" })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", branch: "bad branch" })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: old.id, engine: "claude", cwd: "C:/proj", branch: "dev" })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: old.id, engine: "claude", cwd: "C:/proj", worktreeBranch: "nexagent/x", worktreeBaseBranch: "dev", requestId: "req-old-1" })).status).toBe(400);
+    expect(old.ops("start")).toHaveLength(0);
+  });
 });

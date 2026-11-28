@@ -56,6 +56,20 @@ final class CliPathsTests: XCTestCase {
         XCTAssertEqual(listing.parent, "D:\\")
     }
 
+    func testGitBranchesDecode() throws {
+        let json = #"{"git":true,"current":"main","dirty":true,"branches":["main","dev"]}"#
+        let branches = try JSONDecoder().decode(CliGitBranches.self, from: Data(json.utf8))
+        XCTAssertTrue(branches.git)
+        XCTAssertEqual(branches.current, "main")
+        XCTAssertTrue(branches.dirty)
+        XCTAssertEqual(branches.branches, ["main", "dev"])
+        let minimal = try JSONDecoder().decode(CliGitBranches.self, from: Data(#"{"git":false}"#.utf8))
+        XCTAssertFalse(minimal.git)
+        XCTAssertNil(minimal.current)
+        XCTAssertFalse(minimal.dirty)
+        XCTAssertEqual(minimal.branches, [])
+    }
+
     func testActiveSessionsAndWorktreesUnderTheirRepository() {
         let running = cliSession("d1:claude:r", state: .running, at: 30)
         let waiting = cliSession("d1:claude:w", state: .waiting, at: 20)
@@ -83,10 +97,12 @@ final class CliDirsModelTests: XCTestCase {
             switch (r.method, r.path) {
             case ("GET", "/api/cli-agents"):
                 let device: [String: Any] = ["id": "d1", "name": "办公室", "online": true,
-                                             "cliAgents": ["version": 1, "engines": ["claude"], "terminal": ["name": "herdr-core", "version": "1", "ready": true], "features": ["launchOptions", "dirs"]]]
+                                             "cliAgents": ["version": 1, "engines": ["claude"], "terminal": ["name": "herdr-core", "version": "1", "ready": true], "features": ["launchOptions", "dirs", "gitBranch"]]]
                 return .json(["devices": [device], "sessions": [], "requests": []])
             case ("GET", "/api/cli-agents/dirs"):
                 return .json(["path": "/work", "parent": "/", "exists": true, "entries": [["name": "app", "path": "/work/app", "git": true]]])
+            case ("GET", "/api/cli-agents/branches"):
+                return .json(["git": true, "current": "main", "dirty": false, "branches": ["main", "dev"]])
             case ("POST", "/api/cli-agents/start"):
                 return .json(["key": "d1:claude:new"])
             default:
@@ -99,13 +115,23 @@ final class CliDirsModelTests: XCTestCase {
         let listing = try await model.dirs(deviceId: "d1", path: "/work")
         XCTAssertEqual(listing.entries.first?.path, "/work/app")
         XCTAssertEqual(stub.recorded("/api/cli-agents/dirs").first?.query, "deviceId=d1&path=/work")
+        let branches = await model.branches(deviceId: "d1", cwd: "/work/app")
+        XCTAssertEqual(branches, CliGitBranches(git: true, current: "main", dirty: false, branches: ["main", "dev"]))
+        XCTAssertEqual(stub.recorded("/api/cli-agents/branches").first?.query, "deviceId=d1&cwd=/work/app")
+        let noBranches = await model.branches(deviceId: "old", cwd: "/x/y")
+        XCTAssertNil(noBranches)
         // an executor without `dirs` lists nothing and takes a typed path as it is
         let unknown = try await model.dirs(deviceId: "old", path: "/x/y")
         XCTAssertEqual(unknown.entries.count, 0)
         XCTAssertTrue(unknown.exists)
         _ = try await client.cliStart(deviceId: "d1", engine: .claude, cwd: "/work/new", createDir: true)
         XCTAssertEqual(stub.recorded("/api/cli-agents/start").last?.json["createDir"] as? Bool, true)
-        _ = try await client.cliStart(deviceId: "d1", engine: .claude, cwd: "/work/new", worktreeBranch: "nexagent/x", requestId: "r", createDir: true)
+        _ = try await client.cliStart(deviceId: "d1", engine: .claude, cwd: "/work/new", worktreeBranch: "nexagent/x", requestId: "r", createDir: true, worktreeBaseBranch: "dev")
         XCTAssertNil(stub.recorded("/api/cli-agents/start").last?.json["createDir"], "no new folder together with a worktree")
+        XCTAssertEqual(stub.recorded("/api/cli-agents/start").last?.json["worktreeBaseBranch"] as? String, "dev")
+        XCTAssertNil(stub.recorded("/api/cli-agents/start").last?.json["branch"])
+        _ = try await client.cliStart(deviceId: "d1", engine: .claude, cwd: "/work/app", branch: "dev")
+        XCTAssertEqual(stub.recorded("/api/cli-agents/start").last?.json["branch"] as? String, "dev")
+        XCTAssertNil(stub.recorded("/api/cli-agents/start").last?.json["worktreeBranch"])
     }
 }

@@ -81,6 +81,10 @@ public struct CliLaunchRequest: Sendable, Hashable {
     public var cwd: String
     /// a new worktree on this branch; nil runs in `cwd` itself
     public var branch: String?
+    /// base branch for a new worktree; nil uses the repository's current HEAD
+    public var baseBranch: String?
+    /// existing local branch to switch to in `cwd` when not using a worktree
+    public var switchBranch: String?
     /// the first message; may be empty
     public var message: String
     public var model: String
@@ -91,8 +95,9 @@ public struct CliLaunchRequest: Sendable, Hashable {
     public var permissions: CliPermissionMode?
     public var images: [CliImageUpload]
     public init(deviceId: String, engine: CliEngine, cwd: String, branch: String? = nil, message: String = "", model: String = "", effort: String = "", createDir: Bool = false,
-                permissions: CliPermissionMode? = nil, images: [CliImageUpload] = []) {
-        self.deviceId = deviceId; self.engine = engine; self.cwd = cwd; self.branch = branch; self.message = message; self.model = model; self.effort = effort; self.createDir = createDir
+                permissions: CliPermissionMode? = nil, images: [CliImageUpload] = [], baseBranch: String? = nil, switchBranch: String? = nil) {
+        self.deviceId = deviceId; self.engine = engine; self.cwd = cwd; self.branch = branch; self.baseBranch = baseBranch; self.switchBranch = switchBranch
+        self.message = message; self.model = model; self.effort = effort; self.createDir = createDir
         self.permissions = permissions
         self.images = images
     }
@@ -190,7 +195,7 @@ public enum CliLaunches {
         var failed = false
         if case .failed = launch.phase { failed = true }
         return CliSession(key: launch.key, deviceId: launch.request.deviceId, engine: launch.request.engine, nativeId: String(launch.key.split(separator: ":").last ?? ""),
-                          cwd: launch.request.cwd, title: first.isEmpty ? "新会话" : String(first.prefix(80)), gitBranch: launch.request.branch,
+                          cwd: launch.request.cwd, title: first.isEmpty ? "新会话" : String(first.prefix(80)), gitBranch: launch.request.branch ?? launch.request.switchBranch,
                           state: failed ? .stopped : .running, lastActivityAt: launch.createdAt)
     }
 }

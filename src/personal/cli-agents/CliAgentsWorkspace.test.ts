@@ -33,6 +33,7 @@ const fixture = vi.hoisted(() => ({
   deleteNote: vi.fn(),
   fetchModels: vi.fn(),
   listDirs: vi.fn(),
+  fetchBranches: vi.fn(),
   uploadAttachment: vi.fn(),
 }));
 
@@ -102,11 +103,12 @@ beforeEach(() => {
   localStorage.clear();
   fixture.fetchModels.mockReset();
   fixture.fetchModels.mockResolvedValue({ models: [] });
-  for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "openLocal", "hideSession", "fetchNotes", "createNote", "updateNote", "deleteNote"] as const) fixture[key].mockReset();
+  for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "fetchBranches", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "openLocal", "hideSession", "fetchNotes", "createNote", "updateNote", "deleteNote"] as const) fixture[key].mockReset();
   fixture.fetchNotes.mockResolvedValue([]);
   fixture.fetchItems.mockResolvedValue({ items: [], more: false });
   fixture.fetchQueue.mockResolvedValue({ workbenchId: "wb", sessionKey: "", paused: false, entries: [] });
   fixture.fetchGit.mockRejectedValue(new Error("no git in this test"));
+  fixture.fetchBranches.mockResolvedValue({ git: false, branches: [] });
   fixture.sendMessage.mockResolvedValue({});
   fixture.stopSession.mockResolvedValue({ outcome: "ok" });
   fixture.hideSession.mockResolvedValue({});
@@ -929,6 +931,70 @@ describe("new session", () => {
     expect(fixture.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("lets a clean Git repo switch branches in place and carries the chosen branch as Worktree baseBranch", async () => {
+    const pickSelect = async (select: HTMLSelectElement, value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const branchCapable = () => device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models", "dirs", "gitBranch"] } });
+    fixture.fetchBranches.mockResolvedValue({ git: true, current: "main", branches: ["main", "dev", "release"] });
+    fixture.startSession.mockResolvedValue({ key: "dev1:claude:new-br" });
+    await mount({ devices: [branchCapable()], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    await flush();
+    const options = page.querySelector<HTMLButtonElement>("button[aria-label=会话选项]")!;
+    expect(options.textContent).toBe("main");
+    await click(options);
+    const branchSelect = document.querySelector<HTMLSelectElement>("select[aria-label=选择分支]")!;
+    expect(branchSelect.value).toBe("main");
+    await pickSelect(branchSelect, "dev");
+    expect(options.textContent).toBe("dev");
+    await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(fixture.startSession).toHaveBeenLastCalledWith("dev1", "claude", ALPHA, { branch: "dev" });
+
+    // toggling Worktree ON carries the chosen branch into 基准分支
+    const page2 = await openNew();
+    await flush();
+    await click(page2.querySelector("button[aria-label=会话选项]"));
+    await pickSelect(document.querySelector<HTMLSelectElement>("select[aria-label=选择分支]")!, "release");
+    const worktree = [...document.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input")!;
+    await click(worktree);
+    expect(document.querySelector<HTMLSelectElement>("select[aria-label=基准分支]")!.value).toBe("release");
+    await typeInto(document.querySelector<HTMLInputElement>("input[aria-label=新分支名称]")!, "nexagent/from-rel");
+    await act(async () => { page2.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(fixture.startSession).toHaveBeenLastCalledWith("dev1", "claude", ALPHA, expect.objectContaining({
+      worktreeBranch: "nexagent/from-rel",
+      worktreeBaseBranch: "release",
+      requestId: expect.any(String),
+    }));
+    expect(fixture.startSession.mock.calls.at(-1)?.[3]).not.toHaveProperty("branch");
+  });
+
+  it("blocks in-place branch switch when working tree is dirty, while allowing current branch or Worktree", async () => {
+    const pickSelect = async (select: HTMLSelectElement, value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const branchCapable = () => device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models", "dirs", "gitBranch"] } });
+    fixture.fetchBranches.mockResolvedValue({ git: true, current: "main", dirty: true, branches: ["main", "dev"] });
+    await mount({ devices: [branchCapable()], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    await flush();
+    // staying on current branch is allowed even when dirty
+    expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(false);
+    await click(page.querySelector("button[aria-label=会话选项]"));
+    await pickSelect(document.querySelector<HTMLSelectElement>("select[aria-label=选择分支]")!, "dev");
+    expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(true);
+    expect(page.querySelector(".na-new-path")?.textContent).toBe("当前目录有未提交改动，请先提交或改用 Worktree");
+    // enabling Worktree clears the dirty block and keeps dev as the base branch
+    const worktree = [...document.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input")!;
+    await click(worktree);
+    expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(false);
+    expect(document.querySelector<HTMLSelectElement>("select[aria-label=基准分支]")!.value).toBe("dev");
+  });
+
   it("keeps a failed start on the pane with a retry that reuses the worktree request", async () => {
     fixture.startSession.mockRejectedValueOnce(new CliApiError("工作树已存在", "invalid", 400, "工作树已存在")).mockResolvedValue({ key: "dev1:claude:new3" });
     await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
@@ -971,6 +1037,64 @@ describe("new session", () => {
     const page = await openNew();
     expect(page.querySelector(".na-new-path")?.textContent).toBe("电脑离线");
     expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(true);
+  });
+});
+
+describe("Git workspace card", () => {
+  const worktreeText = () => [...container.querySelectorAll(".na-info-row")]
+    .find((el) => el.querySelector("span")?.textContent === "工作树")
+    ?.querySelector("b")?.textContent;
+
+  it("distinguishes linked worktrees from the main worktree, including fallback for older executors", async () => {
+    const linkedCwd = "C:\\Users\\Administrator\\.gemini\\antigravity\\worktrees\\nex_bot\\debug_issue_analysis";
+    const mainCwd = "D:\\ProgrammingProjects\\nex_bot";
+    fixture.fetchGit.mockResolvedValue({
+      source: "worktree",
+      project: mainCwd,
+      worktree: linkedCwd,
+      branch: "debug_issue_analysis",
+      head: "5f30f134",
+      files: [],
+      added: 0,
+      removed: 0,
+    });
+    await mount({ devices: [device()], sessions: [session({ cwd: linkedCwd, repoRoot: mainCwd })] }, "dev1:claude:s1");
+    await click(container.querySelector('button[aria-label="Git 工作区"]'));
+    await flush();
+    expect(worktreeText()).toBe("debug_issue_analysis");
+
+    // older executor returned `--show-toplevel` as `project` (equal to `worktree`), but `session.repoRoot` still knows the main repo
+    fixture.fetchGit.mockResolvedValue({
+      source: "worktree",
+      project: linkedCwd,
+      worktree: linkedCwd,
+      branch: "debug_issue_analysis",
+      head: "5f30f134",
+      files: [],
+      added: 0,
+      removed: 0,
+    });
+    await click(container.querySelector('button[aria-label="刷新 Git 状态"]'));
+    await flush();
+    expect(worktreeText()).toBe("debug_issue_analysis");
+
+    // actual main checkout still renders 主工作树
+    fixture.fetchGit.mockResolvedValue({
+      source: "worktree",
+      project: mainCwd,
+      worktree: mainCwd,
+      branch: "main",
+      head: "5f30f134",
+      files: [],
+      added: 0,
+      removed: 0,
+    });
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await mount({ devices: [device()], sessions: [session({ cwd: mainCwd, repoRoot: mainCwd })] }, "dev1:claude:s1");
+    await click(container.querySelector('button[aria-label="Git 工作区"]'));
+    await flush();
+    expect(worktreeText()).toBe("主工作树");
   });
 });
 
