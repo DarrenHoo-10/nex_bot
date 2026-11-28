@@ -359,45 +359,55 @@ final class NexMacTerminalView: TerminalView {
     var onPasteCommand: (@MainActor () -> Void)?
     var onCopyCommand: (@MainActor () -> Void)?
     var isDriving: () -> Bool = { false }
+    private var keyMonitor: Any?
+
+    func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags == .shift, event.keyCode == 36 || event.keyCode == 76 else { return event }
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let self, self.window?.firstResponder === self, self.isDriving() else { return false }
+                self.onSendBytes?(Data("\u{1b}\r".utf8))
+                return true
+            }
+            return handled ? nil : event
+        }
+    }
+
+    func removeKeyMonitor() {
+        if let token = keyMonitor { NSEvent.removeMonitor(token) }
+        keyMonitor = nil
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command, let ch = event.charactersIgnoringModifiers?.lowercased() {
-            if ch == "f" {
-                onOpenFind?()
-                return true
+        if flags == .command {
+            if let ch = event.charactersIgnoringModifiers?.lowercased() {
+                if ch == "f" {
+                    onOpenFind?()
+                    return true
+                }
+                if ch == "v", isDriving() {
+                    onPasteCommand?()
+                    return true
+                }
+                if ch == "c", let sel = getSelection(), !sel.isEmpty {
+                    onCopyCommand?()
+                    return true
+                }
             }
-            if ch == "v", isDriving() {
-                onPasteCommand?()
-                return true
-            }
-            if ch == "c", let sel = getSelection(), !sel.isEmpty {
-                onCopyCommand?()
-                return true
-            }
-        }
-        return super.performKeyEquivalent(with: event)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if isDriving() {
-            // Shift+Enter -> ESC + CR (multiline input in Claude/Codex)
-            if flags == .shift, event.keyCode == 36 || event.keyCode == 76 {
-                onSendBytes?(Data("\u{1b}\r".utf8))
-                return
-            }
-            // Mac line-editing chords: ⌘⌫ -> ^U, ⌘← -> ^A, ⌘→ -> ^E
-            if flags == .command {
+            if isDriving() {
+                // Mac line-editing chords: ⌘⌫ -> ^U, ⌘← -> ^A, ⌘→ -> ^E
                 switch event.keyCode {
-                case 51: onSendBytes?(Data([0x15])); return
-                case 123: onSendBytes?(Data([0x01])); return
-                case 124: onSendBytes?(Data([0x05])); return
+                case 51: onSendBytes?(Data([0x15])); return true
+                case 123: onSendBytes?(Data([0x01])); return true
+                case 124: onSendBytes?(Data([0x05])); return true
                 default: break
                 }
             }
         }
-        super.keyDown(with: event)
+        return super.performKeyEquivalent(with: event)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -454,6 +464,7 @@ struct CliTerminalView: NSViewRepresentable {
     func makeNSView(context: Context) -> NexMacTerminalView {
         let view = NexMacTerminalView(frame: .zero)
         bind(view, coordinator: context.coordinator)
+        view.installKeyMonitor()
         context.coordinator.attach(view, style: style)
         return view
     }
@@ -478,6 +489,7 @@ struct CliTerminalView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ view: NexMacTerminalView, coordinator: CliTerminalBridge) {
+        view.removeKeyMonitor()
         coordinator.detach()
     }
 }

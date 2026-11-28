@@ -25,80 +25,90 @@ struct ConnectedView: View {
     }
 
     var body: some View {
-        ContactsView(model: model, workspace: workspace, agents: agents, nav: nav)
-            .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
-            .onChange(of: chatVisible, initial: true) { _, visible in workspace.setChatVisible(visible) }
-            .onChange(of: workspace.contentCacheScope) { old, new in
-                if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
-            }
-            .task(id: workspace.connection) { syncAgentStream() }
-            .onChange(of: nav.agentMode) { _, _ in syncAgentStream() }
-            .onChange(of: nav.path) { _, _ in syncAgentStream() }
-            .onChange(of: scenePhase) { previous, next in
-                syncAgentStream(reconnect: previous == .background && next == .active)
-            }
-            .onChange(of: agents.notificationsOn) { _, _ in syncAgentStream() }
-            .onAppear {
-                agents.installNotifier()
-                agents.onUnauthorized = {
-                    Task {
-                        await workspace.refresh()
-                        if workspace.connection == .connected { agents.reconnect(force: true) }
-                    }
-                }
-                nav.onSelectSplitBot = { botID in
-                    preferences.selectedAgentID = botID
-                    workspace.select(botID)
-                }
-                AgentNotifier.shared.activeBotID = { nav.agentMode ? nil : (nav.currentBotID ?? workspace.selectedBotID) }
-                AgentNotifier.shared.onOpenBot = { botID in
-                    nav.agentMode = false
-                    preferences.selectedAgentID = botID
-                    workspace.showLatest(botID: botID)
-                    workspace.select(botID)
-                    nav.openChat(botID)
-                }
-                AgentNotifier.shared.onOpenCliSession = { key in
-                    nav.agentMode = true
-                    nav.path = []
-                    agents.start()
-                    agents.select(key)
-                    agents.pendingNavigationKey = key
-                }
-                workspace.onNotify = { title, body, botID, kind in
-                    AgentNotifier.shared.notifyBot(title: title, body: body, botID: botID, kind: kind)
-                }
-                Task { _ = await AgentNotifier.requestAuthorization() }
-                syncAgentStream()
-            }
-            .onChange(of: model.credential?.token) { old, new in
-                if old != nil, new != nil, old != new { syncAgentStream(reconnect: true, forceReplace: true) }
-            }
+        lifecycleBoundContacts
             .environment(nav)
             .environment(preferences)
+            .environment(updater)
             .sheet(isPresented: $nav.showMenu) {
                 AccountMenu(model: model, nav: nav)
                     .environment(nav)
                     .environment(preferences)
             }
             // iOS cannot install itself: tell the person once per version and link the installer.
-            .task(id: scenePhase) {
-                guard scenePhase == .active else { return }
-                while !Task.isCancelled {
-                    if let offer = await updater.checkIfDue(workspace.client), offer.version != skipped {
-                        update = offer
-                    }
-                    try? await Task.sleep(for: .seconds(5 * 60))
-                }
-            }
+            .task(id: scenePhase) { await pollUpdates() }
             .alert("新版本 \(update?.version ?? "") 可用", isPresented: Binding(get: { update != nil }, set: { if !$0 { update = nil } })) {
                 Button("下载") { if let url = update?.url { openURL(url) }; update = nil }
                 Button("稍后", role: .cancel) { skipped = update?.version ?? ""; update = nil }
             }
-            .environment(updater)
         #if DEBUG
             .task { await DebugHooks.runCommands(model: model, workspace: workspace, nav: nav) }
         #endif
+    }
+
+    private var lifecycleBoundContacts: some View {
+        ContactsView(model: model, workspace: workspace, agents: agents, nav: nav)
+            .task(id: workspace.connection) {
+                syncAgentStream()
+                if workspace.connection == .connected { await workspace.loadFinanceAssistant() }
+            }
+            .onChange(of: chatVisible, initial: true) { _, visible in workspace.setChatVisible(visible) }
+            .onChange(of: workspace.contentCacheScope) { old, new in
+                if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
+            }
+            .onChange(of: nav.agentMode) { _, _ in syncAgentStream() }
+            .onChange(of: nav.path) { _, _ in syncAgentStream() }
+            .onChange(of: scenePhase) { previous, next in
+                syncAgentStream(reconnect: previous == .background && next == .active)
+            }
+            .onChange(of: agents.notificationsOn) { _, _ in syncAgentStream() }
+            .onChange(of: model.credential?.token) { old, new in
+                if old != nil, new != nil, old != new { syncAgentStream(reconnect: true, forceReplace: true) }
+            }
+            .onAppear(perform: configureLifecycle)
+    }
+
+    private func configureLifecycle() {
+        agents.installNotifier()
+        agents.onUnauthorized = {
+            Task {
+                await workspace.refresh()
+                if workspace.connection == .connected { agents.reconnect(force: true) }
+            }
+        }
+        nav.onSelectSplitBot = { botID in
+            preferences.selectedAgentID = botID
+            workspace.select(botID)
+        }
+        AgentNotifier.shared.activeBotID = { nav.agentMode ? nil : (nav.currentBotID ?? workspace.selectedBotID) }
+        AgentNotifier.shared.onOpenBot = { botID in
+            nav.agentMode = false
+            preferences.selectedAgentID = botID
+            workspace.showLatest(botID: botID)
+            workspace.select(botID)
+            nav.openChat(botID)
+        }
+        AgentNotifier.shared.onOpenCliSession = { key in
+            nav.agentMode = true
+            nav.path = []
+            agents.start()
+            agents.select(key)
+            agents.pendingNavigationKey = key
+        }
+        workspace.onNotify = { title, body, botID, kind in
+            AgentNotifier.shared.notifyBot(title: title, body: body, botID: botID, kind: kind)
+        }
+        Task { _ = await AgentNotifier.requestAuthorization() }
+        syncAgentStream()
+    }
+
+    private func pollUpdates() async {
+        guard scenePhase == .active else { return }
+        while !Task.isCancelled {
+            if let offer = await updater.checkIfDue(workspace.client), offer.version != skipped {
+                update = offer
+            }
+            try? await Task.sleep(for: .seconds(5 * 60))
+        }
     }
 
     /// Centralizes NexAgent WebSocket lifecycle on the persistent root view so switching back to NexBot

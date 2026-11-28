@@ -14,6 +14,14 @@ public struct CliFolderGroup: Sendable, Hashable, Identifiable {
     public var roots: [String] = []
     public var scratch: Bool = false
     public var id: String { scratch ? CliSessions.scratchKey : label.lowercased() }
+
+    public init(cwd: String, label: String, sessions: [CliSession], roots: [String] = [], scratch: Bool = false) {
+        self.cwd = cwd
+        self.label = label
+        self.sessions = sessions
+        self.roots = roots
+        self.scratch = scratch
+    }
 }
 
 public struct CliDeviceGroup: Sendable, Hashable, Identifiable {

@@ -69,255 +69,291 @@ struct ChatView: View {
 
     var body: some View {
         let conv = conversation
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if focusedID != nil {
-                        Button { workspace.showLatest(botID: botID) } label: {
-                            Text("返回最新消息").font(.footnote.weight(.medium)).foregroundStyle(Theme.brand)
-                                .frame(maxWidth: .infinity).padding(.vertical, 6)
-                        }
-                        .buttonStyle(.plain)
-                    } else if conv.hasOlder {
-                        Button { Task { await loadOlder(conv, proxy) } } label: {
-                            HStack(spacing: 6) {
-                                if conv.isLoadingOlder { ProgressView().controlSize(.small) }
-                                Text("加载更早的消息").font(.footnote.weight(.medium))
-                            }
-                            .foregroundStyle(Theme.muted).frame(maxWidth: .infinity).padding(.vertical, 6)
-                        }
-                        .buttonStyle(.plain).disabled(conv.isLoadingOlder).id("older")
-                    }
-                    ForEach(Array(conv.messages.enumerated()), id: \.element.id) { index, message in
-                        let previous = index > 0 ? conv.messages[index - 1] : nil
-                        let next = index + 1 < conv.messages.count ? conv.messages[index + 1] : nil
-                        if let date = message.createdAt,
-                           index == 0 || !Calendar.current.isDate(date, inSameDayAs: previous?.createdAt ?? .distantPast) {
-                            DateDivider(date: date)
-                        }
-                        let hasJobReply: Bool = {
-                            guard message.isJobReport, let jobID = message.jobID else { return false }
-                            return conv.messages[(index + 1)...].contains { $0.isFromUser && $0.jobID == jobID }
-                        }()
-                        VStack(alignment: .leading, spacing: 0) {
-                            if focusedID == nil && message.id == conv.unreadAnchorID {
-                                UnreadDivider()
-                            }
-                            MessageRow(message: message, workspace: workspace, botName: bot?.name ?? "Agent", bot: bot,
-                                       groupEnd: MessageGrouping.ends(message, next: next),
-                                       hasJobReply: hasJobReply,
-                                       onQuote: { author, text in quote = QuoteDraft(author: author, text: text) },
-                                       onOpenStep: { step in Task { await openStep(step) } },
-                                       onOpenFile: { path in Task { await openFile(path) } },
-                                       onOpenPeer: { nav.openChat($0) },
-                                       onOpenJob: { jobSheet = JobSheetItem(id: $0) },
-                                       onReplyJob: { job in quote = nil; conv.replyJob = JobReplyTarget(id: job.id, title: job.title) })
-                                .overlay {
-                                    if message.id == focusedID {
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
-                                            .padding(-6).allowsHitTesting(false)
-                                    }
-                                }
-                                .padding(.top, MessageGrouping.joins(previous, message) ? 4 : 14)
-                        }
-                        .id(message.id)
-                    }
-                    ForEach(conv.optimisticMessages) { optimistic in
-                        VStack(alignment: .trailing, spacing: 4) {
-                            if let title = optimistic.replyJobTitle {
-                                Text("回复后台任务：\(title)").font(.caption).foregroundStyle(Theme.muted)
-                            }
-                            ChatMarkdown(source: optimistic.text, hug: true)
-                                .environment(\.chatInk, .white).environment(\.chatOnAccent, true)
-                                .padding(.horizontal, 16).padding(.vertical, 9)
-                                .background(userBubbleGradient(dark: scheme == .dark), in: Bubble.user)
-                                .opacity(0.8)
-                            Text("发送中…").font(.caption2).foregroundStyle(Theme.muted).padding(.horizontal, 4)
-                        }
-                        .padding(.leading, 56).padding(.top, 14)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                    if conv.isLoaded && conv.messages.isEmpty && conv.optimisticMessages.isEmpty && conv.streaming.isEmpty && !processing { welcome }
-                    ForEach(conv.streaming, id: \.taskId) { part in
-                        StreamingRow(text: part.text, replyingTo: replyingTo(taskID: part.taskId), workspace: workspace, bot: bot).padding(.top, 14)
-                    }
-                    if processing {
-                        ThinkingIndicator(name: bot?.name ?? "Agent", phrase: tasks.first?.phrase ?? "正在发送…", workspace: workspace, bot: bot).padding(.top, 14)
-                    }
-                    Color.clear.frame(height: 1).id(bottomID)
-                        .onAppear { atBottom = true; unseenCount = 0 }
-                        .onDisappear { atBottom = false }
-                }
-                .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 16)
+        chatShell(conv)
+            .errorAlert($errorText)
+            .sheet(isPresented: $showMemory) { MemoryEditorSheet(workspace: workspace, botID: botID) }
+            .sheet(item: $jobSheet) { JobDetailView(workspace: workspace, jobID: $0.id) }
+            .sheet(isPresented: $showTopics) { FinanceTopicsView(workspace: workspace, botID: botID, onClose: { showTopics = false }) }
+            .sheet(item: $inlineAttachment) { file in QuickLookSheet(url: file.url).ignoresSafeArea() }
+            .onAppear {
+                workspace.select(botID)
+                conv.isActive = scenePhase == .active
+                if knownMemories == nil && workspace.state != nil { knownMemories = memorySignature }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
-            .overlay {
-                if composerMenu != nil { Color.black.opacity(0.001).onTapGesture { composerMenu = nil } }
-            }
-            .overlay {
-                if !conv.isLoaded {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                        Text("正在载入历史会话…").font(.footnote).foregroundStyle(Theme.muted)
-                    }
+            .onDisappear {
+                conv.isActive = false
+                // Only clear selection when actually popping out of this chat on compact width, not in iPad split mode or when pushing AgentDetailView.
+                if sizeClass != .regular && workspace.selectedBotID == botID && !nav.path.contains(.chat(botID)) && !nav.path.contains(.agentDetail(botID)) {
+                    workspace.select(nil)
                 }
             }
-            .overlay(alignment: .bottomTrailing) {
-                if (!atBottom && !conv.messages.isEmpty) || focusedID != nil {
-                    let showBadge = focusedID == nil && unseenCount > 0
-                    Button {
-                        if focusedID != nil { workspace.showLatest(botID: botID) }
-                        else { scrollToBottom(proxy) }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.down").font(.system(size: 12.5, weight: .semibold))
-                                .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.brand)
-                            Text(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
-                                .font(.system(size: 12.5, weight: showBadge ? .semibold : .medium))
-                                .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.foreground)
-                        }
-                        .padding(.horizontal, 12).frame(height: 34)
-                        .background { if showBadge { Capsule().fill(Theme.primary) } }
-                        .modifier(OptionalGlassCapsule(enabled: !showBadge))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
-                    .padding(.trailing, 14).padding(.bottom, 10)
-                    .transition(.opacity.combined(with: .scale(scale: 0.94)))
+            .onChange(of: scenePhase) { conv.isActive = scenePhase == .active }
+            .onChange(of: conv.messages.last?.seq) { Task { await conv.markReadIfNeeded() } }
+            .onChange(of: memorySignature) { _, signature in
+                guard workspace.state != nil else { return }
+                if let known = knownMemories,
+                   let changed = workspace.state?.memories(botID: botID).first(where: { known[$0.id] != signature[$0.id] }) {
+                    memoryNotice = "已更新记忆：\(changed.title)"
                 }
+                knownMemories = signature
             }
-            .onChange(of: conv.messages.last?.seq) { _, nextSeq in
-                if let nextSeq {
-                    if lastObservedSeq > 0 && nextSeq > lastObservedSeq && !atBottom && focusedID == nil {
-                        let added = conv.messages.filter { $0.seq > lastObservedSeq && !$0.isFromUser }.count
-                        if added > 0 { unseenCount += added }
-                    }
-                    lastObservedSeq = max(lastObservedSeq, nextSeq)
-                }
-                if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) }
-            }
-            .onChange(of: conv.optimisticMessages.count) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
-            .onChange(of: conv.streaming) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
-            .onChange(of: approvals.count) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
-            .onChange(of: processing) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
-            .onChange(of: conv.sendRevision) {
-                atBottom = true; unseenCount = 0; proxy.scrollTo(bottomID, anchor: .bottom)
-            }
-            .task(id: unreadKey) {
-                guard conv.isLoaded, focusedID == nil else { return }
-                lastObservedSeq = conv.messages.last?.seq ?? 0
-                unseenCount = 0
-                if let unreadID = conv.unreadAnchorID, conv.messages.contains(where: { $0.id == unreadID }) {
-                    atBottom = false
-                    for delay in [0, 80, 260] {
-                        if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
-                        guard !Task.isCancelled else { return }
-                        proxy.scrollTo(unreadID, anchor: .top)
-                    }
-                } else {
-                    atBottom = true
-                    for delay in [0, 80, 260] {
-                        if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
-                        guard !Task.isCancelled else { return }
-                        proxy.scrollTo(bottomID, anchor: .bottom)
-                    }
-                }
-            }
-            .task(id: focusKey) { await scrollToFocused(proxy) }
             .debugCommand { command, arg in
                 switch command {
-                case "scroll": if arg == "top", let first = conv.messages.first { proxy.scrollTo(conv.hasOlder ? "older" : first.id, anchor: .top) } else { scrollToBottom(proxy) }
-                case "loadolder": Task { await loadOlder(conv, proxy) }
-                case "latest": workspace.showLatest(botID: botID)
+                case "quote": if let m = conv.messages.last(where: { ["assistant", "user", "peer"].contains($0.role) && !$0.content.isEmpty }) {
+                    quote = QuoteDraft(author: m.role == "user" ? "我" : (bot?.name ?? "Agent"), text: m.content)
+                }
+                case "filechip": Task { await openFile(arg) }
+                case "toolstep": if let step = conv.messages.reversed().compactMap({ $0.toolSteps.last }).first { Task { await openStep(step) } }
+                case "chatmemory": showMemory = true
                 default: break
                 }
             }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                if let notice = workspace.notice { NoticeBanner(text: notice) }
-                if workspace.state != nil && !hasModel { noModelBanner }
-                if let title = memoryNotice { memoryPill(title) }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 6) {
-                if !approvals.isEmpty || !delegatedPeers.isEmpty {
-                    VStack(spacing: 8) {
-                        ForEach(approvals) { approval in
-                            let jobTitle = workspace.state?.jobs.first(where: { $0.taskID == approval.taskID })?.title
-                            ApprovalCard(approval: approval, botName: bot?.name ?? "", jobTitle: jobTitle) { allow, remember in
-                                await decide(approval, allow: allow, remember: remember)
-                            }
-                        }
-                        ForEach(delegatedPeers, id: \.self) { peerID in delegatedLine(peerID) }
-                    }
-                    .padding(.horizontal, 12).padding(.top, 4)
+    }
+
+    private func chatShell(_ conv: ConversationStore) -> some View {
+        transcriptReader(conv)
+            .safeAreaInset(edge: .top, spacing: 0) { topInsetBar }
+            .safeAreaInset(edge: .bottom, spacing: 0) { bottomInsetBar(conv) }
+            .environment(\.openURL, OpenURLAction { url in
+                if let path = ChatLinks.path(from: url) {
+                    Task { await openFile(path) }
+                    return .handled
                 }
-                ComposerView(workspace: workspace, botID: botID, conversation: conv, botName: bot?.name ?? "Agent", quote: $quote, menu: $composerMenu)
+                if let link = ChatLinks.attachment(from: url) {
+                    Task { await openInlineAttachment(link) }
+                    return .handled
+                }
+                return Markdown.isOpenable(url) ? .systemAction : .discarded
+            })
+            .background { WorkspaceSurface(kind: .stage) }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarRole(.editor)
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    topicsButton
+                    let hasOpenJobs = !(workspace.state?.openJobs(botID: botID).isEmpty ?? true)
+                    RoundGlassButton(symbol: "sidebar.right", label: "助手详情", badgeDot: hasOpenJobs, size: 32) { nav.openAgentDetail(botID) }
+                }
+                ToolbarItem(placement: .principal) { titleView }
+            }
+    }
+
+    private var topInsetBar: some View {
+        VStack(spacing: 0) {
+            if let notice = workspace.notice { NoticeBanner(text: notice) }
+            if workspace.state != nil && !hasModel { noModelBanner }
+            if let title = memoryNotice { memoryPill(title) }
+        }
+    }
+
+    private func bottomInsetBar(_ conv: ConversationStore) -> some View {
+        VStack(spacing: 6) {
+            if !approvals.isEmpty || !delegatedPeers.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(approvals) { approval in
+                        let jobTitle = workspace.state?.jobs.first(where: { $0.taskID == approval.taskID })?.title
+                        ApprovalCard(approval: approval, botName: bot?.name ?? "", jobTitle: jobTitle) { allow, remember in
+                            await decide(approval, allow: allow, remember: remember)
+                        }
+                    }
+                    ForEach(delegatedPeers, id: \.self) { peerID in delegatedLine(peerID) }
+                }
+                .padding(.horizontal, 12).padding(.top, 4)
+            }
+            ComposerView(workspace: workspace, botID: botID, conversation: conv, botName: bot?.name ?? "Agent", quote: $quote, menu: $composerMenu)
+        }
+    }
+
+    private func transcriptReader(_ conv: ConversationStore) -> some View {
+        ScrollViewReader { proxy in
+            transcriptScroll(conv, proxy: proxy)
+                .onChange(of: conv.messages.last?.seq) { _, nextSeq in
+                    if let nextSeq {
+                        if lastObservedSeq > 0 && nextSeq > lastObservedSeq && !atBottom && focusedID == nil {
+                            let added = conv.messages.filter { $0.seq > lastObservedSeq && !$0.isFromUser }.count
+                            if added > 0 { unseenCount += added }
+                        }
+                        lastObservedSeq = max(lastObservedSeq, nextSeq)
+                    }
+                    if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) }
+                }
+                .onChange(of: conv.optimisticMessages.count) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
+                .onChange(of: conv.streaming) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
+                .onChange(of: approvals.count) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
+                .onChange(of: processing) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
+                .onChange(of: conv.sendRevision) {
+                    atBottom = true; unseenCount = 0; proxy.scrollTo(bottomID, anchor: .bottom)
+                }
+                .task(id: unreadKey) { await applyUnreadScroll(conv, proxy: proxy) }
+                .task(id: focusKey) { await scrollToFocused(proxy) }
+                .debugCommand { command, arg in
+                    switch command {
+                    case "scroll": if arg == "top", let first = conv.messages.first { proxy.scrollTo(conv.hasOlder ? "older" : first.id, anchor: .top) } else { scrollToBottom(proxy) }
+                    case "loadolder": Task { await loadOlder(conv, proxy) }
+                    case "latest": workspace.showLatest(botID: botID)
+                    default: break
+                    }
+                }
+        }
+    }
+
+    private func transcriptScroll(_ conv: ConversationStore, proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                transcriptHeader(conv, proxy: proxy)
+                transcriptRows(conv)
+                optimisticRows(conv)
+                if conv.isLoaded && conv.messages.isEmpty && conv.optimisticMessages.isEmpty && conv.streaming.isEmpty && !processing { welcome }
+                ForEach(conv.streaming, id: \.taskId) { part in
+                    StreamingRow(text: part.text, replyingTo: replyingTo(taskID: part.taskId), workspace: workspace, bot: bot).padding(.top, 14)
+                }
+                if processing {
+                    ThinkingIndicator(name: bot?.name ?? "Agent", phrase: tasks.first?.phrase ?? "正在发送…", workspace: workspace, bot: bot).padding(.top, 14)
+                }
+                Color.clear.frame(height: 1).id(bottomID)
+                    .onAppear { atBottom = true; unseenCount = 0 }
+                    .onDisappear { atBottom = false }
+            }
+            .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 16)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .defaultScrollAnchor(.bottom)
+        .overlay {
+            if composerMenu != nil { Color.black.opacity(0.001).onTapGesture { composerMenu = nil } }
+        }
+        .overlay {
+            if !conv.isLoaded {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在载入历史会话…").font(.footnote).foregroundStyle(Theme.muted)
+                }
             }
         }
-        .environment(\.openURL, OpenURLAction { url in
-            if let path = ChatLinks.path(from: url) {
-                Task { await openFile(path) }
-                return .handled
+        .overlay(alignment: .bottomTrailing) { jumpToBottomButton(conv, proxy: proxy) }
+    }
+
+    @ViewBuilder
+    private func transcriptHeader(_ conv: ConversationStore, proxy: ScrollViewProxy) -> some View {
+        if focusedID != nil {
+            Button { workspace.showLatest(botID: botID) } label: {
+                Text("返回最新消息").font(.footnote.weight(.medium)).foregroundStyle(Theme.brand)
+                    .frame(maxWidth: .infinity).padding(.vertical, 6)
             }
-            if let link = ChatLinks.attachment(from: url) {
-                Task { await openInlineAttachment(link) }
-                return .handled
+            .buttonStyle(.plain)
+        } else if conv.hasOlder {
+            Button { Task { await loadOlder(conv, proxy) } } label: {
+                HStack(spacing: 6) {
+                    if conv.isLoadingOlder { ProgressView().controlSize(.small) }
+                    Text("加载更早的消息").font(.footnote.weight(.medium))
+                }
+                .foregroundStyle(Theme.muted).frame(maxWidth: .infinity).padding(.vertical, 6)
             }
-            return Markdown.isOpenable(url) ? .systemAction : .discarded
-        })
-        .background { WorkspaceSurface(kind: .stage) }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarRole(.editor)
-        .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                topicsButton
-                let hasOpenJobs = !(workspace.state?.openJobs(botID: botID).isEmpty ?? true)
-                RoundGlassButton(symbol: "sidebar.right", label: "助手详情", badgeDot: hasOpenJobs, size: 32) { nav.openAgentDetail(botID) }
-            }
-            ToolbarItem(placement: .principal) { titleView }
+            .buttonStyle(.plain).disabled(conv.isLoadingOlder).id("older")
         }
-        .errorAlert($errorText)
-        .sheet(isPresented: $showMemory) { MemoryEditorSheet(workspace: workspace, botID: botID) }
-        .sheet(item: $jobSheet) { JobDetailView(workspace: workspace, jobID: $0.id) }
-        .sheet(isPresented: $showTopics) { FinanceTopicsView(workspace: workspace, botID: botID, onClose: { showTopics = false }) }
-        .sheet(item: $inlineAttachment) { file in QuickLookSheet(url: file.url).ignoresSafeArea() }
-        .onAppear {
-            workspace.select(botID)
-            conv.isActive = scenePhase == .active
-            if knownMemories == nil && workspace.state != nil { knownMemories = memorySignature }
-        }
-        .onDisappear {
-            conv.isActive = false
-            // Only clear selection when actually popping out of this chat on compact width, not in iPad split mode or when pushing AgentDetailView.
-            if sizeClass != .regular && workspace.selectedBotID == botID && !nav.path.contains(.chat(botID)) && !nav.path.contains(.agentDetail(botID)) {
-                workspace.select(nil)
+    }
+
+    @ViewBuilder
+    private func transcriptRows(_ conv: ConversationStore) -> some View {
+        ForEach(Array(conv.messages.enumerated()), id: \.element.id) { index, message in
+            let previous = index > 0 ? conv.messages[index - 1] : nil
+            let next = index + 1 < conv.messages.count ? conv.messages[index + 1] : nil
+            if let date = message.createdAt,
+               index == 0 || !Calendar.current.isDate(date, inSameDayAs: previous?.createdAt ?? .distantPast) {
+                DateDivider(date: date)
             }
-        }
-        .onChange(of: scenePhase) { conv.isActive = scenePhase == .active }
-        .onChange(of: conv.messages.last?.seq) { Task { await conv.markReadIfNeeded() } }
-        .onChange(of: memorySignature) { _, signature in
-            guard workspace.state != nil else { return }
-            if let known = knownMemories,
-               let changed = workspace.state?.memories(botID: botID).first(where: { known[$0.id] != signature[$0.id] }) {
-                memoryNotice = "已更新记忆：\(changed.title)"
+            let hasJobReply: Bool = {
+                guard message.isJobReport, let jobID = message.jobID else { return false }
+                return conv.messages[(index + 1)...].contains { $0.isFromUser && $0.jobID == jobID }
+            }()
+            VStack(alignment: .leading, spacing: 0) {
+                if focusedID == nil && message.id == conv.unreadAnchorID {
+                    UnreadDivider()
+                }
+                MessageRow(message: message, workspace: workspace, botName: bot?.name ?? "Agent", bot: bot,
+                           groupEnd: MessageGrouping.ends(message, next: next),
+                           hasJobReply: hasJobReply,
+                           onQuote: { author, text in quote = QuoteDraft(author: author, text: text) },
+                           onOpenStep: { step in Task { await openStep(step) } },
+                           onOpenFile: { path in Task { await openFile(path) } },
+                           onOpenPeer: { nav.openChat($0) },
+                           onOpenJob: { jobSheet = JobSheetItem(id: $0) },
+                           onReplyJob: { job in quote = nil; conv.replyJob = JobReplyTarget(id: job.id, title: job.title) })
+                    .overlay {
+                        if message.id == focusedID {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
+                                .padding(-6).allowsHitTesting(false)
+                        }
+                    }
+                    .padding(.top, MessageGrouping.joins(previous, message) ? 4 : 14)
             }
-            knownMemories = signature
+            .id(message.id)
         }
-        .debugCommand { command, arg in
-            switch command {
-            case "quote": if let m = conv.messages.last(where: { ["assistant", "user", "peer"].contains($0.role) && !$0.content.isEmpty }) {
-                quote = QuoteDraft(author: m.role == "user" ? "我" : (bot?.name ?? "Agent"), text: m.content)
+    }
+
+    @ViewBuilder
+    private func optimisticRows(_ conv: ConversationStore) -> some View {
+        ForEach(conv.optimisticMessages) { optimistic in
+            VStack(alignment: .trailing, spacing: 4) {
+                if let title = optimistic.replyJobTitle {
+                    Text("回复后台任务：\(title)").font(.caption).foregroundStyle(Theme.muted)
+                }
+                ChatMarkdown(source: optimistic.text, hug: true)
+                    .environment(\.chatInk, .white).environment(\.chatOnAccent, true)
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .background(userBubbleGradient(dark: scheme == .dark), in: Bubble.user)
+                    .opacity(0.8)
+                Text("发送中…").font(.caption2).foregroundStyle(Theme.muted).padding(.horizontal, 4)
             }
-            case "filechip": Task { await openFile(arg) }
-            case "toolstep": if let step = conv.messages.reversed().compactMap({ $0.toolSteps.last }).first { Task { await openStep(step) } }
-            case "chatmemory": showMemory = true
-            default: break
+            .padding(.leading, 56).padding(.top, 14)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    @ViewBuilder
+    private func jumpToBottomButton(_ conv: ConversationStore, proxy: ScrollViewProxy) -> some View {
+        if (!atBottom && !conv.messages.isEmpty) || focusedID != nil {
+            let showBadge = focusedID == nil && unseenCount > 0
+            Button {
+                if focusedID != nil { workspace.showLatest(botID: botID) }
+                else { scrollToBottom(proxy) }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.down").font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.brand)
+                    Text(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
+                        .font(.system(size: 12.5, weight: showBadge ? .semibold : .medium))
+                        .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.foreground)
+                }
+                .padding(.horizontal, 12).frame(height: 34)
+                .background { if showBadge { Capsule().fill(Theme.primary) } }
+                .modifier(OptionalGlassCapsule(enabled: !showBadge))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
+            .padding(.trailing, 14).padding(.bottom, 10)
+            .transition(.opacity.combined(with: .scale(scale: 0.94)))
+        }
+    }
+
+    private func applyUnreadScroll(_ conv: ConversationStore, proxy: ScrollViewProxy) async {
+        guard conv.isLoaded, focusedID == nil else { return }
+        lastObservedSeq = conv.messages.last?.seq ?? 0
+        unseenCount = 0
+        if let unreadID = conv.unreadAnchorID, conv.messages.contains(where: { $0.id == unreadID }) {
+            atBottom = false
+            for delay in [0, 80, 260] {
+                if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(unreadID, anchor: .top)
+            }
+        } else {
+            atBottom = true
+            for delay in [0, 80, 260] {
+                if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(bottomID, anchor: .bottom)
             }
         }
     }
