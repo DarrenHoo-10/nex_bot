@@ -342,14 +342,14 @@ struct AgentTeamMessageCard: View {
     private var symbol: String {
         if card.outcome == "failed" { return "xmark.circle.fill" }
         switch card.kind {
-        case .task: "paperplane.fill"
-        case .report, .done: "checkmark.circle.fill"
-        case .review: "checklist"
-        case .followup: "wrench.and.screwdriver.fill"
-        case .question: "questionmark.circle.fill"
-        case .answer: "arrowshape.turn.up.left.fill"
-        case .nudge: "bell.fill"
-        case .escalation: "exclamationmark.triangle.fill"
+        case .task: return "paperplane.fill"
+        case .report, .done: return "checkmark.circle.fill"
+        case .review: return "checklist"
+        case .followup: return "wrench.and.screwdriver.fill"
+        case .question: return "questionmark.circle.fill"
+        case .answer: return "arrowshape.turn.up.left.fill"
+        case .nudge: return "bell.fill"
+        case .escalation: return "exclamationmark.triangle.fill"
         }
     }
 

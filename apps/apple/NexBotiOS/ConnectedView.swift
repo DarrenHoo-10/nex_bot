@@ -46,25 +46,33 @@ struct ConnectedView: View {
     }
 
     private var lifecycleBoundContacts: some View {
+        agentStreamBoundContacts
+            .onChange(of: scenePhase) { previous, next in
+                syncAgentStream(reconnect: previous == .background && next == .active)
+            }
+            .onChange(of: agents.notificationsOn) { _, _ in syncAgentStream() }
+            .onChange(of: model.credential?.token) { (old: String?, new: String?) in
+                if old != nil, new != nil, old != new { syncAgentStream(reconnect: true, forceReplace: true) }
+            }
+            .onAppear(perform: configureLifecycle)
+    }
+
+    private var agentStreamBoundContacts: some View {
+        workspaceBoundContacts
+            .onChange(of: nav.agentMode) { _, _ in syncAgentStream() }
+            .onChange(of: nav.path) { _, _ in syncAgentStream() }
+    }
+
+    private var workspaceBoundContacts: some View {
         ContactsView(model: model, workspace: workspace, agents: agents, nav: nav)
             .task(id: workspace.connection) {
                 syncAgentStream()
                 if workspace.connection == .connected { await workspace.loadFinanceAssistant() }
             }
             .onChange(of: chatVisible, initial: true) { _, visible in workspace.setChatVisible(visible) }
-            .onChange(of: workspace.contentCacheScope) { old, new in
+            .onChange(of: workspace.contentCacheScope) { (old: String?, new: String?) in
                 if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
             }
-            .onChange(of: nav.agentMode) { _, _ in syncAgentStream() }
-            .onChange(of: nav.path) { _, _ in syncAgentStream() }
-            .onChange(of: scenePhase) { previous, next in
-                syncAgentStream(reconnect: previous == .background && next == .active)
-            }
-            .onChange(of: agents.notificationsOn) { _, _ in syncAgentStream() }
-            .onChange(of: model.credential?.token) { old, new in
-                if old != nil, new != nil, old != new { syncAgentStream(reconnect: true, forceReplace: true) }
-            }
-            .onAppear(perform: configureLifecycle)
     }
 
     private func configureLifecycle() {
