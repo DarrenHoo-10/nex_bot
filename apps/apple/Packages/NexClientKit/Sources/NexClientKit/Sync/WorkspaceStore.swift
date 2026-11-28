@@ -574,10 +574,17 @@ public final class WorkspaceStore {
                 feed = try await client.feed(bot: current, after: lastRow.seq, at: lastRow.row.int("created_at") ?? 0)
             }
             guard request == serial, selectedBotID == current else { return }
-            if target == nil, (!conv.isLoaded || conv.awaitingFreshUnread), conv.pendingUnreadReadSeq == nil,
-               let nextBot = next.bots.first(where: { $0.id == current }),
-               nextBot.unreadCount > nextBot.topicUnreadCount {
-                conv.prepareUnreadJump(readSeq: nextBot.readSeq)
+            if target == nil, let nextBot = next.bots.first(where: { $0.id == current }) {
+                if let armedReadSeq = conv.pendingUnreadReadSeq {
+                    if nextBot.unreadCount <= nextBot.topicUnreadCount {
+                        conv.prepareBottomEntry()
+                    } else if nextBot.readSeq > armedReadSeq {
+                        conv.prepareUnreadJump(readSeq: nextBot.readSeq)
+                    }
+                } else if (!conv.isLoaded || conv.awaitingFreshUnread),
+                          nextBot.unreadCount > nextBot.topicUnreadCount {
+                    conv.prepareUnreadJump(readSeq: nextBot.readSeq)
+                }
             }
             if target == nil, let unreadReadSeq = conv.pendingUnreadReadSeq {
                 var backfilled = 0

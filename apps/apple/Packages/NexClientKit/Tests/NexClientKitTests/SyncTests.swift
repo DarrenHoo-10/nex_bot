@@ -401,7 +401,10 @@ final class SyncTests: XCTestCase {
             }
             if request.path == "/api/agents/messages" {
                 let seqs = phase == 0 ? [1, 2] : [1, 2, 3, 4]
-                let rows = seqs.map { message($0, role: "assistant", content: "m-\($0)") }
+                var rows: [[String: Any]] = []
+                for seq in seqs {
+                    rows.append(message(seq, role: "assistant", content: "m-\(seq)"))
+                }
                 return .json(["sync": syncJSON(cursor: phase + 1), "messages": rows, "hasMore": false, "streaming": []])
             }
             return .json(["ok": true])
