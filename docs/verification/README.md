@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 多 Agent 协作（第 1 期）· 0.9.65 四端与生产 Core 发布记录（2026-11-28）](nexagent-multi-agent-release-0965-20261128.md)
+
 - [NexAgent 多 Agent 协作：第 0 期 Windows 隔离实测记录（2026-11-28）](nexagent-multi-agent-phase0-20261128.md)
 
 - [移动端排版与未读定位、设置页优化及运行时/飞书通道修复 · 0.9.64 四端发布记录（2026-11-28）](four-platform-release-0964-20261128.md)

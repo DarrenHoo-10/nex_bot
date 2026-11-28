@@ -33,7 +33,7 @@ Android 与 Windows 共用账号设置、模型、记忆服务、连接器、设
 
 ## 下载与安装
 
-飞书可以接入多个应用，每个机器人对应一个助手；连接器里点开应用，可以为每个群设置触发方式（必须 @、话题内免 @、默认应答、全部回复）、会话方式（群聊共享话题独立、整群一个会话、每次 @ 开新话题）和只对该群生效的系统上下文。飞书里的话题对应 NexBot 话题，网页上接收飞书的助手会像金融助手一样显示话题卡片。网页和 Windows 的左上角可切换 NexBot / NexAgent，NexAgent 按电脑 → 项目 → 会话整理 Claude Code、Codex、ZCode 和 Antigravity CLI 会话。NexAgent 的项目可拖动排序（新项目排在最前），时钟按钮按时间列出全部会话，放大镜可按标题和会话内容搜索；输入框可选模型和推理强度，支持粘贴图片；发往 Claude 桌面端或终端会话（含跳过权限模式）的消息由该电脑上的客户端送达。模型菜单列出所选运行工具在这台电脑上可用的模型；新建会话直接在右侧的输入框里写第一条消息，上方可浏览或新建目录、选运行工具和工作树，提交后会话立即出现；侧栏置顶「进行中」，输入框在圆环左侧显示当前模型，圆环按会话实际使用的模型以 K / M 显示上下文用量，历史记录可一直往前翻，新建会话勾选 Worktree 即在新的工作树里运行。NexAgent 可在「设置 → 模型 → 翻译服务」选择已连接的模型，异步翻译已完成的英文回复。Jev 判定超时或不可用时，继续按本地规则筛选。助手设置中的长 Token 用量显示为 4.2M 一类的简写。NexAgent 回复可复制或从该处创建私人聊天分支，选区菜单支持复制，后台任务显示简称。发送的消息立即显示，发出 30 秒内且未被回应的消息可编辑后重发；模型调用失败时居中提示原因。Claude、Codex 需要确认或提问时，各端在消息流下方显示悬浮毛玻璃动作岛，支持一键允许、本会话总是允许、拒绝以及单选/多选与「其他」自定义输入，工具调用以无框时间轴展示；新建会话默认完全访问，也可切换为「每次询问」。Windows 客户端关闭窗口默认最小化到系统托盘，可在托盘菜单恢复窗口、暂停/恢复本机控制或彻底退出。当前发布的客户端为 Windows 0.9.64、Android 0.2.62 和 Mac / iOS 0.2.57。每个工作区都有一个金融助手，在 NexBot 或已连接的 `nex_stock` 中新建对话，会在同一个助手下生成独立话题。
+飞书可以接入多个应用，每个机器人对应一个助手；连接器里点开应用，可以为每个群设置触发方式（必须 @、话题内免 @、默认应答、全部回复）、会话方式（群聊共享话题独立、整群一个会话、每次 @ 开新话题）和只对该群生效的系统上下文。飞书里的话题对应 NexBot 话题，网页上接收飞书的助手会像金融助手一样显示话题卡片。网页和 Windows 的左上角可切换 NexBot / NexAgent，NexAgent 按电脑 → 项目 → 会话整理 Claude Code、Codex、ZCode 和 Antigravity CLI 会话。NexAgent 的项目可拖动排序（新项目排在最前），时钟按钮按时间列出全部会话，放大镜可按标题和会话内容搜索；输入框可选模型和推理强度，支持粘贴图片；发往 Claude 桌面端或终端会话（含跳过权限模式）的消息由该电脑上的客户端送达。模型菜单列出所选运行工具在这台电脑上可用的模型；新建会话直接在右侧的输入框里写第一条消息，上方可浏览或新建目录、选运行工具和工作树，提交后会话立即出现；侧栏置顶「进行中」，输入框在圆环左侧显示当前模型，圆环按会话实际使用的模型以 K / M 显示上下文用量，历史记录可一直往前翻，新建会话勾选 Worktree 即在新的工作树里运行。NexAgent 可在「设置 → 模型 → 翻译服务」选择已连接的模型，异步翻译已完成的英文回复。Jev 判定超时或不可用时，继续按本地规则筛选。助手设置中的长 Token 用量显示为 4.2M 一类的简写。NexAgent 回复可复制或从该处创建私人聊天分支，选区菜单支持复制，后台任务显示简称。发送的消息立即显示，发出 30 秒内且未被回应的消息可编辑后重发；模型调用失败时居中提示原因。Claude、Codex 需要确认或提问时，各端在消息流下方显示悬浮毛玻璃动作岛，支持一键允许、本会话总是允许、拒绝以及单选/多选与「其他」自定义输入，工具调用以无框时间轴展示；新建会话默认完全访问，也可切换为「每次询问」。Windows 客户端关闭窗口默认最小化到系统托盘，可在托盘菜单恢复窗口、暂停/恢复本机控制或彻底退出。NexAgent 现支持多 Agent 协作（第 1 期）：电脑端随 Windows / Mac 客户端内置 `nex` CLI、`nex-mcp`（Codex 单次启动隔离挂载）与 Claude Code 技能插件，主控会话可并行派发多个协作工人并按 `--after` 串接依赖；Web、Windows 与 Android 侧栏在主会话下折叠展示协作工人，支持顶部快速切换、暂停/恢复协作及「设置 → NexAgent 协作」策略配置（Apple 原生协作界面将在第 2 期补齐）。当前发布的客户端为 Windows 0.9.65、Android 0.2.63 和 Mac / iOS 0.2.58。每个工作区都有一个金融助手，在 NexBot 或已连接的 `nex_stock` 中新建对话，会在同一个助手下生成独立话题。
 
 在 NexAgent 的「运行工具」选择 Antigravity CLI，即可在已登录 AGY 的 Windows 或 Mac 电脑上新建会话。需要 Antigravity CLI 1.5.15 或更新版本。可续接已退出的本机 CLI 会话、按内容搜索 AGY 会话，也可在有终端组件的电脑上打开这段会话。
 
@@ -41,13 +41,13 @@ NexAgent 新建会话时，输入框上方依次是项目、运行工具和会�
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 · 0.9.64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.64-preview.1/NexBot-0.9.64-x64-Client-Setup.exe) | 运行安装向导，可选目录 |
-| Android 8.0+ · 0.2.62 | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.64-preview.1/nexbot-0.2.62-debug.apk) | 在手机上打开并安装，测试版 |
-| Mac（Apple 芯片）· 0.2.57 | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.64-preview.1/NexBot-0.2.57-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
-| iPhone（iOS 17+）· 0.2.57 | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.64-preview.1/NexBot-0.2.57-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
-| 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.64-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
+| Windows x64 · 0.9.65 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.65-preview.1/NexBot-0.9.65-x64-Client-Setup.exe) | 运行安装向导，可选目录 |
+| Android 8.0+ · 0.2.63 | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.65-preview.1/nexbot-0.2.63-debug.apk) | 在手机上打开并安装，测试版 |
+| Mac（Apple 芯片）· 0.2.58 | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.65-preview.1/NexBot-0.2.58-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
+| iPhone（iOS 17+）· 0.2.58 | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.65-preview.1/NexBot-0.2.58-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
+| 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.65-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
-[0.9.64 四端发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.64-preview.1)：四端同步发布（Windows `0.9.64`、Android `0.2.62`、Mac / iPhone `0.2.57`）。优化设置页布局与移动端两级设置导航、去除分支下拉多余白框、手机端新建会话改为「项目 / 运行工具 / 设置」三标签；修复移动端聊天页横向溢出，进入含未读消息的会话或子话题自动定位到最早未读，并新增统一毛玻璃风格「回到底部」胶囊（同步适配 Apple SwiftUI）；修复桌面端子代理 `<task-notification>` 误渲染为用户消息以及浅色主题飞书话题副标题对比度过低问题；修复并行工具回放误报「工具未获批准」、只读 `feishu_read` 误标 `unknown`、孤儿飞书连接器暴露、设备回包误拉起对账任务及飞书群报错刷出「通道通知」话题；Apple 端同时包含未关联项目分组 Release 空字节闪退修复。Windows 包尚无发布者数字签名。Mac 应用使用临时签名，尚未公证。Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+[0.9.65 四端发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.65-preview.1)：四端同步发布（Windows `0.9.65`、Android `0.2.63`、Mac / iPhone `0.2.58`），正式推出 NexAgent 多 Agent 协作（第 1 期）。Core 新增协作调度、任务依赖传递、边界确认卡、断线重连恢复与 `start_op_id` 迟到回包对账（Schema 迁移 62）；Windows 与 Mac 客户端内置 `nex` CLI、`nex-mcp` 与 Claude Code 技能插件，支持询问模式下纯 `nex` 命令安全自动放行、终端回退单行 `nex inbox` 提示与 AGY 32 KiB 指针回落；Web、Windows 与 Android 端新增主会话下折叠协作工人列表、顶部快切条、暂停/恢复协作控制及「设置 → NexAgent 协作」配置（Apple 原生 SwiftUI 协作视图待第 2 期补齐，Mac `0.2.58` 已支持作为协作执行节点）。同步修复 `cli_agent_ops` 迟到回包对账与 Windows Git Worktree 占用分支报错提示。Windows 包尚无发布者数字签名。Mac 应用使用临时签名，尚未公证。Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
 
 Android 已包含完整设置和助手管理。自行构建请参阅 [Android 安装包说明](android/README.md)。
 
