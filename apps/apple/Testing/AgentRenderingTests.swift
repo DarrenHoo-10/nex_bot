@@ -64,7 +64,7 @@ final class AgentRenderingTests: XCTestCase {
         let model = try await model()
         model.select("win:claude:s1")
         let view = HStack(spacing: 14) {
-            AgentSessionList(model: model, selected: model.selectedKey, onSelect: { _ in }, onCreate: {}, onNew: { _, _ in }, onArchive: { _, _ in }, onDelete: { _ in })
+            AgentSessionList(model: model, selected: model.selectedKey, onSelect: { _ in }, onCreate: {}, onNew: { _, _ in })
                 .frame(width: 300)
                 .background(Theme.sidebar, in: RoundedRectangle(cornerRadius: 18))
             AgentNewSessionPage(model: model, target: AgentNewTarget(deviceId: "win", cwd: "D:/ProgrammingProjects/nex_bot")) { _ in }

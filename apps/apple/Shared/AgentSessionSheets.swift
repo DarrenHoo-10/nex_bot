@@ -62,7 +62,7 @@ struct AgentLaunchDetail: View {
             // laid out like any conversation: the message, then the agent's reply slot
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if !preview.isEmpty { AgentEchoBubble(text: preview, loadImage: model.downloadImage) }
+                    if !preview.isEmpty { AgentEchoBubble(text: preview, loadImage: model.downloadImage, loadOriginalImage: model.downloadOriginalImage) }
                     if case .failed(let reason) = launch.phase {
                         VStack(alignment: .leading, spacing: 6) {
                             AgentByline(engine: launch.request.engine)
@@ -81,13 +81,24 @@ struct AgentLaunchDetail: View {
     }
 }
 
-/// The agent's name over the first message of a reply.
+/// The agent's name over the first message of a reply, with its official harness badge and optional time.
 struct AgentByline: View {
     let engine: CliEngine
+    var ts: Int? = nil
+
+    private var timeText: String? {
+        guard let ts, ts > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: Double(ts) / 1000.0)
+        return date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+    }
+
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "sparkle").font(.system(size: 11)).foregroundStyle(engine == .claude ? Color(hex: 0xAB6146) : Theme.muted)
-            Text(agentName(engine)).font(.system(size: 12, weight: .semibold))
+            AgentEngineIcon(engine: engine, tone: .idle, size: 17)
+            Text(agentName(engine)).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.nexAgentInk)
+            if let timeText {
+                Text(timeText).font(.system(size: 11)).monospacedDigit().foregroundStyle(Theme.nexAgentMuted)
+            }
         }
     }
 }
@@ -127,11 +138,12 @@ struct AgentWorkingRow: View {
 struct AgentEchoBubble: View {
     let text: String
     let loadImage: (String) async throws -> Data
+    var loadOriginalImage: ((String) async throws -> (data: Data, contentType: String?))? = nil
 
     var body: some View {
         HStack {
             Spacer(minLength: 40)
-            AgentImageMessage(text: text, load: loadImage)
+            AgentImageMessage(text: text, load: loadImage, loadOriginal: loadOriginalImage)
         }
     }
 }
@@ -194,6 +206,9 @@ struct AgentSupervisionSheet: View {
                 toggle("临时错误后自动继续", value.settings.transientRetry) { try await model.setSupervision(transientRetry: $0) }
                 toggle("额度恢复后继续", value.settings.usageLimit) { try await model.setSupervision(usageLimit: $0) }
                 toggle("唤醒", value.settings.wakeup) { try await model.setSupervision(wakeup: $0) }
+                toggle("自动分类结果", value.settings.triage) { try await model.setSupervision(triage: $0) }
+                toggle("自动决定下一步", value.settings.decide) { try await model.setSupervision(decide: $0) }
+                toggle("结果就绪时唤醒", value.settings.wake) { try await model.setSupervision(wake: $0) }
                 if value.pending > 0 { Text("\(value.pending) 项待执行").font(.footnote).foregroundStyle(Theme.muted) }
                 if value.overrides > 0 { Text("\(value.overrides) 个目录单独设置").font(.footnote).foregroundStyle(Theme.muted) }
             } else if loading {

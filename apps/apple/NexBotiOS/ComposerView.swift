@@ -71,8 +71,10 @@ struct ComposerView: View {
             if let quote { quoteBar(quote) }
             if menu == .add { addMenu.transition(.opacity) }
             if menu == .permissions { permissionMenu.frame(maxWidth: .infinity, alignment: .leading).transition(.opacity) }
-            if !conversation.attachments.isEmpty { attachmentChips }
-            VStack(spacing: 3) {
+            VStack(spacing: 4) {
+                if !conversation.attachments.isEmpty {
+                    attachmentChips.padding(.horizontal, 4).padding(.top, 2)
+                }
                 TextField(conversation.replyJob.map { "回复后台任务：\($0.title)" } ?? "给 \(botName) 发消息…", text: $conversation.draft, axis: .vertical)
                     .lineLimit(3...6)
                     .padding(.horizontal, 7).padding(.top, 7)
@@ -363,18 +365,31 @@ struct ComposerView: View {
         ZStack(alignment: .topTrailing) {
             if let preview = file.preview, let image = UIImage(data: preview) {
                 Button {
-                    draftImage = ImagePreview(image: image) { conversation.removeAttachment(file) }
+                    if file.canRetry {
+                        Task { await conversation.retryAttachment(file) }
+                    } else {
+                        draftImage = ImagePreview(image: image) { conversation.removeAttachment(file) }
+                    }
                 } label: {
                     Image(uiImage: image).resizable().scaledToFit()
                         .frame(width: 96, height: 96).background(Theme.secondary)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.border))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(file.errorMessage != nil ? Theme.danger.opacity(0.6) : Theme.border))
                         .overlay {
                             if file.isUploading { ProgressView().controlSize(.small) }
-                            else if file.errorMessage != nil { Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.danger) }
+                            else if file.errorMessage != nil {
+                                VStack(spacing: 3) {
+                                    Image(systemName: file.canRetry ? "arrow.clockwise.circle.fill" : "exclamationmark.circle.fill")
+                                        .font(.system(size: 18)).foregroundStyle(.white)
+                                    if file.canRetry { Text("重试").font(.caption2.weight(.semibold)).foregroundStyle(.white) }
+                                }
+                                .padding(8)
+                                .background(Theme.danger.opacity(0.85), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
                         }
                 }
-                .buttonStyle(.plain).accessibilityLabel("查看图片 \(file.name)")
+                .buttonStyle(.plain)
+                .accessibilityLabel(file.canRetry ? "重试上传 \(file.name)" : "查看图片 \(file.name)")
             } else { ComposerImagePlaceholder(uploading: file.isUploading) }
             Button { conversation.removeAttachment(file) } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
@@ -395,7 +410,20 @@ struct ComposerView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(file.name).font(.footnote.weight(.medium)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
                 if file.isUploading { Text("正在上传…").font(.caption2).foregroundStyle(Theme.muted) }
-                else if let message = file.errorMessage { Text(message).font(.caption2).foregroundStyle(Theme.danger).lineLimit(1).frame(maxWidth: 160, alignment: .leading) }
+                else if let message = file.errorMessage {
+                    if file.canRetry {
+                        Button { Task { await conversation.retryAttachment(file) } } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.clockwise").font(.system(size: 9))
+                                Text("点击重试 · \(message)").lineLimit(1)
+                            }
+                            .font(.caption2).foregroundStyle(Theme.danger).frame(maxWidth: 160, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(message).font(.caption2).foregroundStyle(Theme.danger).lineLimit(1).frame(maxWidth: 160, alignment: .leading)
+                    }
+                }
             }
             Button { conversation.removeAttachment(file) } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 24, height: 24)

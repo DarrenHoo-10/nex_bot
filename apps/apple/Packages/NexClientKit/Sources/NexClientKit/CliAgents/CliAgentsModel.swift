@@ -28,6 +28,8 @@ public final class CliAgentsModel {
     public private(set) var sessions: [CliSession] = []
     public private(set) var workbench: [CliWorkbenchSession] = []
     public private(set) var workbenchMeta: [CliSessionKey: CliWorkbenchMeta] = [:]
+    public private(set) var teams: [CliTeamRunView] = []
+    public private(set) var teamIndex: CliTeamIndex = .empty
     public private(set) var deletedKeys: Set<CliSessionKey> = []
     public private(set) var requests = CliRequestStore()
     @ObservationIgnored private var fragments: [CliSessionKey: (items: [CliItem], more: Bool?)] = [:]
@@ -50,8 +52,12 @@ public final class CliAgentsModel {
 
     public var showHidden = false
     public private(set) var selectedKey: CliSessionKey?
+    /// One-shot navigation request (e.g. tapping a local notification on iOS) consumed by `AgentSessionsView`.
+    public var pendingNavigationKey: CliSessionKey?
     public private(set) var notificationsOn: Bool
     public var notifier: (any CliNotifying)?
+    /// Called when the WebSocket closes with 4401 (unauthorized/expired session).
+    public var onUnauthorized: (@MainActor () -> Void)?
     /// True while the app is in front; notifications are only for when it is not.
     public var isForeground: @MainActor () -> Bool = { true }
 
@@ -114,7 +120,7 @@ public final class CliAgentsModel {
 
     private func setWorkbench(_ rows: [CliWorkbenchSession]) {
         workbench = rows
-        let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         var map: [CliSessionKey: CliWorkbenchMeta] = [:]
         for row in rows {
             guard let key = row.sessionKey, !key.isEmpty else { continue }
@@ -129,19 +135,28 @@ public final class CliAgentsModel {
             let trimmed = CliTranscript.unwrapPastedContent(custom).trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return trimmed }
         }
+        if let workerTitle = teamIndex.workerBySession[session.key]?.worker.title, !workerTitle.isEmpty {
+            return workerTitle
+        }
         return CliSessions.title(session)
     }
     public func isDeleted(_ session: CliSession) -> Bool {
         deletedKeys.contains(session.key) || workbenchMeta[session.key]?.deleted == true
     }
     public func isArchived(_ session: CliSession) -> Bool {
-        (workbenchMeta[session.key]?.archived == true) || session.archived || session.hidden
+        if session.archived || session.hidden { return true }
+        if device(session.deviceId)?.cliAgents?.features.contains("sessionManage") == true { return false }
+        return workbenchMeta[session.key]?.archived == true
     }
     public func isSideSession(_ session: CliSession) -> Bool {
         (workbenchMeta[session.key]?.kind == .side) || (session.nativeSideParentKey != nil)
     }
+    public func isTeamWorker(_ session: CliSession) -> Bool {
+        workbenchMeta[session.key]?.kind == .worker || teamIndex.workerBySession[session.key] != nil
+    }
     public func parentKey(of session: CliSession) -> CliSessionKey? {
         if let wbParent = workbenchMeta[session.key]?.parent, !wbParent.isEmpty { return wbParent }
+        if let leadKey = teamIndex.workerBySession[session.key]?.run.leadKey, !leadKey.isEmpty { return leadKey }
         return session.nativeForkParentKey
     }
     public func sideSessions(of parentKey: CliSessionKey) -> [CliSession] {
@@ -204,10 +219,19 @@ public final class CliAgentsModel {
     }
 
     /// The token changed or the app came back: connect again now.
-    public func reconnect() {
+    /// Pass `force: true` when credentials rotated so an already-open WebSocket is immediately replaced
+    /// with the fresh token while preserving all list and session subscriptions.
+    public func reconnect(force: Bool = false) {
         guard let stream else { start(); return }
         Task {
-            if case .closed = await stream.currentStatus() { await stream.stop(); await stream.start() } else { await stream.reconnectNow() }
+            if force {
+                await stream.reconnectNow(force: true)
+            } else if case .closed = await stream.currentStatus() {
+                await stream.stop()
+                await stream.start()
+            } else {
+                await stream.reconnectNow()
+            }
         }
     }
 
@@ -232,10 +256,52 @@ public final class CliAgentsModel {
             settleLaunches()
             evaluateNotifications()
             scheduleExpiry()
+            Task { [weak self] in await self?.refreshTeams() }
         } catch {
             guard mine == generation, !loaded else { return }
             loadError = CliErrorText.text(for: error, fallback: "读取失败")
         }
+    }
+
+    public func refreshTeams() async {
+        if let runs = try? await clientProvider().cliTeams() {
+            setTeams(runs)
+        }
+    }
+
+    private func setTeams(_ runs: [CliTeamRunView]) {
+        teams = runs
+        teamIndex = CliTeamIndex.build(runs)
+    }
+
+    private func mergeTeamRun(_ updated: CliTeamRunView) {
+        var next = teams
+        if let idx = next.firstIndex(where: { $0.id == updated.id }) {
+            next[idx] = updated
+        } else {
+            next.insert(updated, at: 0)
+        }
+        setTeams(next)
+    }
+
+    public func pauseTeam(_ runId: String) async throws {
+        if let updated = try await clientProvider().cliPauseTeam(runId: runId) { mergeTeamRun(updated) }
+        else { await refreshTeams() }
+    }
+
+    public func resumeTeam(_ runId: String) async throws {
+        if let updated = try await clientProvider().cliResumeTeam(runId: runId) { mergeTeamRun(updated) }
+        else { await refreshTeams() }
+    }
+
+    public func cancelTeam(_ runId: String) async throws {
+        if let updated = try await clientProvider().cliCancelTeam(runId: runId) { mergeTeamRun(updated) }
+        else { await refreshTeams() }
+    }
+
+    public func stopTeamWorker(runId: String, workerName: String) async throws {
+        if let updated = try await clientProvider().cliStopTeamWorker(runId: runId, workerName: workerName) { mergeTeamRun(updated) }
+        else { await refreshTeams() }
     }
 
     public func refreshWorkbench() async {
@@ -396,11 +462,11 @@ public final class CliAgentsModel {
 
     // MARK: Actions (each throws a CoreError; `CliErrorText.text(for:)` is the line to show)
 
-    @discardableResult public func send(_ key: CliSessionKey, text: String) async throws -> CliSendResult? {
+    @discardableResult public func send(_ key: CliSessionKey, text: String, revisesMessageId: String? = nil) async throws -> CliSendResult? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         guard trimmed.utf8.count <= CoreClient.cliMaxSendBytes else { throw CoreError(kind: .http, message: CliErrorText.byCode["too_large"] ?? "内容太长", status: 400, code: "too_large") }
-        return try await clientProvider().cliSend(key: key, text: trimmed)
+        return try await clientProvider().cliSend(key: key, text: trimmed, revisesMessageId: revisesMessageId)
     }
 
     public func steer(_ key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
@@ -409,6 +475,10 @@ public final class CliAgentsModel {
 
     public func editQueued(_ entry: CliQueuedEntry, text: String) async throws {
         try await clientProvider().cliEditQueued(entry, text: text)
+    }
+
+    public func withdrawQueued(_ entry: CliQueuedEntry) async throws {
+        try await clientProvider().cliWithdrawQueued(entry)
     }
 
     public func steerQueued(_ entry: CliQueuedEntry, questionId: String?, interruptWaiting: Bool) async throws -> CliQueuedEntry {
@@ -443,6 +513,10 @@ public final class CliAgentsModel {
         try await clientProvider().cliDownloadImage(path, workspaceID: cacheScope())
     }
 
+    public func downloadOriginalImage(_ path: String) async throws -> (data: Data, contentType: String?) {
+        try await clientProvider().cliDownloadOriginalImage(path)
+    }
+
     public func attachTerminalFile(_ key: CliSessionKey, name: String, data: Data) async throws -> String {
         try await clientProvider().cliAttachFile(key: key, name: name, data: data)
     }
@@ -459,7 +533,9 @@ public final class CliAgentsModel {
         return text
     }
 
-    public func interrupt(_ key: CliSessionKey) async throws { try await clientProvider().cliInterrupt(key: key) }
+    public func interrupt(_ key: CliSessionKey, requestId: String? = UUID().uuidString) async throws {
+        try await clientProvider().cliInterrupt(key: key, requestId: requestId)
+    }
 
     /// Resumes a stopped session. The new key is selected.
     @discardableResult
@@ -778,8 +854,9 @@ public final class CliAgentsModel {
         if let value = try? await clientProvider().cliSupervision() { supervision = value }
     }
 
-    public func setSupervision(transientRetry: Bool? = nil, usageLimit: Bool? = nil, wakeup: Bool? = nil) async throws {
-        supervision = try await clientProvider().cliSaveSupervision(transientRetry: transientRetry, usageLimit: usageLimit, wakeup: wakeup)
+    public func setSupervision(transientRetry: Bool? = nil, usageLimit: Bool? = nil, wakeup: Bool? = nil,
+                               triage: Bool? = nil, decide: Bool? = nil, wake: Bool? = nil) async throws {
+        supervision = try await clientProvider().cliSaveSupervision(transientRetry: transientRetry, usageLimit: usageLimit, wakeup: wakeup, triage: triage, decide: decide, wake: wake)
     }
 
     // MARK: Notifications
@@ -843,7 +920,12 @@ public final class CliAgentsModel {
             fragments.removeAll()
             link = status
             if status == .open {
-                Task { [weak self] in await self?.refreshWorkbench() }
+                Task { [weak self] in
+                    await self?.refreshWorkbench()
+                    await self?.refreshTeams()
+                }
+            } else if case .closed(let code) = status, code == CliAgentStream.unauthorizedCode {
+                onUnauthorized?()
             }
             terminal?.handle(event)
         case .output:
@@ -866,6 +948,9 @@ public final class CliAgentsModel {
         case .workbench(let rows):
             workbenchGeneration += 1
             setWorkbench(rows)
+        case .team(let runs, let run):
+            if let runs { setTeams(runs) }
+            else if let run { mergeTeamRun(run) }
         case .list(let newDevices, let newSessions):
             generation += 1
             devices = newDevices; sessions = newSessions
@@ -874,6 +959,7 @@ public final class CliAgentsModel {
             loaded = true; loadError = nil
             settleLaunches()
             evaluateNotifications()
+            Task { [weak self] in await self?.refreshTeams() }
         case .listDelta(let upserts, let removes, let newDevices):
             generation += 1
             var next = sessions
@@ -908,7 +994,7 @@ public final class CliAgentsModel {
             }
         case .itemFragment(let key, let items, let reset, let more):
             guard subscribed[key] != nil else { return }
-            if reset { fragments[key] = ([], more) }
+            if reset || fragments[key] == nil { fragments[key] = ([], more) }
             fragments[key]?.items.append(contentsOf: items)
         case .items(let key, let tail, let startsPage, let tailMore):
             let batch = fragments.removeValue(forKey: key)

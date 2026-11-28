@@ -2,8 +2,7 @@ import SwiftUI
 import NexClientKit
 import NexMarkdown
 
-/// Native GFM renderer plus file-path chips. An inline `code` span that names a previewable file
-/// becomes a link with the `nexbot-file` scheme; `ChatLinks.handle` opens it as a preview in the inspector.
+/// Native GFM renderer plus file-path chips and inline attachment links (`Shared/ChatMarkdownBlocks.swift`).
 struct ChatMarkdown: View {
     let source: String
     var fontSize: CGFloat = 14
@@ -31,20 +30,5 @@ struct ChatMarkdown: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: hug ? nil : .infinity, alignment: .leading)
         }
-    }
-}
-
-enum ChatLinks {
-    static let scheme = "nexbot-file"
-
-    static func url(forPath path: String) -> URL? {
-        var c = URLComponents(); c.scheme = scheme; c.host = "preview"; c.queryItems = [URLQueryItem(name: "path", value: path)]
-        return c.url
-    }
-
-    /// The file path of a chip link, nil for ordinary links.
-    static func path(from url: URL) -> String? {
-        guard url.scheme == scheme else { return nil }
-        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "path" }?.value
     }
 }

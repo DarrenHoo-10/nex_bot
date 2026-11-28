@@ -20,34 +20,40 @@ struct SettingsMemoryPane: View {
     private var defaultModel: String { (config?.defaultModel).flatMap { $0.isEmpty ? nil : $0 } ?? "未配置" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 18) {
             paneHeader("长期记忆")
-            HStack {
-                Text("开启长期记忆").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Toggle("开启长期记忆", isOn: Binding(get: { summary?.enabled ?? false }, set: { save(enabled: $0) }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                    .disabled(summary == nil || busy).accessibilityIdentifier("memory-switch")
+            MBCard {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("开启长期记忆").font(.system(size: 13.5, weight: .semibold))
+                            Text("开启后会增加 Token 消耗。").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+                        }
+                        Spacer()
+                        Toggle("开启长期记忆", isOn: Binding(get: { summary?.enabled ?? false }, set: { save(enabled: $0) }))
+                            .labelsHidden().toggleStyle(.switch).tint(Theme.brand).controlSize(.small)
+                            .disabled(summary == nil || busy).accessibilityIdentifier("memory-switch")
+                    }
+                    Hairline()
+                    ModelPickerField(label: "选择记忆模型", title: "记忆模型", value: summary?.model ?? "", emptyLabel: "默认模型 · \(defaultModel)",
+                                     models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(),
+                                     disabled: summary == nil || busy, identifier: "memory-model", debugPrefix: "mp", isOpen: $pickerOpen,
+                                     onChange: { save(model: $0) })
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("总 Token").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        Text(summary?.totalLabel ?? "—").font(.system(size: 22, weight: .semibold)).monospacedDigit()
+                            .accessibilityIdentifier("memory-total")
+                    }
+                    .padding(14).frame(minWidth: 180, alignment: .leading)
+                    .background(Theme.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    if !error.isEmpty { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
+                }
             }
-            .padding(.top, 24)
-            Text("开启后会增加 Token 消耗。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 6)
-            ModelPickerField(label: "选择记忆模型", title: "记忆模型", value: summary?.model ?? "", emptyLabel: "默认模型 · \(defaultModel)",
-                             models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(),
-                             disabled: summary == nil || busy, identifier: "memory-model", debugPrefix: "mp", isOpen: $pickerOpen,
-                             onChange: { save(model: $0) })
-                .padding(.top, 22)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("总 Token").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                Text(summary?.totalLabel ?? "—").font(.system(size: 22, weight: .semibold)).monospacedDigit()
-                    .accessibilityIdentifier("memory-total")
+            if !workspace.bots.isEmpty {
+                MBCard {
+                    CoreMemorySection(workspace: workspace, active: active)
+                }
             }
-            .padding(16).frame(minWidth: 180, alignment: .leading)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
-            .padding(.top, 24)
-            if !error.isEmpty { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).padding(.top, 12) }
-            if !workspace.bots.isEmpty { Hairline().padding(.vertical, 28) }
-            CoreMemorySection(workspace: workspace, active: active)
         }
         .task(id: "\(active)|\(workspace.state?.sync.privacyEpoch ?? 0)|\(config?.providerID ?? "")|\(config?.endpoint ?? "")") {
             generation += 1

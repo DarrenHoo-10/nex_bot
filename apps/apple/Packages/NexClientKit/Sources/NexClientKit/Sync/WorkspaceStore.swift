@@ -56,6 +56,9 @@ public final class WorkspaceStore {
     /// Called once when the session ends (expired, revoked, identity unavailable).
     @ObservationIgnored private var memoryEpochs: [String: Int] = [:]
     @ObservationIgnored public var onSessionEnded: (@MainActor (SessionEnd) -> Void)?
+    /// Local OS notification hook for new approvals and unread replies on non-active bots.
+    @ObservationIgnored public var onNotify: (@MainActor (_ title: String, _ body: String, _ botID: String, _ kind: String) -> Void)?
+    @ObservationIgnored private var streamOpenedAt: Date?
 
     @ObservationIgnored private var topicWindows: [String: [AgentMessage]] = [:]
     @ObservationIgnored private var recentTopicKeys: [String] = []
@@ -271,11 +274,27 @@ public final class WorkspaceStore {
                 // Rotate a near-expiry token first, so the poll below already uses the new one.
                 await self.refreshSessionIfNeeded()
                 guard !Task.isCancelled else { return }
-                if self.lastFrame.map({ Date().timeIntervalSince($0) < 25 }) != true { self.scheduleRefresh() }
+                let staleSeconds = self.lastFrame.map { Date().timeIntervalSince($0) }
+                    ?? self.streamOpenedAt.map { Date().timeIntervalSince($0) } ?? 0
+                if staleSeconds >= 45 {
+                    // Half-open TCP/NAT stream detected: actively reopen SSE alongside a full sync.
+                    self.openStream()
+                    self.scheduleRefresh()
+                } else if self.lastFrame.map({ Date().timeIntervalSince($0) < 25 }) != true {
+                    self.scheduleRefresh()
+                }
             }
         }
         scheduleRefresh(after: 0)
         if account == nil { Task { await loadAccount() } }
+        Task { await refreshSessionIfNeeded() }
+    }
+
+    /// Reopens the event stream and refreshes immediately (e.g. after macOS sleep/wake).
+    public func recoverAfterWake() {
+        guard started, !ended else { return }
+        openStream()
+        scheduleRefresh(after: 0)
         Task { await refreshSessionIfNeeded() }
     }
 
@@ -284,6 +303,7 @@ public final class WorkspaceStore {
         streamEpoch += 1
         let epoch = streamEpoch
         lastFrame = nil
+        streamOpenedAt = Date()
         needsLiveCatchUp = true
         topicCatchUpRequired = true
         var query = [("incremental", "1")]
@@ -588,9 +608,28 @@ public final class WorkspaceStore {
         // Publish task status and the matching transcript in one MainActor turn.
         // Otherwise a finished task hides the typing row while its reply is still loading.
         if request == serial {
+            let previousState = state
             needsLiveCatchUp = false
             state = next; sync = next.sync; connection = .connected; notice = nil
             releaseAcceptedSends(request)
+            if let previousState, let onNotify {
+                emitNotifications(previous: previousState, next: next, notify: onNotify)
+            }
+        }
+    }
+
+    private func emitNotifications(previous: WorkspaceState, next: WorkspaceState, notify: @MainActor (String, String, String, String) -> Void) {
+        let oldApprovals = Set(previous.approvals.map(\.id))
+        for approval in next.approvals where !oldApprovals.contains(approval.id) {
+            let botName = next.bots.first(where: { $0.id == approval.botID })?.name ?? "助手"
+            notify("需要你批准", "\(botName) · \(approval.title)", approval.botID, "approval")
+        }
+        let oldUnread = Dictionary(previous.bots.map { ($0.id, $0.unreadCount) }, uniquingKeysWith: { _, latest in latest })
+        for bot in next.bots {
+            let prev = oldUnread[bot.id] ?? bot.unreadCount
+            guard bot.unreadCount > prev else { continue }
+            let preview = bot.lastMessage.map(AttachmentLink.preview).flatMap { $0.isEmpty ? nil : $0 } ?? "收到新消息"
+            notify(bot.name, preview, bot.id, "reply")
         }
     }
 

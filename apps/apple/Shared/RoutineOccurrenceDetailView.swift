@@ -1,7 +1,7 @@
 import SwiftUI
 import NexClientKit
 
-/// Scoped to scheduling controls so other screens retain their existing appearance.
+/// Scoped to scheduling controls, aligned with the NexBot bright-blue palette.
 struct RoutineButtonStyle: ButtonStyle {
     var primary = false
     @Environment(\.isEnabled) private var enabled
@@ -9,25 +9,28 @@ struct RoutineButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(primary ? Color.white : Theme.identityAccent)
-            .padding(.horizontal, 14).frame(minWidth: 44, minHeight: 44)
+            .foregroundStyle(primary ? Theme.primaryForeground : Theme.foreground)
+            .padding(.horizontal, 14).frame(minWidth: 40, minHeight: 36)
             .background {
-                RoundedRectangle(cornerRadius: 13).fill(primary
-                    ? LinearGradient(colors: [Color(hex: 0x328F88), Color(hex: 0x216F6C)], startPoint: .top, endPoint: .bottom)
-                    : LinearGradient(colors: [Theme.glassStrong, Theme.secondary.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(primary ? Theme.primary : Theme.secondary)
             }
-            .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(primary ? Color.white.opacity(0.28) : Theme.border, lineWidth: 1) }
-            .overlay { RoundedRectangle(cornerRadius: 12).inset(by: 1).strokeBorder(LinearGradient(colors: [.white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom), lineWidth: 1) }
-            .shadow(color: Theme.shadowInk.opacity(configuration.isPressed ? 0.02 : 0.07), radius: 3, y: 2)
-            .opacity(enabled ? (configuration.isPressed ? 0.86 : 1) : 0.42)
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(primary ? Color.white.opacity(0.18) : Theme.border, lineWidth: 1)
+            }
+            .opacity(enabled ? (configuration.isPressed ? 0.85 : 1) : 0.42)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
-            .contentShape(RoundedRectangle(cornerRadius: 13))
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 }
 
 /// Presentation shared by the two native scheduling surfaces.
 enum RoutineCopy {
+    static let activeStatuses: Set<String> = [
+        "pending", "queued", "running", "awaiting_approval", "paused", "needs_reconciliation", "cancelling",
+    ]
     static func category(_ kind: RoutineTaskKind) -> String {
         switch kind { case .reminder: "提醒我"; case .monitor: "帮我检查"; case .report: "整理汇总"; case .action: "帮我处理" }
     }
@@ -53,10 +56,19 @@ enum RoutineCopy {
         switch raw {
         case "pending", "queued": "等待开始"
         case "running": "正在处理"
-        case "awaiting_approval": "等你确认"
-        case "needs_reconciliation": "需要你核对"
+        case "awaiting_approval": "等待你的确认"
+        case "needs_reconciliation": "需要确认结果"
+        case "cancelling": "正在停止"
+        case "rejected": "未获同意"
         case "failed": "未完成"
         default: ToolLabels.statusText(raw)
+        }
+    }
+    static func skipReason(_ raw: String) -> String {
+        switch raw {
+        case "expired": "已过期"
+        case "coalesced": "已合并到后续执行"
+        default: raw
         }
     }
 }
@@ -76,7 +88,7 @@ struct RoutineListEntry: View {
                         Text(RoutineCopy.schedule(routine)).font(.caption).foregroundStyle(Theme.muted)
                         Text(RoutineCopy.next(routine)).font(.caption).foregroundStyle(Theme.muted)
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: "chevron.right").foregroundStyle(Theme.identityAccent)
+                    Image(systemName: "chevron.right").foregroundStyle(Theme.brand)
                 }.frame(minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityHint("查看任务安排")
             if let latest {
@@ -167,7 +179,7 @@ struct RoutinePlanDetailView: View {
     }
 }
 
-/// A routine's own transcript; never changes the main conversation.
+/// A routine's own transcript; polls every 3 s while active and never changes the main conversation.
 struct RoutineOccurrenceDetailView: View {
     let workspace: WorkspaceStore
     let occurrence: RoutineOccurrence
@@ -176,14 +188,16 @@ struct RoutineOccurrenceDetailView: View {
     @State private var error: String?
     @State private var loading = false
 
+    private var currentStatus: String { detail?.status ?? occurrence.displayStatus }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("定时任务").font(.headline)
                 Spacer()
-                Button("刷新") { Task { await refresh() } }.disabled(loading)
+                Button(loading ? "加载中…" : "刷新") { Task { await refresh() } }.disabled(loading)
                 Button("关闭") { dismiss() }
-            }.buttonStyle(RoutineButtonStyle()).foregroundStyle(Theme.muted).padding(20)
+            }.buttonStyle(RoutineButtonStyle()).padding(20)
             Divider().overlay(Theme.border)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
@@ -191,12 +205,17 @@ struct RoutineOccurrenceDetailView: View {
                     let status = detail?.status ?? current.displayStatus
                     VStack(alignment: .leading, spacing: 8) {
                         Text(current.name).font(.title2.weight(.semibold))
-                        Label(RoutineCopy.status(status), systemImage: RunPresentation.symbol(status))
-                            .font(.subheadline).foregroundStyle(status == "succeeded" ? Theme.success : Theme.muted)
+                        HStack(spacing: 10) {
+                            Label(RoutineCopy.status(status), systemImage: RunPresentation.symbol(status))
+                                .font(.subheadline).foregroundStyle(status == "succeeded" ? Theme.success : status == "failed" ? Theme.danger : Theme.muted)
+                            if let scheduled = current.scheduledAt {
+                                Text(TimeFormat.formatTime(scheduled)).font(.caption).foregroundStyle(Theme.muted)
+                            }
+                        }
                     }
                     if let detail {
                         result(detail)
-                        RunTranscriptView(workspace: workspace, messages: detail.messages, streaming: detail.streaming, steps: detail.steps)
+                        RunTranscriptView(workspace: workspace, messages: detail.messages.filter { !$0.isFromUser }, streaming: detail.streaming, steps: detail.steps, shownResult: detail.resultSummary)
                     }
                     DisclosureGroup("任务安排") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -206,12 +225,18 @@ struct RoutineOccurrenceDetailView: View {
                         }.padding(.top, 12).frame(maxWidth: .infinity, alignment: .leading)
                     }.font(.subheadline).tint(Theme.muted)
                     if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
-                    if loading { ProgressView() }
+                    if loading && detail == nil { ProgressView() }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
             }.refreshable { await refresh() }
         }
         .background(Theme.background)
-        .task { await refresh() }
+        .task(id: occurrence.id) {
+            await refresh()
+            while !Task.isCancelled && RoutineCopy.activeStatuses.contains(currentStatus) {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                await refresh()
+            }
+        }
         #if os(macOS)
         .frame(minWidth: 500, idealWidth: 600, minHeight: 440, idealHeight: 600)
         #endif
@@ -219,13 +244,30 @@ struct RoutineOccurrenceDetailView: View {
 
     @ViewBuilder private func result(_ detail: RoutineOccurrenceDetail) -> some View {
         let summary = detail.resultSummary.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reason = detail.occurrence.reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let streaming = detail.streaming.trimmingCharacters(in: .whitespacesAndNewlines)
+        let latestAssistant = detail.messages.last(where: { $0.role == "assistant" && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawReason = detail.occurrence.reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reason = rawReason.isEmpty ? "" : RoutineCopy.skipReason(rawReason)
+        let hasResult = !summary.isEmpty || !streaming.isEmpty || !latestAssistant.isEmpty
+
         VStack(alignment: .leading, spacing: 12) {
-            if !summary.isEmpty { MarkdownText(source: summary, fontSize: 16) }
-            else if !reason.isEmpty { Text(reason).textSelection(.enabled) }
-            else { Text(detail.status == "succeeded" ? "已完成" : "还没有结果").foregroundStyle(Theme.muted) }
-            if detail.status != "succeeded", !reason.isEmpty, !summary.isEmpty, reason != summary {
+            Text(detail.status == "running" ? "最新进展" : "本次结果")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Theme.muted)
+            if !summary.isEmpty {
+                MarkdownText(source: summary, fontSize: 15)
+            } else if !streaming.isEmpty {
+                MarkdownText(source: streaming, fontSize: 15, pending: true)
+            } else if !latestAssistant.isEmpty {
+                MarkdownText(source: latestAssistant, fontSize: 15)
+            }
+            if !reason.isEmpty && reason != summary {
                 Text(reason).foregroundStyle(Theme.muted).textSelection(.enabled)
+            }
+            if !hasResult && reason.isEmpty {
+                let emptyText = (detail.status == "skipped" || detail.status == "cancelled") ? "本次未执行"
+                    : RoutineCopy.activeStatuses.contains(detail.status) ? "有新进展会显示在这里" : "暂无结果"
+                Text(emptyText).foregroundStyle(Theme.muted)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(18)
@@ -234,7 +276,7 @@ struct RoutineOccurrenceDetailView: View {
 
     @ViewBuilder private func timestamps(_ run: RoutineOccurrence) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            if let date = run.scheduledAt { Text("安排时间 · \(TimeFormat.formatTime(date))") }
+            if let date = run.scheduledAt { Text("原定时间 · \(TimeFormat.formatTime(date))") }
             if let date = run.startedAt { Text("开始时间 · \(TimeFormat.formatTime(date))") }
             if let date = run.finishedAt { Text("完成时间 · \(TimeFormat.formatTime(date))") }
         }.font(.caption).foregroundStyle(Theme.muted)
@@ -282,7 +324,7 @@ struct MoreContent<Content: View>: View {
     }
 }
 
-/// The execution record of a routine occurrence or background job.
+/// The execution record of a routine occurrence or background run.
 struct RunTranscriptView: View {
     let workspace: WorkspaceStore
     let messages: [AgentMessage]
@@ -294,8 +336,8 @@ struct RunTranscriptView: View {
         let finalID = messages.last(where: { $0.role == "assistant" })?.id
         let visible = messages.filter { $0.id != finalID || $0.content != shownResult || !$0.streamProgress.isEmpty }
         if !visible.isEmpty || !streaming.isEmpty || !steps.isEmpty {
-            MoreContent {
-                VStack(alignment: .leading, spacing: 18) {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 14) {
                     ForEach(visible) { message in
                         VStack(alignment: .leading, spacing: 6) {
                             if let date = message.createdAt { Text(TimeFormat.formatClock(date)).font(.caption).foregroundStyle(Theme.muted) }
@@ -303,51 +345,20 @@ struct RunTranscriptView: View {
                             if message.id != finalID || message.content != shownResult { MarkdownText(source: message.content) }
                         }
                     }
-                    if !streaming.isEmpty { MarkdownText(source: streaming) }
-                    ForEach(steps) { step in RoutineStepDetail(workspace: workspace, step: step) }
-                }.padding(.top, 12)
-            }.font(.subheadline).tint(Theme.muted)
-        }
-    }
-}
-
-private struct RoutineStepDetail: View {
-    let workspace: WorkspaceStore
-    let step: ToolStep
-    @State private var expanded = false
-    @State private var preview: PreviewItem?
-    @State private var error: String?
-    @State private var loading = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                if !step.summary.isEmpty && step.summary != step.toolName { Text(step.summary).textSelection(.enabled) }
-                if let preview {
-                    Text(preview.content).textSelection(.enabled)
-                    if let arguments = preview.arguments, !arguments.isEmpty {
-                        DisclosureGroup("参数") { Text(arguments).font(.caption.monospaced()).textSelection(.enabled).padding(.top, 6) }
+                    if !streaming.isEmpty { MarkdownText(source: streaming, pending: true) }
+                    if !steps.isEmpty {
+                        InlineToolStepsList(workspace: workspace, steps: steps)
                     }
-                } else if !step.preview.isEmpty { Text(step.preview).textSelection(.enabled) }
-                if loading { ProgressView() }
-                if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
-                Button("刷新") { Task { await load() } }.buttonStyle(RoutineButtonStyle()).disabled(loading)
-            }.padding(.vertical, 8)
-        } label: {
-            HStack {
-                Text(step.label)
-                Spacer()
-                Text(RoutineCopy.status(step.status)).font(.caption).foregroundStyle(Theme.muted)
+                }.padding(.top, 10)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("查看过程")
+                    if !steps.isEmpty {
+                        Text("\(steps.count) 个步骤").font(.caption).foregroundStyle(Theme.muted)
+                    }
+                }
             }
+            .font(.subheadline).tint(Theme.muted)
         }
-        .onChange(of: expanded) { _, open in if open && preview == nil { Task { await load() } } }
-    }
-
-    private func load() async {
-        guard !loading else { return }
-        loading = true; error = nil
-        defer { loading = false }
-        do { preview = try await workspace.previewTool(callID: step.id) }
-        catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
     }
 }

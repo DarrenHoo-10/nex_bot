@@ -42,7 +42,7 @@ import NexClientKit
                     default: break
                     }
                 case "detailtab": if let tab = AgentDetailTab.allCases.first(where: { ["work": "工作", "settings": "设置"][arg] == $0.rawValue }) { nav.detailTab = tab }
-                case "settingscat": if let c = ["account": SettingsCategory.account, "model": .model, "memory": .memory, "connectors": .connectors, "devices": .devices, "about": .about][arg] { nav.openSettings(c) }
+                case "settingscat": if let c = ["account": SettingsCategory.account, "model": .model, "memory": .memory, "team": .team, "connectors": .connectors, "devices": .devices, "about": .about][arg] { nav.openSettings(c) }
                 case "back": nav.showMenu = false; if !nav.path.isEmpty { nav.path.removeLast() }
                 case "menu": nav.showMenu = true
                 case "dark", "light", "system": UserDefaults.standard.set(parts[0], forKey: AppearanceMode.key)

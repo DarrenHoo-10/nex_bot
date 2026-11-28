@@ -39,7 +39,7 @@ public struct PolicyAction: Sendable, Hashable, Identifiable {
 
 /// Tool actions offered by the shared permission editor.
 public enum PolicyCatalog {
-    public static let universalActions: Set<String> = ["image.models", "image.generate", "html.render", "web.fetch", "tool.search"]
+    public static let universalActions: Set<String> = ["image.models", "image.generate", "html.render", "web.fetch", "tool.search", "skill.list", "skill.read"]
     /// Order of the server's `actions` list (`policy.ts`).
     public static let serverOrder: [String] = [
         "memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget",

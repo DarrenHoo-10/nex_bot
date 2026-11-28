@@ -6,42 +6,69 @@ struct MainView: View {
     let workspace: WorkspaceStore
     @Environment(UIState.self) private var ui
     @Environment(AppModel.self) private var model
+    @Environment(ContactPreferences.self) private var preferences
     @Environment(LocalDeviceController.self) private var device
     @Environment(\.colorScheme) private var scheme
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
     @State private var agents: CliAgentsModel
     @State private var dragStartRailWidth: CGFloat?
+    @State private var resizeCursorPushed = false
+    @State private var restoredSelection = false
 
     init(workspace: WorkspaceStore) {
         self.workspace = workspace
         _agents = State(initialValue: CliAgentsModel(client: { workspace.client }, cacheScope: { workspace.contentCacheScope }))
     }
 
-    private static let panel = RoundedRectangle(cornerRadius: 18, style: .continuous)
     private var panelOpen: Bool {
         !ui.todosVisible && !ui.agentsVisible && ui.inspectorVisible && workspace.selectedBotID.map { workspace.bot($0) != nil } == true
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             ZStack(alignment: .trailing) {
                 ContactsList(workspace: workspace, agents: agents)
                     .frame(width: ui.railOpen ? (ui.agentsVisible ? ui.agentRailWidth : 252) : 74)
-                    .clipShape(Self.panel)
-                    .glass(Self.panel)
+                    .background {
+                        if ui.agentsVisible {
+                            Theme.nexAgentNav
+                        } else {
+                            ZStack {
+                                Rectangle().fill(.ultraThinMaterial)
+                                Theme.sidebar
+                            }
+                        }
+                    }
+                    .overlay(alignment: .trailing) {
+                        Rectangle()
+                            .fill(ui.agentsVisible ? Theme.nexAgentBorder : Theme.border)
+                            .frame(width: 1)
+                    }
                 if ui.railOpen && ui.agentsVisible {
                     Color.clear
                         .frame(width: 8)
                         .contentShape(Rectangle())
                         .onHover { inside in
-                            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                            if inside, !resizeCursorPushed {
+                                NSCursor.resizeLeftRight.push()
+                                resizeCursorPushed = true
+                            } else if !inside, resizeCursorPushed {
+                                NSCursor.pop()
+                                resizeCursorPushed = false
+                            }
+                        }
+                        .onDisappear {
+                            if resizeCursorPushed {
+                                NSCursor.pop()
+                                resizeCursorPushed = false
+                            }
                         }
                         .gesture(
                             DragGesture(minimumDistance: 2)
                                 .onChanged { value in
                                     let base = dragStartRailWidth ?? ui.agentRailWidth
                                     if dragStartRailWidth == nil { dragStartRailWidth = base }
-                                    ui.agentRailWidth = min(420, max(220, base + value.translation.width))
+                                    ui.agentRailWidth = min(520, max(220, base + value.translation.width))
                                 }
                                 .onEnded { _ in
                                     dragStartRailWidth = nil
@@ -67,34 +94,100 @@ struct MainView: View {
                     }
                 }
             }
-            .frame(minWidth: 340, maxWidth: .infinity)
+            .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                if ui.agentsVisible {
+                    Theme.nexAgentCanvas.ignoresSafeArea()
+                }
+            }
             if panelOpen, let id = workspace.selectedBotID {
                 InspectorView(workspace: workspace, botID: id)
                     .frame(width: 296)
-                    .clipShape(Self.panel)
-                    .glass(Self.panel)
+                    .background {
+                        ZStack {
+                            Rectangle().fill(.ultraThinMaterial)
+                            Theme.sidebar
+                        }
+                    }
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(Theme.border).frame(width: 1)
+                    }
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .padding(10)
-        .background { WorkspaceSurface(kind: .stage) }
+        .background { WorkspaceSurface(kind: ui.agentsVisible ? .nexAgent : .stage) }
         .animation(.timingCurve(0.3, 0.7, 0.2, 1, duration: 0.36), value: ui.railOpen)
         .animation(.timingCurve(0.3, 0.7, 0.2, 1, duration: 0.36), value: panelOpen)
         .ignoresSafeArea(.container, edges: .top)
         .overlay { if ui.accountMenuOpen { accountMenuLayer } }
         .animation(.easeOut(duration: 0.15), value: ui.accountMenuOpen)
-        .logoutConfirmation(isPresented: Bindable(ui).logoutConfirmOpen) { await device.stop(revoke: true); await model.logout(); return model.workspace == nil }
+        .logoutConfirmation(isPresented: Bindable(ui).logoutConfirmOpen) {
+            AppUpdater.shared.stop()
+            await device.stop(revoke: true)
+            await model.logout()
+            return model.workspace == nil
+        }
         #if DEBUG
         .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif
-        .onAppear { agents.installNotifier(); AppUpdater.shared.start { workspace.client } }
+        .onAppear {
+            agents.installNotifier()
+            agents.onUnauthorized = {
+                Task {
+                    await workspace.refresh()
+                    if workspace.connection == .connected { agents.reconnect(force: true) }
+                }
+            }
+            AgentNotifier.shared.activeBotID = { !ui.agentsVisible && !ui.todosVisible ? workspace.selectedBotID : nil }
+            AgentNotifier.shared.onOpenBot = { botID in
+                ui.todosVisible = false
+                ui.agentsVisible = false
+                workspace.showLatest(botID: botID)
+                workspace.select(botID)
+            }
+            AgentNotifier.shared.onOpenCliSession = { key in
+                ui.todosVisible = false
+                ui.agentsVisible = true
+                ui.agentComposing = nil
+                agents.start()
+                agents.select(key)
+            }
+            workspace.onNotify = { title, body, botID, kind in
+                AgentNotifier.shared.notifyBot(title: title, body: body, botID: botID, kind: kind)
+            }
+            AppUpdater.shared.start { workspace.client }
+        }
+        .onDisappear {
+            AppUpdater.shared.stop()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            workspace.recoverAfterWake()
+            if ui.agentsVisible || agents.notificationsOn { agents.reconnect() }
+        }
         .onChange(of: ui.todosVisible || ui.agentsVisible, initial: true) { _, hidden in workspace.setChatVisible(!hidden) }
+        .onChange(of: workspace.selectedBotID) { _, next in
+            if let next { preferences.selectedAgentID = next }
+        }
         .onChange(of: workspace.contentCacheScope) { old, new in
             if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
         }
         .task(id: workspace.connection) { if workspace.connection == .connected, agents.notificationsOn { agents.start() } }
-        .onDisappear { AppUpdater.shared.stop() }
-        .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
+        .task(id: workspace.connection) {
+            if workspace.connection == .connected {
+                await workspace.loadFinanceAssistant()
+                if !restoredSelection {
+                    restoredSelection = true
+                    if workspace.selectedBotID == nil, let saved = preferences.selectedAgentID, workspace.bot(saved) != nil {
+                        workspace.select(saved)
+                    }
+                }
+            }
+        }
+        .onChange(of: model.credential?.token) { old, new in
+            if old != nil, new != nil, old != new, (ui.agentsVisible || agents.notificationsOn || agents.link != .idle) {
+                agents.reconnect(force: true)
+            }
+        }
     }
 
     /// Click-away layer plus the account menu card above the account button, as in the web sidebar.
@@ -106,7 +199,7 @@ struct MainView: View {
                         toggleDark: { appearance = scheme == .dark ? "light" : "dark"; ui.accountMenuOpen = false },
                         logout: { ui.accountMenuOpen = false; ui.logoutConfirmOpen = true })
                 .frame(width: 236)
-                .padding(.leading, 28).padding(.bottom, 90)
+                .padding(.leading, ui.railOpen ? 16 : 12).padding(.bottom, 68)
                 .transition(.opacity.combined(with: .offset(y: 6)))
         }
         .onExitCommand { ui.accountMenuOpen = false }
@@ -185,7 +278,7 @@ func message(of error: Error) -> String {
             case "logoutcancel": ui.logoutConfirmOpen = false
             case "logout": ui.accountMenuOpen = false; ui.logoutConfirmOpen = true
             case "settings":
-                let category: SettingsCategory? = ["account": .account, "model": .model, "memory": .memory, "connectors": .connectors, "devices": .devices][arg]
+                let category: SettingsCategory? = ["account": .account, "model": .model, "memory": .memory, "team": .team, "connectors": .connectors, "devices": .devices, "about": .about][arg]
                 ui.openSettings(category)
             case "attach":
                 if let id = workspace.selectedBotID { await workspace.conversation(for: id).addFiles(arg.split(separator: "|").map { URL(fileURLWithPath: String($0)) }) }

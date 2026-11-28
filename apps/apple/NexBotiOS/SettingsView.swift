@@ -71,6 +71,7 @@ struct SettingsDetailView: View {
                 case .account: account
                 case .model: SettingsModelView(workspace: workspace, form: modelForm)
                 case .memory: SettingsMemoryView(workspace: workspace)
+                case .team: AgentTeamSettingsView(workspace: workspace)
                 case .connectors: ConnectorsView(workspace: workspace)
                 case .devices: DevicesView(workspace: workspace)
                 case .about: AboutSettingsView(workspace: workspace)

@@ -56,26 +56,26 @@ struct FormField<Content: View>: View {
     }
 }
 
-/// Full-width primary action button.
+/// Full-width primary action button with tactile press feedback.
 struct PrimaryButton: View {
     let title: String
     var busy = false
-    /// Blue brand fill (the web's `.primary` button) instead of the neutral primary.
-    var brand = false
+    /// Kept for call-site compatibility; primary actions use NexBot Bright Blue.
+    var brand = true
     let action: () -> Void
     @Environment(\.isEnabled) private var enabled
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                if busy { ProgressView().tint(brand ? Color.white : Theme.primaryForeground) }
+                if busy { ProgressView().tint(Color.white) }
                 Text(title).font(.subheadline.weight(.semibold))
             }
-            .foregroundStyle(brand ? Color.white : Theme.primaryForeground)
+            .foregroundStyle(Color.white)
             .frame(maxWidth: .infinity).padding(.vertical, 13)
-            .background(brand ? Theme.brand : Theme.primary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Theme.brand, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .opacity(enabled ? 1 : 0.4)
         }
-        .buttonStyle(.plain)
+        .plainActionFeedback()
     }
 }
 
@@ -93,15 +93,19 @@ struct FactRow: View {
     }
 }
 
-/// Section heading (title and optional detail) with a divider.
+/// Section subheading used inside iOS detail screens (title already lives in `.navigationTitle`, so omit redundant headings when `detail` is nil).
 struct PageHeading: View {
     let title: String
     var detail: String?
+    var showTitle = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.title3.weight(.bold))
-            if let detail { Text(detail).font(.footnote).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
-            Divider().overlay(Theme.border).padding(.top, 8)
+        if showTitle || (detail != nil && !(detail ?? "").isEmpty) {
+            VStack(alignment: .leading, spacing: 4) {
+                if showTitle { Text(title).font(.title3.weight(.bold)) }
+                if let detail, !detail.isEmpty {
+                    Text(detail).font(.footnote).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 }

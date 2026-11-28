@@ -5,13 +5,19 @@ import NexClientKit
 struct ApprovalCard: View {
     let approval: Approval
     var botName = ""
+    var jobTitle: String? = nil
     let decide: (Bool, Bool) async -> Void
     @State private var busy = false
     @State private var showArguments = false
 
+    private var heading: String {
+        let base = botName.isEmpty ? "需要你的批准" : "\(botName) 需要你的批准"
+        return jobTitle.map { "\(base) · 后台任务「\($0)」" } ?? base
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(botName.isEmpty ? "需要你的批准" : "\(botName) 需要你的批准").font(.subheadline.weight(.semibold))
+            Text(heading).font(.subheadline.weight(.semibold))
             Text(approval.rememberLabel ?? approval.title).font(.caption).foregroundStyle(Theme.muted)
             if !details.isEmpty {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showArguments.toggle() } } label: {
@@ -19,11 +25,14 @@ struct ApprovalCard: View {
                 }
                 .buttonStyle(.plain)
                 if showArguments {
-                    Text(details)
-                        .font(.system(.caption2, design: .monospaced))
-                        .lineLimit(12).textSelection(.enabled)
-                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(details)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 160)
+                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
             HStack(spacing: 8) {

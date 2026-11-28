@@ -9,12 +9,9 @@ struct LoginView: View {
     @FocusState private var focus: Field?
     private enum Field { case email, password }
 
-    private static let page = Theme.dynamic(light: 0xF5F6F8, dark: 0x0B0C0E)
-
     var body: some View {
-        @Bindable var model = model
         ZStack {
-            Self.page.ignoresSafeArea()
+            WorkspaceSurface(kind: .login)
             VStack(alignment: .leading, spacing: 0) {
                 BrandMark(size: 56)
                 Text("登录 NexBot").font(.system(size: 26, weight: .bold)).padding(.top, 26)
@@ -22,7 +19,7 @@ struct LoginView: View {
                 if model.phase == .resuming {
                     resuming
                 } else {
-                    form(model: $model)
+                    form
                 }
                 if case .loggedOut(let error?) = model.phase {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -35,11 +32,11 @@ struct LoginView: View {
                         .buttonStyle(.link).font(.system(size: 12)).padding(.top, 10)
                 }
             }
-            .padding(40)
-            .frame(width: 440)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border.opacity(0.6)))
-            .shadow(color: .black.opacity(0.08), radius: 24, y: 10)
+            .padding(36)
+            .frame(width: 420)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.borderStrong))
+            .shadow(color: Theme.shadowInk.opacity(0.10), radius: 28, y: 12)
         }
         .task { await debugAutoLogin() }
     }
@@ -56,26 +53,29 @@ struct LoginView: View {
         .padding(.top, 26).padding(.bottom, 6)
     }
 
-    private func field<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func field<C: View>(_ label: String, active: Bool, @ViewBuilder _ content: () -> C) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        return VStack(alignment: .leading, spacing: 8) {
             Text(label).font(.system(size: 12, weight: .medium))
             content()
                 .textFieldStyle(.plain).font(.system(size: 14)).autocorrectionDisabled()
-                .padding(.horizontal, 14).frame(height: 42)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.border))
+                .padding(.horizontal, 14).frame(height: 44)
+                .background(Theme.card, in: shape)
+                .overlay(shape.strokeBorder(active ? Theme.brand : Theme.borderStrong, lineWidth: active ? 1.2 : 1))
+                .shadow(color: active ? Theme.brandSoft : .clear, radius: 0, x: 0, y: 0)
+                .overlay(shape.stroke(active ? Theme.brandSoft : .clear, lineWidth: 3))
         }
     }
 
-    private func form(model: Bindable<AppModel>) -> some View {
+    private var form: some View {
         VStack(alignment: .leading, spacing: 16) {
-            field("邮箱") {
+            field("邮箱", active: focus == .email) {
                 TextField("", text: $email, prompt: Text("输入你的邮箱").foregroundStyle(Theme.muted.opacity(0.7)))
                     .textContentType(.username)
                     .focused($focus, equals: .email)
                     .onSubmit { focus = .password }
             }
-            field("密码") {
+            field("密码", active: focus == .password) {
                 SecureField("", text: $password, prompt: Text("输入密码").foregroundStyle(Theme.muted.opacity(0.7)))
                     .textContentType(.password)
                     .focused($focus, equals: .password)
@@ -84,13 +84,14 @@ struct LoginView: View {
             Button(action: submit) {
                 HStack(spacing: 8) {
                     if self.model.isLoggingIn { ProgressView().controlSize(.small) }
-                    Text(self.model.isLoggingIn ? "正在登录…" : "登录").font(.system(size: 14, weight: .medium))
+                    Text(self.model.isLoggingIn ? "正在登录…" : "登录").font(.system(size: 14, weight: .semibold))
                 }
                 .foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 44)
-                .background(Theme.brand.opacity(canSubmit ? 1 : 0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(Theme.brand.opacity(canSubmit ? 1 : 0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadow(color: canSubmit ? Theme.brand.opacity(0.24) : .clear, radius: 10, y: 4)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .plainActionFeedback()
             .keyboardShortcut(.defaultAction)
             .disabled(!canSubmit)
 

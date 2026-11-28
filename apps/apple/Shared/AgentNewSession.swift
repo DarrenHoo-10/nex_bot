@@ -1,9 +1,8 @@
 import SwiftUI
 import NexClientKit
 
-// 新建会话 as a page, not a sheet: the message box with three tabs in a row above it (the folder, the CLI, and the
-// session options: worktree, branch, permissions). A folder that
-// does not exist yet is created by the computer when the session starts. Mirrors `NewSessionComposer.tsx`.
+// 新建会话 as a page, not a sheet: Hero mark + message box with three tabs in a row above it (the folder, the CLI,
+// and the session options: worktree, branch, permissions). Mirrors `NewSessionComposer.tsx`.
 
 /// Where a new session runs; `create` asks the computer to make the folder first.
 struct AgentDirChoice: Hashable {
@@ -70,10 +69,10 @@ private struct AgentBranchPicker: View {
                 if !expanded { query = "" }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 12)).foregroundStyle(Theme.nexAgentMuted)
                     Text(displayLabel)
                         .font(.system(size: 12.5, design: .monospaced))
-                        .foregroundStyle(Theme.foreground)
+                        .foregroundStyle(Theme.nexAgentInk)
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     if isCurrent {
@@ -84,11 +83,11 @@ private struct AgentBranchPicker: View {
                             .background(Theme.nexAgentSoft, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.muted)
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted)
                 }
                 .padding(.horizontal, 10).frame(height: 36)
-                .background(expanded ? Theme.card : Theme.secondary.opacity(0.65), in: shape)
-                .overlay(shape.strokeBorder(expanded ? Theme.nexAgentAccent : Theme.border, lineWidth: 1))
+                .background(expanded ? Theme.nexAgentSurface : Theme.nexAgentInset, in: shape)
+                .overlay(shape.strokeBorder(expanded ? Theme.nexAgentAccent : Theme.nexAgentBorder, lineWidth: 1))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -97,7 +96,7 @@ private struct AgentBranchPicker: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                        Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.nexAgentMuted)
                         TextField("搜索分支…", text: $query)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12.5))
@@ -107,16 +106,16 @@ private struct AgentBranchPicker: View {
                             #endif
                         if !query.isEmpty {
                             Button { query = "" } label: {
-                                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.nexAgentMuted)
                             }
                             .buttonStyle(.plain)
                         }
                     }
                     .padding(.horizontal, 8).frame(height: 32)
-                    .background(Theme.secondary.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     if filtered.isEmpty {
-                        Text("没有匹配的分支").font(.caption).foregroundStyle(Theme.muted)
+                        Text("没有匹配的分支").font(.caption).foregroundStyle(Theme.nexAgentMuted)
                             .frame(maxWidth: .infinity).padding(.vertical, 12)
                     } else {
                         ScrollView {
@@ -131,7 +130,7 @@ private struct AgentBranchPicker: View {
                                         HStack(spacing: 8) {
                                             Text(option.label)
                                                 .font(.system(size: 12.5, weight: chosen ? .semibold : .regular, design: .monospaced))
-                                                .foregroundStyle(chosen ? Theme.nexAgentAccent : Theme.foreground)
+                                                .foregroundStyle(chosen ? Theme.nexAgentAccent : Theme.nexAgentInk)
                                                 .lineLimit(1).truncationMode(.middle)
                                             Spacer(minLength: 0)
                                             if option.isCurrent {
@@ -161,8 +160,8 @@ private struct AgentBranchPicker: View {
                     }
                 }
                 .padding(6)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+                .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.nexAgentBorder, lineWidth: 1))
             }
         }
     }
@@ -175,15 +174,17 @@ private struct AgentPickChip<Label: View>: View {
     @ViewBuilder let label: () -> Label
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        HStack(spacing: 5) { label() }
+        HStack(spacing: 6) { label() }
             .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(dashed ? Theme.muted : Theme.foreground)
+            .foregroundStyle(dashed ? Theme.nexAgentMuted : Theme.nexAgentInk)
             .lineLimit(1)
-            .padding(.horizontal, 10).frame(height: 32)
-            .background(active ? Theme.nexAgentSoft : Theme.card, in: shape)
-            .overlay(shape.strokeBorder(active ? Theme.nexAgentAccent : Theme.border, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2] : [])))
+            .padding(.horizontal, 10).frame(height: 34)
+            .background(active ? Theme.nexAgentSoft : Theme.nexAgentSurface, in: shape)
+            .overlay(shape.strokeBorder(active ? Theme.nexAgentAccent : Theme.nexAgentBorder, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2] : [])))
     }
 }
+
+private enum NewSessionPicker: Hashable { case directory, options, model, skills }
 
 struct AgentNewSessionPage: View {
     let model: CliAgentsModel
@@ -201,7 +202,6 @@ struct AgentNewSessionPage: View {
     @State private var message = ""
     @State private var chosenModel = ""
     @State private var effort = ""
-    /// each CLI keeps its own choice: full access by default, Antigravity asking (its full access is answered by the executor)
     @State private var modeOf: [CliEngine: CliPermissionMode] = [:]
     @State private var images: [CliImageUpload] = []
     @State private var imageError = ""
@@ -209,11 +209,10 @@ struct AgentNewSessionPage: View {
     @Environment(\.dismiss) private var dismiss
     #endif
     @State private var catalog = CliModelCatalog()
-    private enum Picker { case directory, options, model, skills }
-    @State private var picker: Picker?
+    @State private var picker: NewSessionPicker?
     @FocusState private var focused: Bool
 
-    private func presenting(_ target: Picker) -> Binding<Bool> {
+    private func presenting(_ target: NewSessionPicker) -> Binding<Bool> {
         Binding(get: { picker == target }, set: { open in
             if open { picker = target }
             else if picker == target { picker = nil }
@@ -242,10 +241,21 @@ struct AgentNewSessionPage: View {
     private var canChoose: Bool { device?.cliAgents?.features.contains("launchOptions") == true }
     private var canChoosePermissions: Bool { !permissionModes.isEmpty }
     private var fallbackModel: String { catalog.current ?? "" }
-    private var offered: [String] { CliLaunches.efforts(engine: engine, models: catalog.models, model: chosenModel.isEmpty ? fallbackModel : chosenModel) }
-    private var effortLevels: [String] { engine == .agy || engine == .zcode ? offered : CliLaunches.reasoningLevels }
-    private var selectedEffort: String { CliLaunches.reasoningChoice(effort.isEmpty && (engine == .agy || engine == .zcode) ? catalog.currentEffort : effort) }
-    private var resolvedEffort: String? { CliLaunches.resolveEffort(engine: engine, offered: offered, preferred: selectedEffort) }
+    private var offered: [String] {
+        let m = chosenModel.isEmpty ? fallbackModel : chosenModel
+        let explicit = catalog.models.first { $0.id == m }?.efforts
+        if let explicit, !explicit.isEmpty { return explicit }
+        return CliLaunches.efforts[engine] ?? []
+    }
+    private var effortLevels: [String] {
+        engine == .agy || engine == .zcode ? offered : CliLaunches.reasoningLevels
+    }
+    private var selectedEffort: String {
+        CliLaunches.reasoningChoice(effort.isEmpty ? catalog.currentEffort : effort)
+    }
+    private var resolvedEffort: String? {
+        CliLaunches.resolveEffort(engine: engine, offered: offered, preferred: selectedEffort)
+    }
     private var ready: Bool { blocker == nil && device != nil && engines.contains(engine) && dir != nil && branchError == nil && !tooLong }
     private var status: String? {
         if deviceId.isEmpty { return "等待电脑连接" }
@@ -253,24 +263,35 @@ struct AgentNewSessionPage: View {
     }
 
     var body: some View {
+        #if os(macOS)
         VStack(spacing: 0) {
-            #if os(macOS)
-            HStack { Text("新建会话").font(.system(size: 15, weight: .semibold)); Spacer() }.padding(14)
-            Divider().opacity(0.4)
-            #endif
-            Spacer(minLength: 20)
-            VStack(alignment: .leading, spacing: 8) {
-                options
-                // only what needs attention; the folder's full path is on its tab
-                if let status { Text(status).font(.caption).foregroundStyle(Theme.danger).lineLimit(1).padding(.horizontal, 4) }
-                box
+            HStack(spacing: 8) {
+                Text("新建会话").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.nexAgentInk)
+                Spacer()
             }
-            .frame(maxWidth: 780)
-            .padding(.horizontal, 20)
-            Spacer(minLength: 20)
-            Spacer(minLength: 20)
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            .background(Theme.nexAgentSurface)
+            Divider().overlay(Theme.nexAgentBorder)
+
+            Spacer(minLength: 24)
+            composerStage
+            Spacer(minLength: 32)
+            Spacer(minLength: 24)
         }
-        #if os(iOS)
+        .background(Theme.nexAgentCanvas)
+        .modifier(newSessionLifecycle)
+        #else
+        ScrollView {
+            VStack(spacing: 16) {
+                Spacer(minLength: 36)
+                composerStage
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 16)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .defaultScrollAnchor(.bottom)
+        .background(Theme.nexAgentCanvas)
         .navigationTitle("新建会话")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden()
@@ -280,13 +301,6 @@ struct AgentNewSessionPage: View {
                     .accessibilityLabel("打开会话目录")
             }
         }
-        #endif
-        .sheet(isPresented: presenting(.skills)) {
-            ChatSkillPicker(load: { try await model.skills(deviceId: deviceId, engine: engine, cwd: dir?.path ?? "") }) {
-                message = $0.adding(to: message, engine: engine); focused = true
-            }
-        }
-        #if os(iOS)
         .sheet(isPresented: presenting(.directory)) {
             AgentDirectoryBrowser(model: model, deviceId: $deviceId, start: dir) { choice in
                 dir = choice; picker = nil
@@ -300,7 +314,7 @@ struct AgentNewSessionPage: View {
                     sessionOptions
                         .padding(16)
                 }
-                .background(Theme.background)
+                .background(Theme.nexAgentCanvas)
                 .navigationTitle("会话设置")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -312,22 +326,55 @@ struct AgentNewSessionPage: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: presenting(.model)) {
+            AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort) { effort = $0 }
+        }
+        .modifier(newSessionLifecycle)
         #endif
-        .onChange(of: picker) { _, next in
-            if next != .options { branchListExpanded = false }
+    }
+
+    private var composerStage: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                BrandMark(size: 38, agent: true)
+                Text("NexAgent")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Theme.nexAgentInk)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.bottom, 8)
+
+            options
+            if let status { Text(status).font(.caption).foregroundStyle(Theme.danger).lineLimit(1).padding(.horizontal, 4) }
+            box
         }
-        .onAppear { setUp(); focused = true }
-        .onChange(of: model.devices.map(\.id)) { _, _ in setUp() }
-        .onChange(of: deviceId) { previous, _ in if !previous.isEmpty { dir = nil } }
-        .onChange(of: engines) { _, available in
-            if !available.contains(engine), let first = available.first { engine = first }
-        }
-        .task(id: "\(deviceId)\n\(engine.rawValue)") {
-            chosenModel = ""; effort = ""
-            guard !deviceId.isEmpty else { return }
-            catalog = await model.models(deviceId: deviceId, engine: engine)
-        }
-        .task(id: "\(deviceId)\n\(dir?.path ?? "")\n\(dir?.create ?? false)\n\(canPickBranch)") { await checkGit() }
+        .frame(maxWidth: 780)
+        .padding(.horizontal, 20)
+    }
+
+    private var newSessionLifecycle: some ViewModifier {
+        NewSessionLifecycleModifier(
+            presentingSkills: presenting(.skills),
+            deviceId: deviceId,
+            engine: engine,
+            dir: dir,
+            canPickBranch: canPickBranch,
+            model: model,
+            engines: engines,
+            picker: picker,
+            onPickSkill: { skill in message = skill.adding(to: message, engine: engine); focused = true },
+            onPickerChange: { next in if next != .options { branchListExpanded = false } },
+            onAppear: { setUp(); focused = true },
+            onDevicesChange: { setUp() },
+            onDeviceChange: { prev in if !prev.isEmpty { dir = nil } },
+            onEnginesChange: { available in if !available.contains(engine), let first = available.first { engine = first } },
+            onLoadModels: {
+                chosenModel = ""; effort = ""
+                guard !deviceId.isEmpty else { return }
+                catalog = await model.models(deviceId: deviceId, engine: engine)
+            },
+            onCheckGit: { await checkGit() }
+        )
     }
 
     private func setUp() {
@@ -344,7 +391,6 @@ struct AgentNewSessionPage: View {
         dir = start.map { AgentDirChoice(path: $0, create: false) }
     }
 
-    /// A worktree or branch switch needs a Git folder that exists.
     private func checkGit() async {
         branchInfo = nil
         selectedBranch = ""
@@ -377,10 +423,10 @@ struct AgentNewSessionPage: View {
         HStack(spacing: 8) {
             Button { picker = picker == .directory ? nil : .directory } label: {
                 AgentPickChip(active: picker == .directory, dashed: dir == nil) {
-                    Image(systemName: "folder").foregroundStyle(Theme.muted)
+                    Image(systemName: "folder").foregroundStyle(Theme.nexAgentMuted)
                     Text(dir.map { CliPaths.name($0.path) } ?? "选择目录")
                     if dir?.create == true { Text("新建").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.success).padding(.horizontal, 5).padding(.vertical, 1).background(Theme.successSoft, in: RoundedRectangle(cornerRadius: 5)) }
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted)
                 }
             }
             .buttonStyle(.plain)
@@ -406,18 +452,17 @@ struct AgentNewSessionPage: View {
                 }
             } label: {
                 AgentPickChip {
-                    Image(systemName: "terminal").foregroundStyle(Theme.muted)
+                    AgentEngineIcon(engine: engine, tone: .idle, size: 17)
                     Text(agentName(engine))
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted)
                 }
             }
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .accessibilityLabel("运行工具")
 
-            // the third tab: branch, worktree and permissions, in one panel
             Button { picker = picker == .options ? nil : .options } label: {
                 AgentPickChip(active: picker == .options) {
-                    Image(systemName: "arrow.triangle.branch").foregroundStyle(branch != nil || switchingInPlace ? Theme.nexAgentAccent : Theme.muted)
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(branch != nil || switchingInPlace ? Theme.nexAgentAccent : Theme.nexAgentMuted)
                     if branch != nil {
                         Text("Worktree")
                     } else {
@@ -434,7 +479,7 @@ struct AgentNewSessionPage: View {
                     if canChoosePermissions && selectedPermissions != .full {
                         Image(systemName: "exclamationmark.shield").foregroundStyle(Theme.approval)
                     }
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted)
                 }
                 #if os(macOS)
                 .frame(maxWidth: 210)
@@ -454,8 +499,6 @@ struct AgentNewSessionPage: View {
         .padding(.horizontal, 4)
     }
 
-    /// Branch selection (in-place switch when clean, or a new worktree off a chosen base branch) and,
-    /// where the CLI supports it, permissions: full access (the default) or the CLI's own prompts, which arrive as cards.
     private var sessionOptions: some View {
         let branches = branchInfo?.branches ?? []
         let current = branchInfo?.current
@@ -471,15 +514,15 @@ struct AgentNewSessionPage: View {
                 }
             })) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Worktree").font(.system(size: 13, weight: .semibold))
-                    if !git { Text("不是 Git 仓库").font(.caption).foregroundStyle(Theme.muted) }
+                    Text("Worktree").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.nexAgentInk)
+                    if !git { Text("不是 Git 仓库").font(.caption).foregroundStyle(Theme.nexAgentMuted) }
                 }
             }
             .toggleStyle(.switch).tint(Theme.nexAgentAccent).disabled(!git)
             if git && branch == nil && !branches.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        Text("分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                        Text("分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.nexAgentMuted)
                         Spacer(minLength: 0)
                         if branchInfo?.dirty == true {
                             Text("有未提交改动")
@@ -495,12 +538,12 @@ struct AgentNewSessionPage: View {
             if branch != nil {
                 if !branches.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("基准分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                        Text("基准分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.nexAgentMuted)
                         AgentBranchPicker(label: "基准分支", selection: $baseBranch, branches: branches, currentBranch: current, expanded: $branchListExpanded)
                     }
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("新分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                    Text("新分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.nexAgentMuted)
                     TextField("新分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
                         .textFieldStyle(.roundedBorder).font(.system(size: 13, design: .monospaced)).autocorrectionDisabled()
                         #if os(iOS)
@@ -529,14 +572,38 @@ struct AgentNewSessionPage: View {
             }
             if canChoosePermissions {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("权限").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
-                    SwiftUI.Picker("权限", selection: Binding(get: { selectedPermissions }, set: { modeOf[engine] = $0 })) {
-                        ForEach(permissionModes, id: \.self) { mode in Text(CliPermissions.label(engine: engine, mode: mode)).tag(mode) }
+                    Text("权限").font(.caption.weight(.semibold)).foregroundStyle(Theme.nexAgentMuted)
+                    VStack(spacing: 4) {
+                        ForEach(permissionModes, id: \.self) { mode in
+                            let chosen = selectedPermissions == mode
+                            Button { modeOf[engine] = mode } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: mode == .full ? "shield.lefthalf.filled" : "shield")
+                                        .font(.system(size: 12.5))
+                                        .foregroundStyle(chosen ? Theme.nexAgentAccent : Theme.nexAgentMuted)
+                                    Text(CliPermissions.label(engine: engine, mode: mode))
+                                        .font(.system(size: 13, weight: chosen ? .semibold : .regular))
+                                        .foregroundStyle(chosen ? Theme.nexAgentAccent : Theme.nexAgentInk)
+                                    Spacer()
+                                    if chosen {
+                                        Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.nexAgentAccent)
+                                    }
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .background(chosen ? Theme.nexAgentSoft : Theme.nexAgentInset.opacity(0.6), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(chosen ? Theme.nexAgentAccent.opacity(0.5) : Theme.nexAgentBorder))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .pickerStyle(.inline).labelsHidden()
                 }
             }
         }
+    }
+
+    private var currentModelLabel: String {
+        chosenModel.isEmpty ? (fallbackModel.isEmpty ? "默认模型" : label(fallbackModel)) : label(chosenModel)
     }
 
     private var box: some View {
@@ -558,43 +625,46 @@ struct AgentNewSessionPage: View {
             }
             #endif
             HStack(spacing: 8) {
-                #if os(iOS)
-                AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex || engine == .zcode ? { picker = .skills } : nil, openModels: canChoose ? { picker = .model } : nil)
-                    .popover(isPresented: presenting(.model), arrowEdge: .bottom) {
-                        AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort) { effort = $0 }
-                            .frame(width: 310, height: 360)
-                            .presentationCompactAdaptation(.popover)
-                    }
-                #else
                 AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex || engine == .zcode ? { picker = .skills } : nil)
-                #endif
                 Spacer(minLength: 0)
-                #if os(macOS)
                 if canChoose {
-                    // compact like the session's own model button: the name of the choice, the list on click
+                    #if os(macOS)
                     Menu {
                         AgentMacModelMenuContent(catalog: catalog, selection: $chosenModel, fallback: fallbackModel)
                     } label: {
                         HStack(spacing: 4) {
-                            Text(chosenModel.isEmpty ? (fallbackModel.isEmpty ? "默认模型" : label(fallbackModel)) : label(chosenModel)).lineLimit(1)
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted).fixedSize()
+                            Text(currentModelLabel).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted).fixedSize()
                         }
-                        .font(.system(size: 12.5)).foregroundStyle(Theme.foreground)
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.nexAgentInk)
                     }
                     .menuStyle(.button).buttonStyle(.plain)
                     .frame(maxWidth: 220, alignment: .trailing)
                     .accessibilityLabel("模型设置")
+                    #else
+                    Button { picker = .model } label: {
+                        HStack(spacing: 4) {
+                            Text(currentModelLabel).lineLimit(1).truncationMode(.tail)
+                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted)
+                        }
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.nexAgentMuted)
+                        .padding(.horizontal, 8).frame(height: 30)
+                        .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: 160, alignment: .trailing)
+                    .accessibilityLabel("模型设置")
+                    #endif
                 }
-                #endif
                 Button(action: start) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)) }
                     .buttonStyle(.plain).foregroundStyle(ready ? Theme.nexAgentSolid : Theme.offline)
                     .fixedSize().disabled(!ready).accessibilityLabel("开始会话")
             }
         }
         .padding(14)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.border))
-        .shadow(color: Theme.shadowInk.opacity(0.06), radius: 10, y: 3)
+        .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(focused ? Theme.nexAgentAccent : Theme.nexAgentBorderStrong, lineWidth: focused ? 1.5 : 1))
+        .shadow(color: focused ? Theme.nexAgentRing : Theme.shadowInk.opacity(0.05), radius: focused ? 6 : 8, y: 2)
     }
 
     private func label(_ id: String) -> String { CliLaunches.modelDisplayLabel(catalog.models, id: id) }
@@ -609,6 +679,39 @@ struct AgentNewSessionPage: View {
                                                 baseBranch: wtBranch != nil && !baseBranch.isEmpty ? baseBranch : nil,
                                                 switchBranch: wtBranch == nil && switchingInPlace ? selectedBranch : nil))
         started(key)
+    }
+}
+
+private struct NewSessionLifecycleModifier: ViewModifier {
+    let presentingSkills: Binding<Bool>
+    let deviceId: String
+    let engine: CliEngine
+    let dir: AgentDirChoice?
+    let canPickBranch: Bool
+    let model: CliAgentsModel
+    let engines: [CliEngine]
+    let picker: NewSessionPicker?
+    let onPickSkill: (ChatSkill) -> Void
+    let onPickerChange: (NewSessionPicker?) -> Void
+    let onAppear: () -> Void
+    let onDevicesChange: () -> Void
+    let onDeviceChange: (String) -> Void
+    let onEnginesChange: ([CliEngine]) -> Void
+    let onLoadModels: () async -> Void
+    let onCheckGit: () async -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: presentingSkills) {
+                ChatSkillPicker(load: { try await model.skills(deviceId: deviceId, engine: engine, cwd: dir?.path ?? "") }, select: onPickSkill)
+            }
+            .onChange(of: picker) { _, next in onPickerChange(next) }
+            .onAppear(perform: onAppear)
+            .onChange(of: model.devices.map(\.id)) { _, _ in onDevicesChange() }
+            .onChange(of: deviceId) { previous, _ in onDeviceChange(previous) }
+            .onChange(of: engines) { _, available in onEnginesChange(available) }
+            .task(id: "\(deviceId)\n\(engine.rawValue)") { await onLoadModels() }
+            .task(id: "\(deviceId)\n\(dir?.path ?? "")\n\(dir?.create ?? false)\n\(canPickBranch)") { await onCheckGit() }
     }
 }
 
@@ -663,6 +766,85 @@ struct AgentMacModelMenuContent: View {
 
     @ViewBuilder private func itemLabel(_ text: String, on: Bool) -> some View {
         if on { Label(text, systemImage: "checkmark") } else { Text(text) }
+    }
+}
+
+/// Searchable unified model + effort popover for macOS when a CLI exposes many models (> 8).
+struct AgentMacModelPopover: View {
+    let catalog: CliModelCatalog
+    @Binding var selection: String
+    var fallback: String = ""
+    let levels: [String]
+    let selectedEffort: String
+    let chooseEffort: (String) -> Void
+    let onDismiss: () -> Void
+    @State private var query = ""
+
+    private var filtered: [CliModelOption] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return catalog.models }
+        let terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
+        return catalog.models.filter { row in
+            let hay = "\(row.id) \(row.label) \(row.description ?? "") \(row.providerLabel ?? "")".lowercased()
+            return terms.allSatisfy { hay.contains($0) }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !levels.isEmpty {
+                ChatEffortChoices(levels: levels, selection: selectedEffort, label: CliLaunches.effortLabel, tint: Theme.nexAgentAccent, choose: chooseEffort)
+                Divider().overlay(Theme.nexAgentBorder)
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.nexAgentMuted)
+                TextField("搜索模型…", text: $query).textFieldStyle(.plain).font(.system(size: 12.5))
+                if !query.isEmpty {
+                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.nexAgentMuted) }.buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 8).frame(height: 30)
+            .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        modelRow("", title: fallback.isEmpty ? "默认模型" : "默认（\(CliLaunches.modelDisplayLabel(catalog.models, id: fallback))）", subtitle: nil)
+                    }
+                    ForEach(filtered) { row in
+                        let sub = [row.providerLabel, row.providerBadge, row.description].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+                        modelRow(row.id, title: row.label, subtitle: sub.isEmpty ? nil : sub)
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+        }
+        .padding(12)
+        .frame(width: 320)
+        .background(Theme.nexAgentSurface)
+    }
+
+    private func modelRow(_ id: String, title: String, subtitle: String?) -> some View {
+        let on = selection == id
+        return Button {
+            selection = id
+            onDismiss()
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.system(size: 12.5, weight: on ? .semibold : .regular)).foregroundStyle(on ? Theme.nexAgentAccent : Theme.nexAgentInk).lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle).font(.system(size: 10.5)).foregroundStyle(Theme.nexAgentMuted).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                if on { Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.nexAgentAccent) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(on ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 #endif
@@ -815,22 +997,22 @@ struct AgentDirectoryBrowser: View {
             VStack(alignment: .leading, spacing: 10) {
                 #if os(iOS)
                 HStack(spacing: 8) {
-                    Text("选择目录").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.foreground)
+                    Text("选择目录").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.nexAgentInk)
                     if model.devices.count == 1, let d = model.device(deviceId) {
                         Label(d.name, systemImage: "desktopcomputer")
                             .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(Theme.muted)
+                            .foregroundStyle(Theme.nexAgentMuted)
                             .lineLimit(1)
                             .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Theme.secondary, in: Capsule())
+                            .background(Theme.nexAgentInset, in: Capsule())
                     }
                     Spacer(minLength: 4)
                     Button { dismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Theme.muted)
+                            .foregroundStyle(Theme.nexAgentMuted)
                             .frame(width: 28, height: 28)
-                            .background(Theme.secondary, in: Circle())
+                            .background(Theme.nexAgentInset, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("关闭")
@@ -838,7 +1020,7 @@ struct AgentDirectoryBrowser: View {
                 #endif
                 devices
                 HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(Theme.muted)
+                    Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(Theme.nexAgentMuted)
                     TextField(current.isEmpty ? "搜索最近目录或输入路径" : "搜索、新建文件夹或输入路径", text: $query)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13.5))
@@ -849,7 +1031,7 @@ struct AgentDirectoryBrowser: View {
                         .onSubmit(submit)
                     if !query.isEmpty {
                         Button { query = "" } label: {
-                            Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(Theme.muted)
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(Theme.nexAgentMuted)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("清空搜索")
@@ -861,15 +1043,15 @@ struct AgentDirectoryBrowser: View {
                 #else
                 .frame(height: 36)
                 #endif
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 HStack(spacing: 6) {
                     Button { if let up = CliPaths.parent(current) { go(up) } else { go("") } } label: {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(current.isEmpty ? Theme.muted.opacity(0.45) : Theme.foreground)
+                            .foregroundStyle(current.isEmpty ? Theme.nexAgentMuted.opacity(0.45) : Theme.nexAgentInk)
                             .frame(width: 28, height: 28)
-                            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .buttonStyle(.plain).disabled(current.isEmpty).accessibilityLabel("上一级")
                     ScrollViewReader { proxy in
@@ -877,17 +1059,16 @@ struct AgentDirectoryBrowser: View {
                             HStack(spacing: 3) {
                                 Button("全部") { go("") }.buttonStyle(.plain)
                                     .font(.system(size: 12.5, weight: current.isEmpty ? .semibold : .medium))
-                                    .foregroundStyle(current.isEmpty ? Theme.foreground : Theme.muted)
+                                    .foregroundStyle(current.isEmpty ? Theme.nexAgentInk : Theme.nexAgentMuted)
                                 ForEach(Array(CliPaths.crumbs(current).enumerated()), id: \.offset) { index, crumb in
-                                    Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.muted.opacity(0.5))
+                                    Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted.opacity(0.5))
                                     Button(crumb.label) { go(crumb.path) }.buttonStyle(.plain)
                                         .font(.system(size: 12.5, weight: index == CliPaths.crumbs(current).count - 1 ? .semibold : .medium))
-                                        .foregroundStyle(index == CliPaths.crumbs(current).count - 1 ? Theme.foreground : Theme.muted)
+                                        .foregroundStyle(index == CliPaths.crumbs(current).count - 1 ? Theme.nexAgentInk : Theme.nexAgentMuted)
                                         .id(index)
                                 }
                             }
                         }
-                        // a deep folder keeps its own name in view
                         .onChange(of: current) { _, _ in
                             let last = CliPaths.crumbs(current).count - 1
                             if last >= 0 { proxy.scrollTo(last, anchor: .trailing) }
@@ -898,19 +1079,27 @@ struct AgentDirectoryBrowser: View {
             .padding(.horizontal, 14)
             .padding(.top, 14)
             .padding(.bottom, 10)
-            Divider()
+            Divider().overlay(Theme.nexAgentBorder)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     if loading && rows.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(.top, 24) }
                     if missing && query.isEmpty {
                         Text("这个文件夹还不存在，开始会话时会新建")
-                            .font(.caption).foregroundStyle(Theme.muted)
+                            .font(.caption).foregroundStyle(Theme.nexAgentMuted)
                             .frame(maxWidth: .infinity).padding(.vertical, 20)
                     }
-                    ForEach(rows) { row in rowView(row) }
+                    ForEach(rows) { row in
+                        if let heading = row.sectionTitle {
+                            Text(heading)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.nexAgentMuted)
+                                .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 2)
+                        }
+                        rowView(row)
+                    }
                     if !loading, rows.isEmpty, !current.isEmpty, !missing {
                         Text(query.isEmpty ? "没有子文件夹" : "没有匹配的文件夹")
-                            .font(.caption).foregroundStyle(Theme.muted)
+                            .font(.caption).foregroundStyle(Theme.nexAgentMuted)
                             .frame(maxWidth: .infinity).padding(.vertical, 24)
                     }
                 }
@@ -918,20 +1107,20 @@ struct AgentDirectoryBrowser: View {
                 .padding(.vertical, 8)
             }
             .frame(minHeight: 160)
-            Divider()
+            Divider().overlay(Theme.nexAgentBorder)
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     if current.isEmpty {
-                        Text("选择一个文件夹").font(.system(size: 12.5)).foregroundStyle(Theme.muted)
+                        Text("选择一个文件夹").font(.system(size: 12.5)).foregroundStyle(Theme.nexAgentMuted)
                     } else {
                         Text(CliPaths.name(current))
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Theme.foreground)
+                            .foregroundStyle(Theme.nexAgentInk)
                             .lineLimit(1)
                         if let parent = CliPaths.parent(current) {
                             Text(parent)
                                 .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Theme.muted)
+                                .foregroundStyle(Theme.nexAgentMuted)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
@@ -944,6 +1133,7 @@ struct AgentDirectoryBrowser: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
         }
+        .background(Theme.nexAgentSurface)
         #if os(macOS)
         .frame(width: 440, height: 460)
         #endif
@@ -963,10 +1153,10 @@ struct AgentDirectoryBrowser: View {
                     ForEach(model.devices) { d in
                         Button { deviceId = d.id; go("") } label: {
                             Label(d.name + (d.online ? "" : "（离线）"), systemImage: "desktopcomputer").font(.system(size: 12, weight: d.id == deviceId ? .semibold : .medium))
-                                .foregroundStyle(d.id == deviceId ? Theme.nexAgentAccent : Theme.foreground)
+                                .foregroundStyle(d.id == deviceId ? Theme.nexAgentAccent : Theme.nexAgentInk)
                                 .padding(.horizontal, 10).padding(.vertical, 5)
                                 .background(d.id == deviceId ? Theme.nexAgentSoft : .clear, in: Capsule())
-                                .overlay(Capsule().strokeBorder(d.id == deviceId ? Theme.nexAgentAccent : Theme.border))
+                                .overlay(Capsule().strokeBorder(d.id == deviceId ? Theme.nexAgentAccent : Theme.nexAgentBorder))
                         }
                         .buttonStyle(.plain).disabled(!d.online)
                     }
@@ -975,18 +1165,24 @@ struct AgentDirectoryBrowser: View {
         } else {
             #if os(macOS)
             if let d = model.device(deviceId) {
-                Label(d.name, systemImage: "desktopcomputer").font(.caption).foregroundStyle(Theme.muted)
+                Label(d.name, systemImage: "desktopcomputer").font(.caption).foregroundStyle(Theme.nexAgentMuted)
             }
             #endif
         }
     }
 
     private struct Row: Identifiable {
-        enum Kind { case folder(git: Bool, recent: Bool), go, create }
+        enum Kind { case folder(git: Bool, recent: Bool, drive: Bool), go, create }
         let kind: Kind
         let path: String
         let name: String
+        var sectionTitle: String? = nil
         var id: String { "\(name)|\(path)" }
+    }
+
+    private func isDriveRoot(_ path: String) -> Bool {
+        if path == "/" { return true }
+        return path.range(of: #"^[A-Za-z]:[\\/]?$"#, options: .regularExpression) != nil
     }
 
     private var rows: [Row] {
@@ -997,14 +1193,25 @@ struct AgentDirectoryBrowser: View {
         let text = raw.lowercased()
         let matches: (String) -> Bool = { text.isEmpty || $0.lowercased().contains(text) }
         var out: [Row] = []
-        // the top view leads with recent folders; inside a folder they only show while searching
         if current.isEmpty || !text.isEmpty {
-            out += recents.filter { matches(CliPaths.name($0)) }.prefix(current.isEmpty ? 6 : 3).map { Row(kind: .folder(git: false, recent: true), path: $0, name: CliPaths.name($0)) }
+            let recentRows = recents.filter { matches(CliPaths.name($0)) }.prefix(current.isEmpty ? 6 : 3).enumerated().map { idx, path in
+                Row(kind: .folder(git: false, recent: true, drive: false), path: path, name: CliPaths.name(path), sectionTitle: idx == 0 ? "最近" : nil)
+            }
+            out += recentRows
         }
         if listing?.path == current {
-            out += (listing?.entries ?? [])
+            let locationRows = (listing?.entries ?? [])
                 .filter { (!$0.name.hasPrefix(".") || text.hasPrefix(".")) && matches($0.name) }
-                .map { Row(kind: .folder(git: $0.git, recent: false), path: $0.path, name: $0.name) }
+                .enumerated()
+                .map { idx, entry in
+                    Row(
+                        kind: .folder(git: entry.git, recent: false, drive: current.isEmpty && isDriveRoot(entry.path)),
+                        path: entry.path,
+                        name: entry.name,
+                        sectionTitle: idx == 0 && current.isEmpty ? "位置" : nil
+                    )
+                }
+            out += locationRows
         }
         if !current.isEmpty, !raw.isEmpty, CliPaths.validName(raw), !(listing?.entries ?? []).contains(where: { $0.name.lowercased() == text }) {
             out.append(Row(kind: .create, path: CliPaths.join(current, raw), name: raw))
@@ -1016,7 +1223,10 @@ struct AgentDirectoryBrowser: View {
         switch kind {
         case .create: return ("folder.badge.plus", true)
         case .go: return ("arrow.right", false)
-        case .folder(let git, let recent): return (recent ? "clock" : git ? "folder.fill.badge.gearshape" : "folder", git)
+        case .folder(let git, let recent, let drive):
+            if recent { return ("clock", false) }
+            if drive { return ("internaldrive", false) }
+            return (git ? "folder.fill.badge.gearshape" : "folder", git)
         }
     }
 
@@ -1026,26 +1236,26 @@ struct AgentDirectoryBrowser: View {
             HStack(spacing: 10) {
                 Image(systemName: icon.name)
                     .font(.system(size: 13))
-                    .foregroundStyle(icon.accent ? Theme.nexAgentAccent : Theme.muted)
+                    .foregroundStyle(icon.accent ? Theme.nexAgentAccent : Theme.nexAgentMuted)
                     #if os(iOS)
                     .frame(width: 32, height: 32)
                     #else
                     .frame(width: 28, height: 28)
                     #endif
-                    .background(icon.accent ? Theme.nexAgentSoft : Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(icon.accent ? Theme.nexAgentSoft : Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 switch row.kind {
                 case .create:
                     (Text("新建文件夹 ") + Text(row.name).bold().foregroundStyle(Theme.nexAgentAccent))
-                        .foregroundStyle(Theme.foreground).lineLimit(1)
+                        .foregroundStyle(Theme.nexAgentInk).lineLimit(1)
                     Spacer(minLength: 4)
                 case .go:
-                    (Text("前往 ") + Text(row.path).bold()).foregroundStyle(Theme.foreground).lineLimit(1)
+                    (Text("前往 ") + Text(row.path).bold()).foregroundStyle(Theme.nexAgentInk).lineLimit(1)
                     Spacer(minLength: 4)
-                case .folder(let git, let recent):
+                case .folder(let git, let recent, _):
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(row.name).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Theme.foreground).lineLimit(1)
+                        Text(row.name).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Theme.nexAgentInk).lineLimit(1)
                         if recent, let parent = CliPaths.parent(row.path) {
-                            Text(parent).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle)
+                            Text(parent).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.nexAgentMuted).lineLimit(1).truncationMode(.middle)
                         }
                     }
                     Spacer(minLength: 4)
@@ -1056,7 +1266,7 @@ struct AgentDirectoryBrowser: View {
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Theme.nexAgentSoft, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                     }
-                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted.opacity(0.45))
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted.opacity(0.45))
                 }
             }
             .font(.system(size: 13.5))
@@ -1066,7 +1276,7 @@ struct AgentDirectoryBrowser: View {
             .padding(.horizontal, 8).padding(.vertical, 5)
             #endif
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hovered == row.id ? Theme.wash : Color.clear))
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hovered == row.id ? Theme.nexAgentInset : Color.clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

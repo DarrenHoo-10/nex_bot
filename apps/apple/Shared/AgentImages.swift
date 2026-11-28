@@ -4,9 +4,17 @@ import UniformTypeIdentifiers
 import NexClientKit
 #if os(iOS)
 import UIKit
+import PhotosUI
 #else
 import AppKit
 #endif
+
+/// A non-image file attached to a NexAgent message (uploaded to the session's computer via `/attach` or inlined as UTF-8 text).
+struct CliFileUpload: Sendable, Hashable, Identifiable {
+    let id = UUID()
+    let name: String
+    let data: Data
+}
 
 /// An open session's permission modes in the + menu (its CLI's own), and when a choice takes effect.
 struct AgentPermissionChoice {
@@ -20,17 +28,47 @@ struct AgentPermissionChoice {
 
 struct AgentComposerAdd: View {
     @Binding var images: [CliImageUpload]
+    var files: Binding<[CliFileUpload]>? = nil
     @Binding var error: String
     var openSkills: (() -> Void)?
     var openModels: (() -> Void)?
+    var goalActive: Bool = false
+    var onToggleGoal: (() -> Void)? = nil
     var permissions: AgentPermissionChoice?
-    @State private var picking = false
+    private enum ImportKind { case images, files }
+    @State private var importerPresented = false
+    @State private var importKind: ImportKind?
+    #if os(iOS)
+    @State private var pickingPhotos = false
+    @State private var photoItems: [PhotosPickerItem] = []
+    #endif
+
+    private func openImporter(_ kind: ImportKind) {
+        importKind = kind
+        importerPresented = true
+    }
 
     var body: some View {
         Menu {
-            Button("选择图片", systemImage: "photo.on.rectangle") { picking = true }
+            #if os(iOS)
+            Button("相册选择", systemImage: "photo.on.rectangle.angled") { pickingPhotos = true }
+            Button("选择图片文件", systemImage: "photo") { openImporter(.images) }
+            #else
+            Button("图片", systemImage: "photo.on.rectangle") { openImporter(.images) }
+            #endif
             Button("粘贴图片", systemImage: "clipboard", action: paste)
+            if files != nil {
+                Button("文件", systemImage: "paperclip") { openImporter(.files) }
+            }
             if let openSkills { Button("技能", systemImage: "book", action: openSkills) }
+            if let onToggleGoal {
+                Button {
+                    onToggleGoal()
+                } label: {
+                    if goalActive { Label("关闭目标模式", systemImage: "checkmark.circle.fill") }
+                    else { Label("目标模式", systemImage: "target") }
+                }
+            }
             if let openModels { Button("模型", systemImage: "cpu", action: openModels) }
             if let permissions, !permissions.modes.isEmpty {
                 SwiftUI.Picker(selection: Binding(get: { permissions.value }, set: { if let mode = $0 { permissions.choose(mode) } })) {
@@ -45,7 +83,7 @@ struct AgentComposerAdd: View {
             }
         } label: {
             Image(systemName: "plus").font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Theme.muted).frame(width: 28, height: 28)
+                .foregroundStyle(Theme.nexAgentMuted).frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
         #if os(macOS)
@@ -54,19 +92,68 @@ struct AgentComposerAdd: View {
         .fixedSize()
         #endif
         .accessibilityLabel("添加")
-        .fileImporter(isPresented: $picking, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
+        #if os(iOS)
+        .photosPicker(isPresented: $pickingPhotos, selection: $photoItems, maxSelectionCount: max(1, ChatAttachment.maxCount - images.count), matching: .images)
+        .onChange(of: photoItems) { _, picked in
+            guard !picked.isEmpty else { return }
+            let items = picked
+            photoItems = []
+            Task {
+                for (index, item) in items.enumerated() {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        add("照片\(index + 1).jpg", bytes: data)
+                    }
+                }
+            }
+        }
+        #endif
+        .fileImporter(
+            isPresented: $importerPresented,
+            allowedContentTypes: importKind == .images ? [.image] : [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            let kind = importKind
+            importKind = nil
             switch result {
             case .failure(let cause): error = cause.localizedDescription
             case .success(let urls):
-                for url in urls {
-                    let permitted = url.startAccessingSecurityScopedResource()
-                    defer { if permitted { url.stopAccessingSecurityScopedResource() } }
-                    if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 32 * 1024 * 1024 {
-                        error = "图片不能超过 32 MB"
-                        continue
+                switch kind {
+                case .images:
+                    for url in urls {
+                        let permitted = url.startAccessingSecurityScopedResource()
+                        defer { if permitted { url.stopAccessingSecurityScopedResource() } }
+                        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 32 * 1024 * 1024 {
+                            error = "图片不能超过 32 MB"
+                            continue
+                        }
+                        guard let bytes = try? Data(contentsOf: url, options: .mappedIfSafe) else { error = "无法读取所选图片"; continue }
+                        add(url.lastPathComponent, bytes: bytes)
                     }
-                    guard let bytes = try? Data(contentsOf: url, options: .mappedIfSafe) else { error = "无法读取所选图片"; continue }
-                    add(url.lastPathComponent, bytes: bytes)
+                case .files:
+                    guard let files else { break }
+                    for url in urls {
+                        let permitted = url.startAccessingSecurityScopedResource()
+                        defer { if permitted { url.stopAccessingSecurityScopedResource() } }
+                        if let vals = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]) {
+                            if vals.isDirectory == true { error = "不支持直接附加文件夹"; continue }
+                            if let size = vals.fileSize, size > CoreClient.cliMaxAttachBytes {
+                                error = "单个附件不能超过 8 MB"
+                                continue
+                            }
+                        }
+                        guard let bytes = try? Data(contentsOf: url, options: .mappedIfSafe), !bytes.isEmpty else {
+                            error = "无法读取文件 \(url.lastPathComponent)"
+                            continue
+                        }
+                        if Self.imageExtensions.contains(url.pathExtension.lowercased()) {
+                            add(url.lastPathComponent, bytes: bytes)
+                        } else {
+                            files.wrappedValue.append(CliFileUpload(name: url.lastPathComponent, data: bytes))
+                            error = ""
+                        }
+                    }
+                case nil:
+                    break
                 }
             }
         }
@@ -272,6 +359,7 @@ struct AgentImageMessage: View {
     let text: String
     var markdown = false
     let load: (String) async throws -> Data
+    var loadOriginal: ((String) async throws -> (data: Data, contentType: String?))? = nil
     private static let pattern = /!\[([^\]\n]*)\]\((?:https?:\/\/[^\/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?ticket=[^)\s]+)?\)/
     private static let standalone = /(?m)^[ \t]*(?:https?:\/\/[^\/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?ticket=[^\s)]+)?[ \t]*$/
 
@@ -288,13 +376,13 @@ struct AgentImageMessage: View {
         // with words, the pictures sit in the bubble's top-left corner above them; without, they stand on their own
         if markdown {
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(images, id: \.path) { image in AgentImagePreview(name: image.name, path: image.path, load: load) }
+                ForEach(images, id: \.path) { image in AgentImagePreview(name: image.name, path: image.path, load: load, loadOriginal: loadOriginal) }
                 if !caption.isEmpty { MarkdownText(source: caption, fontSize: 14) }
             }
         } else if caption.isEmpty {
             OutlineFlow(spacing: 6, trailing: true) {
                 ForEach(images, id: \.path) { image in
-                    AgentImagePreview(name: image.name, path: image.path, load: load)
+                    AgentImagePreview(name: image.name, path: image.path, load: load, loadOriginal: loadOriginal)
                 }
             }
         } else {
@@ -302,7 +390,7 @@ struct AgentImageMessage: View {
                 if !images.isEmpty {
                     OutlineFlow(spacing: 6, trailing: false) {
                         ForEach(images, id: \.path) { image in
-                            AgentImagePreview(name: image.name, path: image.path, load: load)
+                            AgentImagePreview(name: image.name, path: image.path, load: load, loadOriginal: loadOriginal)
                         }
                     }
                 }
@@ -321,10 +409,12 @@ private struct AgentImagePreview: View {
     let name: String
     let path: String
     let load: (String) async throws -> Data
+    var loadOriginal: ((String) async throws -> (data: Data, contentType: String?))? = nil
     @State private var thumbnail: CGImage?
     @State private var data: Data?
     @State private var failed = false
     @State private var open = false
+    @State private var saveError = ""
 
     private var bounds: CGSize {
         #if os(iOS)
@@ -359,6 +449,20 @@ private struct AgentImagePreview: View {
         .buttonStyle(.plain)
         .disabled(thumbnail == nil)
         .accessibilityLabel(failed ? "图片无法显示：\(name)" : "查看图片 \(name)")
+        .contextMenu {
+            if data != nil {
+                Button {
+                    Task { await saveFromContextMenu() }
+                } label: {
+                    Label("保存图片", systemImage: "square.and.arrow.down")
+                }
+            }
+        }
+        .alert("无法保存图片", isPresented: Binding(get: { !saveError.isEmpty }, set: { if !$0 { saveError = "" } })) {
+            Button("好", role: .cancel) { saveError = "" }
+        } message: {
+            Text(saveError)
+        }
         .task(id: path) {
             do {
                 let bytes = try await load(path)
@@ -372,7 +476,31 @@ private struct AgentImagePreview: View {
             }
         }
         .sheet(isPresented: $open) {
-            if let data, let thumbnail { AgentImageViewer(data: data, thumbnail: thumbnail, name: name) }
+            if let data, let thumbnail {
+                AgentImageViewer(
+                    data: data,
+                    thumbnail: thumbnail,
+                    name: name,
+                    loadOriginal: loadOriginal.map { fetch in { try await fetch(path) } }
+                )
+            }
+        }
+    }
+
+    @MainActor
+    private func saveFromContextMenu() async {
+        do {
+            let (raw, contentType): (Data, String?)
+            if let loadOriginal {
+                (raw, contentType) = try await loadOriginal(path)
+            } else if let data {
+                (raw, contentType) = (data, nil)
+            } else {
+                return
+            }
+            _ = try await saveAgentImage(data: raw, name: name, contentType: contentType)
+        } catch {
+            saveError = saveImageErrorMessage(error)
         }
     }
 }
@@ -381,7 +509,11 @@ private struct AgentImageViewer: View {
     let data: Data
     let thumbnail: CGImage
     let name: String
+    var loadOriginal: (() async throws -> (data: Data, contentType: String?))? = nil
     @State private var large: CGImage?
+    @State private var saving = false
+    @State private var savedNotice = false
+    @State private var saveError = ""
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -389,16 +521,46 @@ private struct AgentImageViewer: View {
             Color.black.ignoresSafeArea()
             Image(large ?? thumbnail, scale: 1, label: Text(name)).resizable().scaledToFit()
                 .frame(maxWidth: .infinity, maxHeight: .infinity).padding(12)
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.system(size: 15, weight: .semibold))
+            HStack(spacing: 8) {
+                Button {
+                    Task { await save() }
+                } label: {
+                    Group {
+                        if saving {
+                            ProgressView().tint(.white).controlSize(.small)
+                        } else {
+                            Image(systemName: savedNotice ? "checkmark" : "square.and.arrow.down")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                    }
                     .frame(width: 38, height: 38)
                     .foregroundStyle(.white)
                     .background(.black.opacity(0.65), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(saving)
+                .accessibilityLabel("保存图片")
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.system(size: 15, weight: .semibold))
+                        .frame(width: 38, height: 38)
+                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.65), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭图片预览")
+                .keyboardShortcut(.cancelAction)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("关闭图片预览")
-            .keyboardShortcut(.cancelAction)
             .padding(12)
+        }
+        .overlay(alignment: .bottom) {
+            if !saveError.isEmpty {
+                Text(saveError)
+                    .font(.footnote)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Theme.danger.opacity(0.92), in: Capsule())
+                    .padding(.horizontal, 16).padding(.bottom, 20)
+            }
         }
         #if os(macOS)
         .frame(minWidth: 640, minHeight: 420)
@@ -409,6 +571,148 @@ private struct AgentImageViewer: View {
             if !Task.isCancelled { large = preview }
         }
     }
+
+    @MainActor
+    private func save() async {
+        guard !saving else { return }
+        saving = true
+        savedNotice = false
+        saveError = ""
+        defer { saving = false }
+        do {
+            let (raw, contentType): (Data, String?)
+            if let loadOriginal {
+                (raw, contentType) = try await loadOriginal()
+            } else {
+                (raw, contentType) = (data, nil)
+            }
+            let saved = try await saveAgentImage(data: raw, name: name, contentType: contentType)
+            if saved {
+                savedNotice = true
+            }
+        } catch {
+            saveError = saveImageErrorMessage(error)
+        }
+    }
+}
+
+private enum AgentImageSaveError: LocalizedError {
+    case unreadableImage
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadableImage: "无法解析图片内容"
+        }
+    }
+}
+
+private func saveImageErrorMessage(_ error: Error) -> String {
+    if let core = error as? CoreError { return core.message }
+    let nsError = error as NSError
+    if (nsError.domain == "PHPhotosErrorDomain" && (nsError.code == 3310 || nsError.code == 3311)) ||
+        (nsError.domain == "ALAssetsLibraryErrorDomain" && (nsError.code == -3311 || nsError.code == -3312)) {
+        return "没有相册写入权限，请在系统设置中允许访问照片"
+    }
+    return error.localizedDescription
+}
+
+private func detectedImageType(data: Data, contentType: String?) -> UTType? {
+    if let source = CGImageSourceCreateWithData(data as CFData, nil),
+       let uti = CGImageSourceGetType(source) as String?,
+       let type = UTType(uti) {
+        return type
+    }
+    if let rawMime = contentType?.split(separator: ";", maxSplits: 1).first {
+        let mime = rawMime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !mime.isEmpty, let type = UTType(mimeType: mime) {
+            return type
+        }
+    }
+    return nil
+}
+
+private func preferredImageExtension(for type: UTType) -> String? {
+    if type == .jpeg { return "jpg" }
+    return type.preferredFilenameExtension
+}
+
+private func resolvedImageFileName(name: String, actualType: UTType?) -> String {
+    let cleaned = name
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: ":", with: "_")
+    let baseName = cleaned.isEmpty ? "image" : cleaned
+    guard let actualType, let preferredExt = preferredImageExtension(for: actualType) else {
+        return cleaned.isEmpty ? "image.png" : cleaned
+    }
+    let existingExt = (baseName as NSString).pathExtension
+    if !existingExt.isEmpty,
+       let existingType = UTType(filenameExtension: existingExt.lowercased()),
+       existingType.conforms(to: actualType) {
+        return baseName
+    }
+    let stem = existingExt.isEmpty ? baseName : (baseName as NSString).deletingPathExtension
+    let safeStem = stem.isEmpty ? "image" : stem
+    return "\(safeStem).\(preferredExt)"
+}
+
+#if os(iOS)
+private final class PhotoAlbumSaver: NSObject, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var selfRetain: PhotoAlbumSaver?
+
+    @MainActor
+    func save(_ image: UIImage) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            lock.lock()
+            self.continuation = continuation
+            self.selfRetain = self
+            lock.unlock()
+            UIImageWriteToSavedPhotosAlbum(
+                image,
+                self,
+                #selector(PhotoAlbumSaver.image(_:didFinishSavingWithError:contextInfo:)),
+                nil
+            )
+        }
+    }
+
+    @objc
+    private func image(_ image: UIImage, didFinishSavingWithError error: NSError?, contextInfo: UnsafeMutableRawPointer?) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        selfRetain = nil
+        lock.unlock()
+        if let error {
+            pending?.resume(throwing: error)
+        } else {
+            pending?.resume()
+        }
+    }
+}
+#endif
+
+@MainActor
+@discardableResult
+private func saveAgentImage(data: Data, name: String, contentType: String? = nil) async throws -> Bool {
+    #if os(macOS)
+    let actualType = detectedImageType(data: data, contentType: contentType)
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = resolvedImageFileName(name: name, actualType: actualType)
+    if let actualType {
+        panel.allowedContentTypes = [actualType]
+    }
+    panel.canCreateDirectories = true
+    guard panel.runModal() == .OK, let url = panel.url else { return false }
+    try data.write(to: url, options: .atomic)
+    return true
+    #else
+    guard let img = UIImage(data: data) else { throw AgentImageSaveError.unreadableImage }
+    try await PhotoAlbumSaver().save(img)
+    return true
+    #endif
 }
 
 private func agentPreview(_ data: Data, pixels: Int) -> CGImage? {

@@ -5,6 +5,7 @@ import NexClientKit
 /// 连接器页的飞书卡片：应用列表、添加应用（扫码或已有应用），点开应用管理每个群的回复模式与系统上下文。
 struct SettingsFeishuCard: View {
     let workspace: WorkspaceStore
+    @Environment(\.openURL) private var openURL
     @State private var selectedBotID = ""
     private var botID: String { workspace.feishuReceiverID(selection: selectedBotID) }
     @State private var manual = false
@@ -58,6 +59,7 @@ struct SettingsFeishuCard: View {
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
             .padding(.top, 18)
         }
+        FeishuDeliveryView(workspace: workspace).padding(.top, 18)
     }
 
     @ViewBuilder private func appRow(_ app: FeishuAppView) -> some View {
@@ -82,6 +84,7 @@ struct SettingsFeishuCard: View {
                 }
                 .buttonStyle(.plain)
                 Menu {
+                    if app.status == "error" { Button("重新连接") { perform { try await workspace.setFeishuEnabled(appID: app.id, true) } } }
                     if !app.ownerBound { Button("绑定主人") { perform { bindCodes[app.id] = try await workspace.startFeishuBind(appID: app.id) } } }
                     Button(app.userAuthorized ? "重新授权文档" : "授权文档访问") { perform { try await workspace.startFeishuUserAuth(appID: app.id) } }
                     Button(app.enabled ? "停用" : "启用") { perform { try await workspace.setFeishuEnabled(appID: app.id, !app.enabled) } }
@@ -116,7 +119,12 @@ struct SettingsFeishuCard: View {
             FeishuAppOverview(workspace: workspace, app: app, busy: busy) { botID in
                 perform { try await workspace.changeFeishuReceiver(appID: app.id, botID: botID) }
             }
-            if app.status == "error" { MBBanner(text: app.error ?? "连接异常", isError: true) }
+            if app.status == "error" {
+                HStack(spacing: 10) {
+                    MBBanner(text: app.error ?? "连接异常", isError: true)
+                    MBButton(title: "重新连接", kind: .brand, busy: busy) { perform { try await workspace.setFeishuEnabled(appID: app.id, true) } }
+                }
+            }
             else if app.status == "busy" { MBBanner(text: "另一个程序正在使用这个应用的长连接", isError: true) }
             else if !app.enabled {
                 HStack { MBBanner(text: "已停用，不收发消息"); MBButton(title: "启用", busy: busy) { perform { try await workspace.setFeishuEnabled(appID: app.id, true) } } }
@@ -127,12 +135,17 @@ struct SettingsFeishuCard: View {
     }
 
     @ViewBuilder private var addSection: some View {
-        if let job, job.stage == "qr", let url = job.url {
+        if let job, job.stage == "qr", let qr = job.qrValue(origin: workspace.client.origin) {
             HStack(alignment: .top, spacing: 16) {
-                FeishuQRView(text: url)
+                FeishuQRView(text: qr)
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("用飞书扫码并确认，完成后自动连接。").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                    MBButton(title: "取消", enabled: !busy) { perform { try await workspace.cancelFeishuRegister() } }
+                    Text("用飞书「扫一扫」扫码并确认，完成后自动连接。").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    HStack(spacing: 8) {
+                        if let rawURL = job.url, let link = URL(string: rawURL), Markdown.isOpenable(link) {
+                            MBButton(title: "打开飞书授权页", kind: .brand) { openURL(link) }
+                        }
+                        MBButton(title: "取消", enabled: !busy) { perform { try await workspace.cancelFeishuRegister() } }
+                    }
                 }
             }
         } else if job?.stage == "preparing" {
@@ -162,7 +175,12 @@ struct SettingsFeishuCard: View {
                 FeishuQRView(text: url)
                 VStack(alignment: .leading, spacing: 10) {
                     Text("用飞书扫码完成文档授权").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                    MBButton(title: "取消", enabled: !busy) { perform { try await workspace.cancelFeishuUserAuth() } }
+                    HStack(spacing: 8) {
+                        if let link = URL(string: url), Markdown.isOpenable(link) {
+                            MBButton(title: "打开飞书授权页", kind: .brand) { openURL(link) }
+                        }
+                        MBButton(title: "取消", enabled: !busy) { perform { try await workspace.cancelFeishuUserAuth() } }
+                    }
                 }
             }
         } else if auth.stage == "error", let authError = auth.error {
@@ -243,6 +261,9 @@ struct FeishuQRView: View {
         Group {
             if let image = Self.qrImage(text) {
                 Image(nsImage: image).interpolation(.none).resizable().frame(width: size, height: size)
+                    .padding(10)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
             } else {
                 Text("二维码生成失败").font(.system(size: 11)).foregroundStyle(Theme.muted)
                     .frame(width: size, height: size).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))

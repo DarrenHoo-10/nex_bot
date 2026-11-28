@@ -50,7 +50,10 @@ struct ConversationView: View {
             if workspace.state != nil && workspace.state?.config == nil { noModelBanner }
             MessageList(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             VStack(spacing: 10) {
-                ForEach(pendingApprovals) { ApprovalCard(workspace: workspace, approval: $0) }
+                ForEach(pendingApprovals) { approval in
+                    let jobTitle = workspace.state?.jobs.first(where: { $0.taskID == approval.taskID })?.title
+                    ApprovalCard(workspace: workspace, approval: approval, jobTitle: jobTitle)
+                }
                 ForEach(workspace.state?.peersAwaitingApproval(for: botID) ?? [], id: \.self) { peerID in waitingLine(peerID) }
                 Composer(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             }
@@ -137,7 +140,8 @@ struct ConversationView: View {
                         }
                     }
                 }
-                RoundGlassButton(symbol: "sidebar.right", label: ui.inspectorVisible ? "收起助手详情" : "助手详情", selected: ui.inspectorVisible) { ui.inspectorVisible.toggle() }
+                let hasOpenJobs = !(workspace.state?.openJobs(botID: botID).isEmpty ?? true)
+                RoundGlassButton(symbol: "sidebar.right", label: ui.inspectorVisible ? "收起助手详情" : "助手详情", selected: ui.inspectorVisible, badgeDot: hasOpenJobs) { ui.inspectorVisible.toggle() }
             }
         }
         .padding(.horizontal, 2).frame(height: 64)
@@ -217,10 +221,13 @@ private struct MessageList: View {
     @Environment(UIState.self) private var ui
     @Environment(ContactPreferences.self) private var preferences
     @State private var atBottom = true
+    @State private var unseenCount = 0
+    @State private var lastObservedSeq = 0
     /// False until a freshly loaded transcript has been placed at its end. Until then the
     /// top row must not page in older history: on a cold start the lazy stack first lays
     /// out from the top, and loading older messages there left the view on unmeasured rows.
     @State private var settled = false
+    @Environment(\.colorScheme) private var scheme
 
     private var botID: String { conversation.botID }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
@@ -236,7 +243,7 @@ private struct MessageList: View {
     private var loadKey: String { "\(botID)|\(conversation.isLoaded)|\(conversation.unreadJumpRevision)" }
 
     private var tailKey: String {
-        "\(conversation.messages.last?.seq ?? 0)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")|\(processing)"
+        "\(conversation.messages.last?.seq ?? 0)|\(conversation.optimisticMessages.count)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")|\(processing)"
     }
 
     /// Centers the searched message. Row heights are estimated until laid out, so the jump is repeated once they are known.
@@ -304,12 +311,16 @@ private struct MessageList: View {
                             DayDivider(label: day)
                         }
                         let joined = MessageGrouping.joins(previous, message)
+                        let hasJobReply: Bool = {
+                            guard message.isJobReport, let jobID = message.jobID else { return false }
+                            return messages[(index + 1)...].contains { $0.isFromUser && $0.jobID == jobID }
+                        }()
                         VStack(alignment: .leading, spacing: 0) {
                             if focusedID == nil && message.id == conversation.unreadAnchorID {
                                 UnreadDivider()
                             }
                             MessageRow(message: message, bot: bot, workspace: workspace, joined: joined,
-                                       groupEnd: MessageGrouping.ends(message, next: next), onOpenImage: onOpenImage)
+                                       groupEnd: MessageGrouping.ends(message, next: next), hasJobReply: hasJobReply, onOpenImage: onOpenImage)
                                 .overlay {
                                     if message.id == focusedID {
                                         RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
@@ -319,6 +330,21 @@ private struct MessageList: View {
                                 .padding(.top, joined ? 4 : 14)
                         }
                         .id(message.seq)
+                    }
+                    ForEach(conversation.optimisticMessages) { optimistic in
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if let title = optimistic.replyJobTitle {
+                                Text("回复后台任务：\(title)").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                            }
+                            ChatMarkdown(source: optimistic.text, hug: true)
+                                .environment(\.chatInk, .white).environment(\.chatOnAccent, true)
+                                .padding(.horizontal, 16).padding(.vertical, 9)
+                                .background(userBubbleGradient(dark: scheme == .dark), in: Bubble.user)
+                                .opacity(0.8)
+                            Text("发送中…").font(.system(size: 10.5)).foregroundStyle(Theme.muted).padding(.horizontal, 4)
+                        }
+                        .padding(.leading, 56).padding(.top, 14)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                     ForEach(conversation.streaming, id: \.taskId) { stream in
                         StreamingReply(workspace: workspace, bot: bot, stream: stream)
@@ -339,7 +365,7 @@ private struct MessageList: View {
                             .font(.system(size: 12)).foregroundStyle(Theme.danger).textSelection(.enabled)
                     }
                     Color.clear.frame(height: 1).id("bottom")
-                        .onAppear { atBottom = true }
+                        .onAppear { atBottom = true; unseenCount = 0 }
                         .onDisappear { atBottom = false }
                 }
                 .frame(maxWidth: Theme.readingWidth)
@@ -361,46 +387,72 @@ private struct MessageList: View {
                         ProgressView().controlSize(.large)
                         Text("正在载入历史会话…").font(.system(size: 12)).foregroundStyle(Theme.muted)
                     }
-                } else if conversation.messages.isEmpty && conversation.streaming.isEmpty && !processing {
+                } else if conversation.messages.isEmpty && conversation.optimisticMessages.isEmpty && conversation.streaming.isEmpty && !processing {
                     welcome
                 }
             }
             .overlay(alignment: .bottomTrailing) {
                 if (!atBottom && !conversation.messages.isEmpty) || focusedID != nil {
+                    let showBadge = focusedID == nil && unseenCount > 0
                     Button {
                         if focusedID != nil { workspace.showLatest(botID: botID) }
-                        else { atBottom = true; withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+                        else { atBottom = true; unseenCount = 0; withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "arrow.down").font(.system(size: 12.5, weight: .semibold))
-                                .foregroundStyle(Theme.brand)
-                            Text(focusedID != nil ? "返回最新消息" : "回到底部")
-                                .font(.system(size: 12.5, weight: .medium))
-                                .foregroundStyle(Theme.foreground)
+                                .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.brand)
+                            Text(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
+                                .font(.system(size: 12.5, weight: showBadge ? .semibold : .medium))
+                                .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.foreground)
                         }
                         .padding(.horizontal, 12).frame(height: 34)
-                        .glass(Capsule(), strong: true, lift: .card)
+                        .background {
+                            if showBadge { Capsule().fill(Theme.primary) }
+                        }
+                        .modifier(OptionalGlassCapsule(enabled: !showBadge))
                         .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(focusedID != nil ? "返回最新消息" : "回到底部")
+                    .accessibilityLabel(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
                     .padding(.trailing, 14).padding(.bottom, 10)
                 }
+            }
+            .onChange(of: conversation.messages.last?.seq) { _, nextSeq in
+                guard let nextSeq else { return }
+                if lastObservedSeq > 0 && nextSeq > lastObservedSeq && !atBottom && focusedID == nil {
+                    let added = conversation.messages.filter { $0.seq > lastObservedSeq && !$0.isFromUser }.count
+                    if added > 0 { unseenCount += added }
+                }
+                lastObservedSeq = max(lastObservedSeq, nextSeq)
             }
             .onChange(of: tailKey) {
                 guard focusedID == nil else { return }
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: conversation.sendRevision) {
-                atBottom = true; proxy.scrollTo("bottom", anchor: .bottom)
+                atBottom = true; unseenCount = 0; proxy.scrollTo("bottom", anchor: .bottom)
             }
-            .task(id: loadKey) { await settleAtBottom(proxy) }
+            .task(id: loadKey) {
+                lastObservedSeq = conversation.messages.last?.seq ?? 0
+                unseenCount = 0
+                await settleAtBottom(proxy)
+            }
             .task(id: focusKey) { await scrollToFocused(proxy) }
         }
         .environment(\.openURL, OpenURLAction { url in
             if let path = ChatLinks.path(from: url) {
                 let id = botID, ws = workspace, ui = ui
                 Task { @MainActor in AgentUI.shared.previewFile(path, botID: id, workspace: ws, ui: ui) }
+                return .handled
+            }
+            if let link = ChatLinks.attachment(from: url) {
+                let conv = conversation
+                Task { @MainActor in
+                    if let file = try? await conv.download(link) {
+                        let name = file.filename == "attachment" ? link.name : file.filename
+                        _ = try? FilePanels.save(file.data, suggested: name)
+                    }
+                }
                 return .handled
             }
             guard Markdown.isOpenable(url) else { return .discarded }
@@ -515,6 +567,7 @@ private struct MessageRow: View {
     var joined = false
     /// Last message of its group: it carries the avatar and the time.
     var groupEnd = true
+    var hasJobReply = false
     let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @Environment(\.colorScheme) private var scheme
@@ -533,7 +586,7 @@ private struct MessageRow: View {
         } else if message.isJobReport {
             AssistantFrame(workspace: workspace, bot: bot, showAvatar: true) {
                 VStack(alignment: .leading, spacing: 4) {
-                    JobReportCard(message: message, workspace: workspace, open: openJob, reply: replyTo) {
+                    JobReportCard(message: message, workspace: workspace, open: openJob, reply: replyTo, hasReply: hasJobReply) {
                         let images = AttachmentLink.embeddedImages(message.content)
                         if !images.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
@@ -623,8 +676,8 @@ private struct MessageRow: View {
                 MoreContent(durationMs: workDurationMs(steps: message.toolSteps, endedAt: message.createdAt)) {
                     if !message.streamProgress.isEmpty { MarkdownText(source: message.streamProgress) }
                     if !message.toolSteps.isEmpty {
-                        ToolSteps(steps: message.toolSteps) { step in
-                            AgentUI.shared.previewStep(step, botID: botID, workspace: workspace, ui: ui)
+                        InlineToolStepsList(workspace: workspace, steps: message.toolSteps) { path in
+                            AgentUI.shared.previewFile(path, botID: botID, workspace: workspace, ui: ui)
                         }
                     }
                 }
@@ -839,53 +892,11 @@ private struct TypingDots: View {
     }
 }
 
-/// The tool-activity capsule (icons, `N 项操作`, red `· M 项失败`), expanding to the individual steps. A step opens its record in the inspector.
-private struct ToolSteps: View {
-    let steps: [ToolStep]
-    let open: (ToolStep) -> Void
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button { withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() } } label: {
-                ToolCapsuleLabel(summary: ToolActivity.summary(steps), expanded: expanded)
-            }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(.isButton)
-            if expanded {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(steps) { step in
-                        Button { open(step) } label: {
-                            HStack(spacing: 8) {
-                                Circle().fill(color(step.status)).frame(width: 6, height: 6)
-                                Text(step.label).font(.system(size: 12, weight: .medium))
-                                if !step.summary.isEmpty {
-                                    Text(step.summary).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted).lineLimit(1)
-                                }
-                                Spacer(minLength: 4)
-                                Text(ToolLabels.statusText(step.status)).font(.system(size: 11))
-                                    .foregroundStyle(["failed", "rejected", "cancelled"].contains(step.status) ? Theme.danger : Theme.muted)
-                            }
-                            .foregroundStyle(Theme.foreground).padding(.vertical, 5).padding(.horizontal, 4).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain).help("点击在右侧面板查看详情")
-                    }
-                }
-                .padding(.horizontal, 10).padding(.vertical, 8)
-                .frame(maxWidth: 560, alignment: .leading)
-                .cardSurface(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .transition(.opacity)
-            }
-        }
-    }
-
-    private func color(_ status: String) -> Color {
-        switch status {
-        case "succeeded": Theme.success
-        case "failed", "rejected", "cancelled": Theme.danger
-        case "running", "pending", "awaiting_approval": Theme.approval
-        default: Theme.muted
-        }
+private struct OptionalGlassCapsule: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.glass(Capsule(), strong: true, lift: .card) }
+        else { content.shadow(color: Theme.brand.opacity(0.28), radius: 8, y: 4) }
     }
 }
 

@@ -20,18 +20,60 @@ struct ConnectedView: View {
         _agents = State(initialValue: CliAgentsModel(client: { workspace.client }, cacheScope: { workspace.contentCacheScope }))
     }
 
+    private var chatVisible: Bool {
+        !nav.agentMode && (nav.isSplit ? nav.path.isEmpty : nav.currentBotID != nil)
+    }
+
     var body: some View {
         ContactsView(model: model, workspace: workspace, agents: agents, nav: nav)
             .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
+            .onChange(of: chatVisible, initial: true) { _, visible in workspace.setChatVisible(visible) }
             .onChange(of: workspace.contentCacheScope) { old, new in
                 if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
             }
             .task(id: workspace.connection) { syncAgentStream() }
             .onChange(of: nav.agentMode) { _, _ in syncAgentStream() }
             .onChange(of: nav.path) { _, _ in syncAgentStream() }
-            .onChange(of: scenePhase) { _, _ in syncAgentStream() }
+            .onChange(of: scenePhase) { previous, next in
+                syncAgentStream(reconnect: previous == .background && next == .active)
+            }
             .onChange(of: agents.notificationsOn) { _, _ in syncAgentStream() }
-            .onAppear { agents.installNotifier(); syncAgentStream() }
+            .onAppear {
+                agents.installNotifier()
+                agents.onUnauthorized = {
+                    Task {
+                        await workspace.refresh()
+                        if workspace.connection == .connected { agents.reconnect(force: true) }
+                    }
+                }
+                nav.onSelectSplitBot = { botID in
+                    preferences.selectedAgentID = botID
+                    workspace.select(botID)
+                }
+                AgentNotifier.shared.activeBotID = { nav.agentMode ? nil : (nav.currentBotID ?? workspace.selectedBotID) }
+                AgentNotifier.shared.onOpenBot = { botID in
+                    nav.agentMode = false
+                    preferences.selectedAgentID = botID
+                    workspace.showLatest(botID: botID)
+                    workspace.select(botID)
+                    nav.openChat(botID)
+                }
+                AgentNotifier.shared.onOpenCliSession = { key in
+                    nav.agentMode = true
+                    nav.path = []
+                    agents.start()
+                    agents.select(key)
+                    agents.pendingNavigationKey = key
+                }
+                workspace.onNotify = { title, body, botID, kind in
+                    AgentNotifier.shared.notifyBot(title: title, body: body, botID: botID, kind: kind)
+                }
+                Task { _ = await AgentNotifier.requestAuthorization() }
+                syncAgentStream()
+            }
+            .onChange(of: model.credential?.token) { old, new in
+                if old != nil, new != nil, old != new { syncAgentStream(reconnect: true, forceReplace: true) }
+            }
             .environment(nav)
             .environment(preferences)
             .sheet(isPresented: $nav.showMenu) {
@@ -61,11 +103,11 @@ struct ConnectedView: View {
 
     /// Centralizes NexAgent WebSocket lifecycle on the persistent root view so switching back to NexBot
     /// stops the socket when notifications are disabled, while brief `.inactive` transitions keep it alive.
-    private func syncAgentStream() {
+    private func syncAgentStream(reconnect: Bool = false, forceReplace: Bool = false) {
         let inAgentUI = nav.agentMode || nav.path.contains(.agentSessions)
         let shouldRun = workspace.connection == .connected && (agents.notificationsOn || (inAgentUI && scenePhase != .background))
         if shouldRun {
-            if scenePhase == .active { agents.reconnect() } else { agents.start() }
+            if reconnect { agents.reconnect(force: forceReplace) } else { agents.start() }
         } else if !agents.notificationsOn && (!inAgentUI || scenePhase == .background) {
             agents.stop()
         }

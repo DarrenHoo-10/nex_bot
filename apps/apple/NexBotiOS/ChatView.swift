@@ -5,6 +5,8 @@ struct ChatView: View {
     let workspace: WorkspaceStore
     let botID: String
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(Navigation.self) private var nav
     @State private var errorText: String?
     @State private var quote: QuoteDraft?
@@ -14,6 +16,9 @@ struct ChatView: View {
     @State private var showMemory = false
     @State private var switchingAssistant = false
     @State private var atBottom = true
+    @State private var unseenCount = 0
+    @State private var lastObservedSeq = 0
+    @State private var inlineAttachment: SharedFile?
     @State private var knownMemories: [String: String]?
     @State private var memoryNotice: String?
     @State private var jobSheet: JobSheetItem?
@@ -31,7 +36,10 @@ struct ChatView: View {
     private var bot: Bot? { workspace.bot(botID) }
     private var approvals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
-    private var processing: Bool { (!tasks.isEmpty || conversation.isSending) && conversation.streaming.isEmpty && approvals.isEmpty }
+    private var processing: Bool {
+        workspace.connection == .connected && conversation.streaming.isEmpty && approvals.isEmpty
+            && (conversation.isSending || tasks.contains { ["queued", "running", "cancelling"].contains($0.status) })
+    }
     private var hasModel: Bool { workspace.state?.config != nil }
     private var firstPeer: Bot? { workspace.bots.first { $0.id != botID } }
     private var memorySignature: [String: String] {
@@ -87,14 +95,20 @@ struct ChatView: View {
                            index == 0 || !Calendar.current.isDate(date, inSameDayAs: previous?.createdAt ?? .distantPast) {
                             DateDivider(date: date)
                         }
+                        let hasJobReply: Bool = {
+                            guard message.isJobReport, let jobID = message.jobID else { return false }
+                            return conv.messages[(index + 1)...].contains { $0.isFromUser && $0.jobID == jobID }
+                        }()
                         VStack(alignment: .leading, spacing: 0) {
                             if focusedID == nil && message.id == conv.unreadAnchorID {
                                 UnreadDivider()
                             }
                             MessageRow(message: message, workspace: workspace, botName: bot?.name ?? "Agent", bot: bot,
                                        groupEnd: MessageGrouping.ends(message, next: next),
+                                       hasJobReply: hasJobReply,
                                        onQuote: { author, text in quote = QuoteDraft(author: author, text: text) },
                                        onOpenStep: { step in Task { await openStep(step) } },
+                                       onOpenFile: { path in Task { await openFile(path) } },
                                        onOpenPeer: { nav.openChat($0) },
                                        onOpenJob: { jobSheet = JobSheetItem(id: $0) },
                                        onReplyJob: { job in quote = nil; conv.replyJob = JobReplyTarget(id: job.id, title: job.title) })
@@ -108,20 +122,30 @@ struct ChatView: View {
                         }
                         .id(message.id)
                     }
-                    if conv.isLoaded && conv.messages.isEmpty && conv.streaming.isEmpty && !processing { welcome }
+                    ForEach(conv.optimisticMessages) { optimistic in
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if let title = optimistic.replyJobTitle {
+                                Text("回复后台任务：\(title)").font(.caption).foregroundStyle(Theme.muted)
+                            }
+                            ChatMarkdown(source: optimistic.text, hug: true)
+                                .environment(\.chatInk, .white).environment(\.chatOnAccent, true)
+                                .padding(.horizontal, 16).padding(.vertical, 9)
+                                .background(userBubbleGradient(dark: scheme == .dark), in: Bubble.user)
+                                .opacity(0.8)
+                            Text("发送中…").font(.caption2).foregroundStyle(Theme.muted).padding(.horizontal, 4)
+                        }
+                        .padding(.leading, 56).padding(.top, 14)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    if conv.isLoaded && conv.messages.isEmpty && conv.optimisticMessages.isEmpty && conv.streaming.isEmpty && !processing { welcome }
                     ForEach(conv.streaming, id: \.taskId) { part in
                         StreamingRow(text: part.text, replyingTo: replyingTo(taskID: part.taskId), workspace: workspace, bot: bot).padding(.top, 14)
                     }
                     if processing {
                         ThinkingIndicator(name: bot?.name ?? "Agent", phrase: tasks.first?.phrase ?? "正在发送…", workspace: workspace, bot: bot).padding(.top, 14)
                     }
-                    ForEach(approvals) { approval in
-                        ApprovalCard(approval: approval, botName: bot?.name ?? "") { allow, remember in await decide(approval, allow: allow, remember: remember) }
-                            .padding(.top, 14)
-                    }
-                    ForEach(delegatedPeers, id: \.self) { peerID in delegatedLine(peerID).padding(.top, 14) }
                     Color.clear.frame(height: 1).id(bottomID)
-                        .onAppear { atBottom = true }
+                        .onAppear { atBottom = true; unseenCount = 0 }
                         .onDisappear { atBottom = false }
                 }
                 .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 16)
@@ -141,35 +165,49 @@ struct ChatView: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 if (!atBottom && !conv.messages.isEmpty) || focusedID != nil {
+                    let showBadge = focusedID == nil && unseenCount > 0
                     Button {
                         if focusedID != nil { workspace.showLatest(botID: botID) }
                         else { scrollToBottom(proxy) }
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "arrow.down").font(.system(size: 12.5, weight: .semibold))
-                                .foregroundStyle(Theme.brand)
-                            Text(focusedID != nil ? "返回最新消息" : "回到底部")
-                                .font(.system(size: 12.5, weight: .medium))
-                                .foregroundStyle(Theme.foreground)
+                                .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.brand)
+                            Text(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
+                                .font(.system(size: 12.5, weight: showBadge ? .semibold : .medium))
+                                .foregroundStyle(showBadge ? Theme.primaryForeground : Theme.foreground)
                         }
                         .padding(.horizontal, 12).frame(height: 34)
-                        .glass(Capsule(), strong: true, lift: .card)
+                        .background { if showBadge { Capsule().fill(Theme.primary) } }
+                        .modifier(OptionalGlassCapsule(enabled: !showBadge))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(focusedID != nil ? "返回最新消息" : "回到底部")
+                    .accessibilityLabel(focusedID != nil ? "返回最新消息" : (showBadge ? "\(unseenCount) 条新消息" : "回到底部"))
                     .padding(.trailing, 14).padding(.bottom, 10)
                     .transition(.opacity.combined(with: .scale(scale: 0.94)))
                 }
             }
-            .onChange(of: conv.messages.last?.seq) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
+            .onChange(of: conv.messages.last?.seq) { _, nextSeq in
+                if let nextSeq {
+                    if lastObservedSeq > 0 && nextSeq > lastObservedSeq && !atBottom && focusedID == nil {
+                        let added = conv.messages.filter { $0.seq > lastObservedSeq && !$0.isFromUser }.count
+                        if added > 0 { unseenCount += added }
+                    }
+                    lastObservedSeq = max(lastObservedSeq, nextSeq)
+                }
+                if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) }
+            }
+            .onChange(of: conv.optimisticMessages.count) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
             .onChange(of: conv.streaming) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
             .onChange(of: approvals.count) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
             .onChange(of: processing) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
             .onChange(of: conv.sendRevision) {
-                atBottom = true; proxy.scrollTo(bottomID, anchor: .bottom)
+                atBottom = true; unseenCount = 0; proxy.scrollTo(bottomID, anchor: .bottom)
             }
             .task(id: unreadKey) {
                 guard conv.isLoaded, focusedID == nil else { return }
+                lastObservedSeq = conv.messages.last?.seq ?? 0
+                unseenCount = 0
                 if let unreadID = conv.unreadAnchorID, conv.messages.contains(where: { $0.id == unreadID }) {
                     atBottom = false
                     for delay in [0, 80, 260] {
@@ -204,13 +242,29 @@ struct ChatView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ComposerView(workspace: workspace, botID: botID, conversation: conv, botName: bot?.name ?? "Agent", quote: $quote, menu: $composerMenu)
+            VStack(spacing: 6) {
+                if !approvals.isEmpty || !delegatedPeers.isEmpty {
+                    VStack(spacing: 8) {
+                        ForEach(approvals) { approval in
+                            let jobTitle = workspace.state?.jobs.first(where: { $0.taskID == approval.taskID })?.title
+                            ApprovalCard(approval: approval, botName: bot?.name ?? "", jobTitle: jobTitle) { allow, remember in
+                                await decide(approval, allow: allow, remember: remember)
+                            }
+                        }
+                        ForEach(delegatedPeers, id: \.self) { peerID in delegatedLine(peerID) }
+                    }
+                    .padding(.horizontal, 12).padding(.top, 4)
+                }
+                ComposerView(workspace: workspace, botID: botID, conversation: conv, botName: bot?.name ?? "Agent", quote: $quote, menu: $composerMenu)
+            }
         }
         .environment(\.openURL, OpenURLAction { url in
-            if url.scheme == ChatMarkdown.fileScheme {
-                if let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "path" })?.value {
-                    Task { await openFile(path) }
-                }
+            if let path = ChatLinks.path(from: url) {
+                Task { await openFile(path) }
+                return .handled
+            }
+            if let link = ChatLinks.attachment(from: url) {
+                Task { await openInlineAttachment(link) }
                 return .handled
             }
             return Markdown.isOpenable(url) ? .systemAction : .discarded
@@ -223,7 +277,8 @@ struct ChatView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 topicsButton
-                RoundGlassButton(symbol: "sidebar.right", label: "助手详情", size: 32) { nav.openAgentDetail(botID) }
+                let hasOpenJobs = !(workspace.state?.openJobs(botID: botID).isEmpty ?? true)
+                RoundGlassButton(symbol: "sidebar.right", label: "助手详情", badgeDot: hasOpenJobs, size: 32) { nav.openAgentDetail(botID) }
             }
             ToolbarItem(placement: .principal) { titleView }
         }
@@ -231,6 +286,7 @@ struct ChatView: View {
         .sheet(isPresented: $showMemory) { MemoryEditorSheet(workspace: workspace, botID: botID) }
         .sheet(item: $jobSheet) { JobDetailView(workspace: workspace, jobID: $0.id) }
         .sheet(isPresented: $showTopics) { FinanceTopicsView(workspace: workspace, botID: botID, onClose: { showTopics = false }) }
+        .sheet(item: $inlineAttachment) { file in QuickLookSheet(url: file.url).ignoresSafeArea() }
         .onAppear {
             workspace.select(botID)
             conv.isActive = scenePhase == .active
@@ -238,7 +294,10 @@ struct ChatView: View {
         }
         .onDisappear {
             conv.isActive = false
-            if workspace.selectedBotID == botID { workspace.select(nil) }
+            // Only clear selection when actually popping out of this chat on compact width, not in iPad split mode or when pushing AgentDetailView.
+            if sizeClass != .regular && workspace.selectedBotID == botID && !nav.path.contains(.chat(botID)) && !nav.path.contains(.agentDetail(botID)) {
+                workspace.select(nil)
+            }
         }
         .onChange(of: scenePhase) { conv.isActive = scenePhase == .active }
         .onChange(of: conv.messages.last?.seq) { Task { await conv.markReadIfNeeded() } }
@@ -375,7 +434,16 @@ struct ChatView: View {
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         atBottom = true
+        unseenCount = 0
         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(bottomID, anchor: .bottom) }
+    }
+
+    private func openInlineAttachment(_ link: AttachmentLink) async {
+        do {
+            let file = try await workspace.downloadAttachment(id: link.id)
+            let name = file.filename == "attachment" ? link.name : file.filename
+            inlineAttachment = SharedFile(url: try TempFiles.write(file.data, name: name))
+        } catch { errorText = message(of: error) }
     }
 
     private func loadOlder(_ conv: ConversationStore, _ proxy: ScrollViewProxy) async {
@@ -419,6 +487,14 @@ private struct UnreadDivider: View {
         }
         .padding(.top, 16).padding(.bottom, 4)
         .accessibilityLabel("以下为未读消息")
+    }
+}
+
+private struct OptionalGlassCapsule: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.glass(Capsule(), strong: true, lift: .card) }
+        else { content.shadow(color: Theme.brand.opacity(0.28), radius: 8, y: 4) }
     }
 }
 

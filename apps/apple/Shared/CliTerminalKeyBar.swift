@@ -24,10 +24,8 @@ struct CliTerminalKeyBar: View {
     @State private var showShortcuts = false
     @State private var showPad = false
     @State private var lastTap: [CliTermModifierKey: Date] = [:]
-    #if os(iOS)
     @State private var downAt: [CliTermModifierKey: Date] = [:]
     private static let holdDelayMs = 350
-    #endif
 
     private static let doubleTapWindow: TimeInterval = 0.35
 
@@ -180,23 +178,24 @@ struct CliTerminalKeyBar: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { mods.tap(key, quick: false) }
         #else
-        Button {
-            let now = Date()
-            let quick = lastTap[key].map { now.timeIntervalSince($0) < Self.doubleTapWindow } ?? false
-            lastTap[key] = now
-            mods.tap(key, quick: quick)
-        } label: {
-            KeyCapLabel(label: label, state: state)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.38 : 1)
-        .help("\(name)（单击一次生效，双击锁定）")
-        .accessibilityLabel(name)
+        KeyCapLabel(label: label, state: state)
+            .opacity(disabled ? 0.38 : 1)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !disabled else { return }
+                        handleDown(key)
+                    }
+                    .onEnded { _ in
+                        guard !disabled else { return }
+                        handleUp(key)
+                    }
+            )
+            .help("\(name)（单击一次生效，按住持续生效，双击锁定）")
+            .accessibilityLabel(name)
         #endif
     }
 
-    #if os(iOS)
     private func handleDown(_ key: CliTermModifierKey) {
         guard downAt[key] == nil else { return }
         let stamp = Date()
@@ -226,7 +225,6 @@ struct CliTerminalKeyBar: View {
         downAt[key] = nil
         mods.release(key)
     }
-    #endif
 
     private func haptic() {
         #if os(iOS)

@@ -90,6 +90,11 @@ actor LocalContentCache {
     }
 
     private func purgeOtherScopes() {
+        // Also purge disk image preview caches whenever the active privacy scope changes or logs out.
+        if let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let legacyImages = caches.appendingPathComponent("message-images", isDirectory: true)
+            try? manager.removeItem(at: legacyImages)
+        }
         guard let root, let folders = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
         for folder in folders where folder.lastPathComponent != active { try? manager.removeItem(at: folder) }
     }

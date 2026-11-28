@@ -19,13 +19,15 @@ struct DevicesView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "设备")
-            VStack(spacing: 0) {
-                ForEach(visible) { session in
-                    sessionRow(session)
-                    Divider().overlay(Theme.border)
+        VStack(alignment: .leading, spacing: 16) {
+            if !visible.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, session in
+                        sessionRow(session)
+                        if index < visible.count - 1 { Divider().overlay(Theme.border).padding(.leading, 62) }
+                    }
                 }
+                .cardStyle(radius: 16)
             }
             if !loaded { Text("正在加载…").font(.footnote).foregroundStyle(Theme.muted) }
             else if !listFailed && visible.isEmpty { Text("暂无设备").font(.footnote).foregroundStyle(Theme.muted) }
@@ -42,27 +44,43 @@ struct DevicesView: View {
         }
     }
 
+    private func deviceSymbol(_ name: String) -> String {
+        let lower = name.lowercased()
+        if lower.range(of: #"\b(android|iphone|ipad|ios|mobile|phone|pixel|huawei|xiaomi|redmi|honor|oppo|vivo|oneplus|samsung)\b|手机"#, options: .regularExpression) != nil {
+            return "iphone"
+        }
+        if lower.range(of: #"\b(browser|chrome|safari|firefox|edge|web)\b|浏览器"#, options: .regularExpression) != nil {
+            return "globe"
+        }
+        return "laptopcomputer"
+    }
+
     private func sessionRow(_ session: ClientSession) -> some View {
         let isCurrent = session.sessionID == workspace.currentSessionID
         let online = session.lastSeenAt.map { clock.timeIntervalSince($0) < 90 } ?? false
         return HStack(spacing: 12) {
-            Image(systemName: "laptopcomputer").font(.title3.weight(.light)).foregroundStyle(Theme.muted).frame(width: 28)
-            VStack(alignment: .leading, spacing: 6) {
+            Image(systemName: deviceSymbol(session.name))
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Theme.brand)
+                .frame(width: 36, height: 36)
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.border))
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
                     Text(session.name.isEmpty ? "未命名设备" : session.name).font(.subheadline.weight(.bold)).lineLimit(2)
                     if isCurrent {
-                        Text("本设备").font(.caption2.weight(.medium)).foregroundStyle(Theme.brand)
-                            .padding(.horizontal, 7).padding(.vertical, 2).background(Theme.brandSoft, in: RoundedRectangle(cornerRadius: 5))
+                        Text("当前设备").font(.caption2.weight(.medium)).foregroundStyle(Theme.brandInk)
+                            .padding(.horizontal, 8).padding(.vertical, 2).background(Theme.brandSoft, in: Capsule())
                     }
                 }
                 HStack(spacing: 6) {
-                    Circle().fill(online ? Theme.brand : Theme.muted).frame(width: 6, height: 6)
+                    Circle().fill(online ? Theme.success : Theme.muted).frame(width: 7, height: 7)
                     Text(online ? "在线" : "离线").font(.caption).foregroundStyle(Theme.muted)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 16)
+        .padding(.horizontal, 14).padding(.vertical, 14)
     }
 
     private func unknownCall(_ call: UnknownCall) -> some View {

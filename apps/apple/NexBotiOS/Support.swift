@@ -25,13 +25,17 @@ private struct WorkspaceAgentAvatar: View {
     }
 }
 
-/// The account avatar: blue circle with the first character of the account name and an online dot.
+/// The account avatar: gradient blue circle (emerald in NexAgent mode) with the first character and online dot.
 struct AccountAvatar: View {
     var size: CGFloat = 32
     var initial = "N"
+    var agentMode = false
     var body: some View {
+        let colors: [Color] = agentMode
+            ? [Color(hex: 0x38BA72), Color(hex: 0x097246)]
+            : [Color(hex: 0x5285FF), Color(hex: 0x2859DC)]
         ZStack(alignment: .bottomTrailing) {
-            Circle().fill(Theme.brand)
+            Circle().fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
                 .overlay(Text(initial).font(.system(size: size * 0.45, weight: .semibold)).foregroundStyle(.white))
             Circle().fill(Theme.success).frame(width: max(8, size * 0.28), height: max(8, size * 0.28))
                 .overlay(Circle().stroke(Theme.background, lineWidth: 2))

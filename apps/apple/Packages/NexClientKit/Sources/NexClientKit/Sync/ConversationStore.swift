@@ -9,6 +9,8 @@ public final class ConversationStore {
     public private(set) var messages: [AgentMessage] = []
     /// Live partial replies, one per running task.
     public private(set) var streaming: [StreamingText] = []
+    /// Optimistic user messages currently in flight so sends appear immediately in the transcript.
+    public private(set) var optimisticMessages: [OptimisticMessage] = []
     /// More history exists before ``messages``.first; call ``loadOlder()``.
     public private(set) var hasOlder = false
     public private(set) var isLoadingOlder = false
@@ -98,6 +100,12 @@ public final class ConversationStore {
         }
         let committed = Set(history.filter { $0.role == "assistant" }.map { "\($0.taskID ?? "")\u{1}\($0.content)" })
         self.streaming = streaming.filter { !$0.text.isEmpty && !committed.contains("\($0.taskId)\u{1}\($0.text)") }
+        if !optimisticMessages.isEmpty {
+            let committedKeys = Set(history.compactMap { $0.row.string("source_key") })
+            optimisticMessages.removeAll { item in
+                !item.sourceKey.isEmpty && committedKeys.contains(item.sourceKey)
+            }
+        }
         if let hasOlder { self.hasOlder = hasOlder }
     }
 
@@ -125,34 +133,48 @@ public final class ConversationStore {
 
     func reset() {
         generation += 1
-        messages = []; streaming = []; hasOlder = false; isLoadingOlder = false; isLoaded = false
+        messages = []; streaming = []; optimisticMessages = []; hasOlder = false; isLoadingOlder = false; isLoaded = false
         loadedSync = nil; readPosition = 0; pendingUnreadReadSeq = nil; unreadAnchorID = nil; awaitingFreshUnread = false
     }
 
     func discardDraft() {
         for upload in uploads.values { upload.cancel() }
         uploads.removeAll()
-        draft = ""; attachments = []; pending = nil; sendError = nil; replyJob = nil
+        draft = ""; attachments = []; optimisticMessages = []; pending = nil; sendError = nil; replyJob = nil
     }
 
     /// Uploads a file for the next message. A file over 5 MiB or empty, or a sixth file, sets ``sendError`` ("文件不能超过 5 MB" /
-    /// "最多添加 5 个附件") and adds nothing. A failed upload stays in ``attachments`` as `.failed` until removed.
+    /// "最多添加 5 个附件") and adds nothing. A failed upload stays in ``attachments`` as `.failed` until retried or removed.
     public func addAttachment(name: String, data: Data) async {
         guard attachments.count < ChatAttachment.maxCount else { sendError = ChatAttachment.tooManyMessage; return }
         guard !data.isEmpty, data.count <= ChatAttachment.maxBytes else { sendError = ChatAttachment.tooLargeMessage; return }
         sendError = nil
         let picture = AttachmentLink(id: "", name: name).isImage
-        let local = PendingAttachment(id: UUID().uuidString, name: name, size: data.count, state: .uploading, preview: picture ? data : nil)
+        let local = PendingAttachment(id: UUID().uuidString, name: name, size: data.count, state: .uploading, preview: picture ? data : nil, payload: data)
         attachments.append(local)
+        await uploadPending(id: local.id, name: name, data: data)
+    }
+
+    /// Retries a previously failed attachment upload using its retained bytes.
+    public func retryAttachment(_ attachment: PendingAttachment) async {
+        guard !isSending, let data = attachment.payload,
+              let index = attachments.firstIndex(where: { $0.id == attachment.id }),
+              attachments[index].errorMessage != nil else { return }
+        sendError = nil
+        attachments[index].state = .uploading
+        await uploadPending(id: attachment.id, name: attachment.name, data: data)
+    }
+
+    private func uploadPending(id: String, name: String, data: Data) async {
         let upload = Task { try await workspace.client.uploadAttachment(botID: botID, name: name, data: data) }
-        uploads[local.id] = upload
-        defer { uploads[local.id] = nil }
+        uploads[id] = upload
+        defer { uploads[id] = nil }
         do {
             let uploaded = try await upload.value
-            update(local.id, .ready(uploaded))
+            update(id, .ready(uploaded), clearPayload: true)
         } catch {
-            guard attachments.contains(where: { $0.id == local.id }) else { return }
-            update(local.id, .failed(workspace.report(error).message))
+            guard attachments.contains(where: { $0.id == id }) else { return }
+            update(id, .failed(workspace.report(error).message), clearPayload: false)
         }
     }
 
@@ -163,9 +185,10 @@ public final class ConversationStore {
         attachments.removeAll { $0.id == attachment.id }
     }
 
-    private func update(_ id: String, _ state: PendingAttachment.State) {
+    private func update(_ id: String, _ state: PendingAttachment.State, clearPayload: Bool = false) {
         guard let i = attachments.firstIndex(where: { $0.id == id }) else { return }
         attachments[i].state = state
+        if clearPayload { attachments[i].payload = nil }
     }
 
     /// Loads a cached or bounded page before the oldest visible message.
@@ -214,17 +237,21 @@ public final class ConversationStore {
         clearUnreadAnchor()
         sendRevision += 1
         isSending = true; sendError = nil
+        if !text.isEmpty {
+            optimisticMessages.append(OptimisticMessage(id: clientID, text: text, createdAt: Date(), replyJobTitle: nil, sourceKey: "agent-input:\(botID):\(clientID)"))
+        }
         do {
             try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID, attachments: ids)
             pending = nil
             attachments.removeAll { $0.attachment.map { ids.contains($0.id) } ?? false }
             if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
             // refresh() returns when its reload is superseded, before the snapshot that
-            // contains this send is on screen. Keep the typing row until that snapshot.
+            // contains this send is on screen. Keep the typing row and optimistic message until commit() observes source_key.
             workspace.noteAcceptedSend(self)
             await workspace.refresh()
             return true
         } catch {
+            optimisticMessages.removeAll { $0.id == clientID }
             finishSending()
             sendError = workspace.report(error).message
             return false
@@ -242,6 +269,7 @@ public final class ConversationStore {
         clearUnreadAnchor()
         sendRevision += 1
         isSending = true; sendError = nil
+        optimisticMessages.append(OptimisticMessage(id: clientID, text: text, createdAt: Date(), replyJobTitle: job.title, sourceKey: "job-input:\(job.id):\(clientID)"))
         do {
             try await workspace.client.jobInput(jobID: job.id, text: text, clientID: clientID)
             pending = nil; replyJob = nil
@@ -250,6 +278,7 @@ public final class ConversationStore {
             await workspace.refresh()
             return true
         } catch {
+            optimisticMessages.removeAll { $0.id == clientID }
             finishSending()
             sendError = workspace.report(error).message
             return false
@@ -298,4 +327,16 @@ public struct JobReplyTarget: Sendable, Hashable {
     public let id: String
     public let title: String
     public init(id: String, title: String) { self.id = id; self.title = title }
+}
+
+/// An outgoing user message rendered optimistically before Core echoes it back in the feed.
+public struct OptimisticMessage: Sendable, Hashable, Identifiable {
+    public let id: String
+    public let text: String
+    public let createdAt: Date
+    public let replyJobTitle: String?
+    public let sourceKey: String
+    public init(id: String, text: String, createdAt: Date = Date(), replyJobTitle: String? = nil, sourceKey: String = "") {
+        self.id = id; self.text = text; self.createdAt = createdAt; self.replyJobTitle = replyJobTitle; self.sourceKey = sourceKey
+    }
 }

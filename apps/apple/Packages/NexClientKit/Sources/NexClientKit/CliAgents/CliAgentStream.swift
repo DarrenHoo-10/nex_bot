@@ -188,8 +188,18 @@ public actor CliAgentStream {
     }
 
     /// Skips the wait of a pending reconnect (the app came back to the front, the network is back).
-    public func reconnectNow() {
-        guard runTask != nil, status != .open, status != .connecting else { return }
+    /// Pass `force: true` when credentials rotated so even an `.open` or `.connecting` socket is replaced
+    /// with a fresh token while preserving all list and session subscriptions.
+    public func reconnectNow(force: Bool = false) {
+        if runTask == nil {
+            guard force else { return }
+            attempt = 0
+            generation += 1
+            let mine = generation
+            runTask = Task { await self.run(generation: mine) }
+            return
+        }
+        if !force && (status == .open || status == .connecting) { return }
         runTask?.cancel()
         socket?.cancel(); socket = nil
         generation += 1

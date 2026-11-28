@@ -53,10 +53,10 @@ struct TranslationModelSection: View {
                         .pickerStyle(.menu).disabled(saving)
                     }
                     let value = settings.selection?.connectionId == provider.id && selectedAvailable ? settings.selection?.model ?? "" : ""
-                    let source = ModelSource(cacheKey: ModelCatalogCache.key(workspace, provider: provider.provider, endpoint: provider.endpoint, secret: ""),
+                    let source = ModelSource(cacheKey: "\(ModelCatalogCache.key(workspace, provider: provider.provider, endpoint: provider.endpoint, secret: ""))|\(provider.id)",
                                              fetch: { try await workspace.listModels(connectionID: provider.id) })
                     ModelPickerField(label: "选择翻译模型", value: value, models: provider.models, source: source,
-                                     disabled: saving, allowCustom: false, isOpen: $pickerOpen) { model in
+                                     disabled: saving, allowCustom: false, names: provider.names, isOpen: $pickerOpen) { model in
                         guard !model.isEmpty else { return }
                         Task { await save(.init(connectionId: provider.id, model: model)) }
                     }

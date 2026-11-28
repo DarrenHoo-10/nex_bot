@@ -33,7 +33,7 @@ struct GlassSurface<S: InsettableShape>: ViewModifier {
     }
 }
 
-/// An opaque card with the soft card shadow (message bubbles, document cards, journal tiles).
+/// An opaque card with a subtle border and soft card shadow (message bubbles, document cards, journal tiles).
 struct CardSurface<S: InsettableShape>: ViewModifier {
     let shape: S
     var fill: Color = Theme.card
@@ -42,8 +42,9 @@ struct CardSurface<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(shape.fill(fill))
-            .shadow(color: Theme.shadowInk.opacity(scheme == .dark ? 0.25 : 0.07), radius: 14, y: 8)
-            .shadow(color: Theme.shadowInk.opacity(scheme == .dark ? 0.25 : 0.05), radius: 1, y: 1)
+            .overlay { shape.strokeBorder(Theme.border, lineWidth: 1) }
+            .shadow(color: Theme.shadowInk.opacity(scheme == .dark ? 0.28 : 0.055), radius: 14, y: 6)
+            .shadow(color: Theme.shadowInk.opacity(scheme == .dark ? 0.25 : 0.04), radius: 1.5, y: 1)
     }
 }
 
@@ -56,29 +57,40 @@ extension View {
     }
 }
 
-/// Bubble outlines: 20pt corners, with the 6pt tail corner on the last message of a group.
+/// Bubble outlines: 18pt corners, with the 6pt tail corner on the last message of a group (`theme.css`).
 enum Bubble {
     static func assistant(tail: Bool) -> UnevenRoundedRectangle {
-        UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: tail ? 6 : 20, bottomTrailingRadius: 20, topTrailingRadius: 20, style: .continuous)
+        UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: tail ? 6 : 18, bottomTrailingRadius: 18, topTrailingRadius: 18, style: .continuous)
     }
-    static let user = UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 20, bottomTrailingRadius: 6, topTrailingRadius: 20, style: .continuous)
+    static let user = UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous)
 }
 
-/// A round glass icon button (header actions, toolbars).
+/// A round glass icon button (header actions, toolbars). Active state uses soft brand fill + border like Web.
 struct RoundGlassButton: View {
     let symbol: String
     let label: String
     var selected = false
+    var badgeDot = false
     var size: CGFloat = 34
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: size * 0.42, weight: .medium))
-                .foregroundStyle(selected ? Theme.background : Theme.foreground)
+                .foregroundStyle(selected ? Theme.brand : Theme.foreground)
                 .frame(width: size, height: size)
-                .background { Circle().fill(selected ? Theme.foreground : .clear) }
-                .glass(Circle())
+                .background { Circle().fill(selected ? Theme.brandSoft : .clear) }
+                .glass(Circle(), strong: selected, lift: .card)
+                .overlay { if selected { Circle().strokeBorder(Theme.brand.opacity(0.45), lineWidth: 1) } }
+                .overlay(alignment: .topTrailing) {
+                    if badgeDot {
+                        Circle()
+                            .fill(Theme.brand)
+                            .frame(width: 7.5, height: 7.5)
+                            .overlay(Circle().stroke(Theme.card, lineWidth: 1.5))
+                            .offset(x: -1, y: 1)
+                    }
+                }
                 .contentShape(Circle())
         }
         .plainActionFeedback()
@@ -90,7 +102,7 @@ struct RoundGlassButton: View {
 // MARK: - Identity colour
 
 extension AgentAppearance {
-    /// The Agent's identity colour: its companion colour, else the default teal (web `--bot-color`).
+    /// The Agent's identity colour: its companion colour, else the NexBot bright blue.
     var accentHex: UInt32 {
         guard case .companion(_, let color) = self else { return Theme.defaultAccent }
         switch color {
@@ -104,11 +116,15 @@ extension AgentAppearance {
     var accent: Color { Color(hex: accentHex) }
 }
 
-/// The user bubble: the Agent's identity colour as a soft gradient (`--me-a` to `--me-b`).
-func userBubbleGradient(accentHex: UInt32, dark: Bool) -> LinearGradient {
-    let a = dark ? mixHex(accentHex, 0xFFFFFF, 0.86) : mixHex(accentHex, 0xFFFFFF, 0.94)
-    let b = dark ? mixHex(accentHex, 0x000000, 0.90) : accentHex
-    return LinearGradient(colors: [Color(hex: a), Color(hex: b)], startPoint: UnitPoint(x: 0.33, y: 0), endPoint: UnitPoint(x: 0.67, y: 1))
+/// The unified NexBot Bright-Blue user bubble gradient (`--me-a` to `--me-b` in `src/personal/theme.css`).
+func userBubbleGradient(accentHex: UInt32 = Theme.defaultAccent, dark: Bool) -> LinearGradient {
+    let top: UInt32 = dark ? 0x4678F2 : 0x4B81F8
+    let bottom: UInt32 = dark ? 0x2B59D4 : 0x2D60E5
+    return LinearGradient(
+        colors: [Color(hex: top), Color(hex: bottom)],
+        startPoint: UnitPoint(x: 0.33, y: 0),
+        endPoint: UnitPoint(x: 0.67, y: 1)
+    )
 }
 
 /// `color-mix(in srgb, a weight, b)`.
@@ -311,33 +327,41 @@ struct ToolCapsuleLabel: View {
 
 // MARK: - Inspector parts
 
-/// Segmented pill tabs of the agent panel.
+/// Segmented rounded-rect tabs of the agent panel (`theme.css:865-880`).
 struct PillTabs<T: Hashable>: View {
     let items: [T]
     let title: (T) -> String
     @Binding var selection: T
 
     var body: some View {
-        HStack(spacing: 0) {
+        let outer = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let inner = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        HStack(spacing: 2) {
             ForEach(items, id: \.self) { item in
                 let on = selection == item
                 Button { withAnimation(.easeOut(duration: 0.15)) { selection = item } } label: {
-                    Text(title(item)).font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(on ? Theme.foreground : Theme.muted)
+                    Text(title(item)).font(.system(size: 12.5, weight: on ? .semibold : .medium))
+                        .foregroundStyle(on ? Theme.brandInk : Theme.muted)
                         .frame(maxWidth: .infinity).padding(.vertical, 6)
-                        .background { if on { Capsule().fill(Theme.card).shadow(color: Theme.shadowInk.opacity(0.10), radius: 2, y: 1) } }
-                        .contentShape(Capsule())
+                        .background {
+                            if on {
+                                inner.fill(Theme.card)
+                                    .overlay(inner.strokeBorder(Theme.border, lineWidth: 0.8))
+                                    .shadow(color: Theme.shadowInk.opacity(0.08), radius: 2.5, y: 1)
+                            }
+                        }
+                        .contentShape(inner)
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
         }
         .padding(3)
-        .background(Theme.wash, in: Capsule())
+        .background(Theme.wash, in: outer)
     }
 }
 
-/// A large avatar with a soft halo in the Agent's colour.
+/// A large avatar with a soft NexBot bright-blue halo (`theme.css:859-864`).
 struct HeroHalo<Content: View>: View {
     let accent: Color
     @ViewBuilder let content: () -> Content
@@ -347,9 +371,9 @@ struct HeroHalo<Content: View>: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(RadialGradient(colors: [accent.opacity(0.26), .clear], center: .center, startRadius: 0, endRadius: 56))
-                .frame(width: 120, height: 120).blur(radius: 6)
-                .scaleEffect(pulse ? 1.05 : 0.96).opacity(pulse ? 1 : 0.75)
+                .fill(RadialGradient(colors: [Theme.brand.opacity(0.22), .clear], center: .center, startRadius: 0, endRadius: 56))
+                .frame(width: 124, height: 124).blur(radius: 6)
+                .scaleEffect(pulse ? 1.05 : 0.96).opacity(pulse ? 1 : 0.78)
             content()
         }
         .frame(width: 132, height: 132)

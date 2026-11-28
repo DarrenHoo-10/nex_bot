@@ -75,12 +75,12 @@ private struct ModelRowItem: Identifiable, Equatable {
 }
 
 /// Filters `models` (plus the empty id when `emptyLabel` is set) by the whitespace-separated terms of `query` and offers a typed id.
-private func filterModels(_ models: [String], query: String, emptyLabel: String?, allowCustom: Bool) -> [ModelRowItem] {
+private func filterModels(_ models: [String], query: String, emptyLabel: String?, allowCustom: Bool, names: [String: String] = [:]) -> [ModelRowItem] {
     var seen = Set<String>()
     let all = ((emptyLabel != nil ? [""] : []) + models).filter { seen.insert($0).inserted }
     let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
     var rows = all.filter { model in
-        let haystack = (model.isEmpty ? emptyLabel ?? "" : model).lowercased()
+        let haystack = (model.isEmpty ? emptyLabel ?? "" : model + " " + (names[model] ?? "")).lowercased()
         return terms.allSatisfy { haystack.contains($0) }
     }.map { ModelRowItem(model: $0, custom: false) }
     let typed = query.trimmingCharacters(in: .whitespaces)
@@ -117,10 +117,17 @@ struct ModelPickerSheet: View {
     var models: [String]?
     var source: ModelSource?
     var allowCustom = true
+    var names: [String: String] = [:]
     let onSelect: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var loader = ModelCatalogLoader()
     @State private var query = ""
+
+    private var mergedNames: [String: String] {
+        var out = loader.catalog?.names ?? [:]
+        for (k, v) in names { out[k] = v }
+        return out
+    }
 
     private var options: [String] {
         var out: [String] = value.isEmpty ? [] : [value]
@@ -129,7 +136,7 @@ struct ModelPickerSheet: View {
     }
 
     var body: some View {
-        let rows = filterModels(options, query: query, emptyLabel: emptyLabel, allowCustom: allowCustom)
+        let rows = filterModels(options, query: query, emptyLabel: emptyLabel, allowCustom: allowCustom, names: mergedNames)
         VStack(spacing: 0) {
             HStack {
                 Text(title).font(.headline)
@@ -173,7 +180,7 @@ struct ModelPickerSheet: View {
 
     private func rowView(_ row: ModelRowItem) -> some View {
         let checked = !row.custom && row.model == value
-        let label = row.custom ? "使用「\(row.model)」" : (row.model.isEmpty ? (emptyLabel ?? "") : row.model)
+        let label = row.custom ? "使用「\(row.model)」" : (row.model.isEmpty ? (emptyLabel ?? "") : mergedNames[row.model] ?? row.model)
         return Button { onSelect(row.model); dismiss() } label: {
             HStack(spacing: 10) {
                 Text(label).font(.subheadline).lineLimit(1).truncationMode(.middle)
@@ -217,15 +224,20 @@ struct ModelPickerField: View {
     var source: ModelSource?
     var disabled = false
     var allowCustom = true
+    var names: [String: String] = [:]
     @Binding var isOpen: Bool
     let onChange: (String) -> Void
+
+    private var displayValue: String {
+        value.isEmpty ? (emptyLabel ?? "选择模型") : (names[value] ?? value)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let title { Text(title).font(.footnote.weight(.semibold)) }
             Button { isOpen = true } label: {
                 HStack(spacing: 8) {
-                    Text(value.isEmpty ? (emptyLabel ?? "选择模型") : value).lineLimit(1).truncationMode(.middle)
+                    Text(displayValue).lineLimit(1).truncationMode(.middle)
                         .foregroundStyle(value.isEmpty && emptyLabel == nil ? Theme.muted : Theme.foreground)
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(Theme.muted)
@@ -235,10 +247,10 @@ struct ModelPickerField: View {
                 .opacity(disabled ? 0.5 : 1).contentShape(Rectangle())
             }
             .buttonStyle(.plain).disabled(disabled)
-            .accessibilityLabel(label).accessibilityValue(value.isEmpty ? (emptyLabel ?? "") : value)
+            .accessibilityLabel(label).accessibilityValue(displayValue)
         }
         .sheet(isPresented: $isOpen) {
-            ModelPickerSheet(title: label, value: value, emptyLabel: emptyLabel, models: models, source: source, allowCustom: allowCustom, onSelect: onChange)
+            ModelPickerSheet(title: label, value: value, emptyLabel: emptyLabel, models: models, source: source, allowCustom: allowCustom, names: names, onSelect: onChange)
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
     }
@@ -251,11 +263,12 @@ struct ModelMultiList: View {
     let models: [String]
     let selected: Set<String>
     var maxHeight: CGFloat = 320
+    var names: [String: String] = [:]
     let onToggle: (String) -> Void
     @State private var query = ""
 
     var body: some View {
-        let rows = filterModels(models, query: query, emptyLabel: nil, allowCustom: false)
+        let rows = filterModels(models, query: query, emptyLabel: nil, allowCustom: false, names: names)
         VStack(spacing: 8) {
             SearchField(text: $query)
             HStack {
@@ -266,17 +279,18 @@ struct ModelMultiList: View {
                 LazyVStack(spacing: 0) {
                     ForEach(rows) { row in
                         let checked = selected.contains(row.model)
+                        let title = names[row.model] ?? row.model
                         Button { onToggle(row.model) } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: checked ? "checkmark.square.fill" : "square").font(.system(size: 18))
                                     .foregroundStyle(checked ? Theme.brand : Theme.muted)
-                                Text(row.model).font(.subheadline).lineLimit(1).truncationMode(.middle).foregroundStyle(Theme.foreground)
+                                Text(title).font(.subheadline).lineLimit(1).truncationMode(.middle).foregroundStyle(Theme.foreground)
                                 Spacer(minLength: 6)
                             }
                             .padding(.horizontal, 10).frame(minHeight: 44).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(row.model).accessibilityAddTraits(checked ? .isSelected : [])
+                        .accessibilityLabel(title).accessibilityAddTraits(checked ? .isSelected : [])
                     }
                     if rows.isEmpty { Text("没有匹配的模型").font(.footnote).foregroundStyle(Theme.muted).padding(.vertical, 20) }
                 }

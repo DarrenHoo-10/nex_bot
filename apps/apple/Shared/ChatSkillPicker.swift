@@ -3,6 +3,7 @@ import NexClientKit
 
 struct ChatSkillPicker: View {
     let load: () async throws -> [ChatSkill]
+    var initialQuery: String = ""
     let select: (ChatSkill) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var skills: [ChatSkill]?
@@ -76,7 +77,10 @@ struct ChatSkillPicker: View {
         #else
         .presentationDetents([.medium, .large])
         #endif
-        .onAppear { searching = true }
+        .onAppear {
+            if !initialQuery.isEmpty && query.isEmpty { query = initialQuery }
+            searching = true
+        }
         .task(id: attempt) {
             error = nil
             do { let rows = try await load(); if !Task.isCancelled { skills = rows } }

@@ -60,7 +60,7 @@ public struct CliModelCatalog: Sendable, Hashable, Decodable {
 /// "full" skips every prompt; "ask" keeps the CLI's prompts (they arrive as cards); "edits" lets file edits through
 /// (Claude `acceptEdits`, Antigravity `auto_edit`); "plan" is Claude's plan mode; "auto" Claude's own reviewer;
 /// "readonly" Codex's read-only sandbox.
-public enum CliPermissionMode: String, Sendable, Hashable, CaseIterable { case full, ask, edits, plan, auto, readonly }
+public enum CliPermissionMode: String, Codable, Sendable, Hashable, CaseIterable { case full, ask, edits, plan, auto, readonly }
 
 public enum CliPermissions {
     /// A CLI's permission modes in the order a menu shows them, the most cautious first. An executor without
@@ -281,6 +281,6 @@ public enum CliLaunches {
         if case .failed = launch.phase { failed = true }
         return CliSession(key: launch.key, deviceId: launch.request.deviceId, engine: launch.request.engine, nativeId: String(launch.key.split(separator: ":").last ?? ""),
                           cwd: launch.request.cwd, title: first.isEmpty ? "新会话" : String(first.prefix(80)), gitBranch: launch.request.branch ?? launch.request.switchBranch,
-                          state: failed ? .stopped : .running, lastActivityAt: launch.createdAt)
+                          state: failed ? .stopped : .running, lastActivityAt: launch.createdAt, repoRoot: launch.request.cwd)
     }
 }

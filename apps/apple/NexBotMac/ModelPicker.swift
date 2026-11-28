@@ -87,6 +87,8 @@ struct ModelListView: View {
     var debugPrefix = ""
     /// Provider-reported display names; rows show and search them, selection still returns the id.
     var names: [String: String] = [:]
+    /// Per-model capability options (e.g. `imageInput` renders a "视觉" tag).
+    var options: [String: ModelOptions] = [:]
     let onSelect: (String) -> Void
     var onEscape: (() -> Void)?
 
@@ -173,6 +175,11 @@ struct ModelListView: View {
                 }
                 Text(title).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
                     .foregroundStyle(checked && selected == nil ? Theme.brand : Theme.foreground)
+                if !row.custom && options[row.model]?.imageInput == true {
+                    Text("视觉").font(.system(size: 9.5, weight: .medium)).foregroundStyle(Theme.muted)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
                 Spacer(minLength: 6)
                 if selected == nil && checked { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.brand) }
             }
@@ -226,10 +233,17 @@ struct ModelPickerPopover: View {
     var source: ModelSource?
     var debugPrefix = "mp"
     var allowCustom = true
+    var names: [String: String] = [:]
     let onSelect: (String) -> Void
     let close: () -> Void
 
     @State private var loader = ModelCatalogLoader()
+
+    private var mergedNames: [String: String] {
+        var out = loader.catalog?.names ?? [:]
+        for (k, v) in names { out[k] = v }
+        return out
+    }
 
     private var options: [String] {
         var out: [String] = value.isEmpty ? [] : [value]
@@ -240,7 +254,7 @@ struct ModelPickerPopover: View {
     var body: some View {
         VStack(spacing: 0) {
             ModelListView(models: options, value: value, emptyLabel: emptyLabel, allowCustom: allowCustom, debugPrefix: debugPrefix,
-                          onSelect: { onSelect($0) }, onEscape: close)
+                          names: mergedNames, onSelect: { onSelect($0) }, onEscape: close)
             if loader.loading { status("正在获取模型…") }
             if let error = loader.error { status(error, danger: true) }
             if models == nil, loader.catalog?.hasMore == true { status("服务仍有未返回的模型，可输入完整 ID。") }
@@ -285,16 +299,21 @@ struct ModelPickerField: View {
     var identifier: String?
     var debugPrefix = "mp"
     var allowCustom = true
+    var names: [String: String] = [:]
     @Binding var isOpen: Bool
     let onChange: (String) -> Void
     @FocusState private var triggerFocused: Bool
+
+    private var displayValue: String {
+        value.isEmpty ? (emptyLabel ?? "选择模型") : (names[value] ?? value)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let title { Text(title).font(.system(size: 12, weight: .medium)) }
             Button { isOpen.toggle() } label: {
                 HStack(spacing: 8) {
-                    Text(value.isEmpty ? (emptyLabel ?? "选择模型") : value).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                    Text(displayValue).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                         .foregroundStyle(value.isEmpty && emptyLabel == nil ? Theme.muted : Theme.foreground)
                     Spacer(minLength: 6)
                     Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)).foregroundStyle(Theme.muted)
@@ -306,11 +325,11 @@ struct ModelPickerField: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain).disabled(disabled).focused($triggerFocused)
-            .help(value.isEmpty ? (emptyLabel ?? label) : value)
-            .accessibilityLabel(label).accessibilityValue(value.isEmpty ? (emptyLabel ?? "") : value)
+            .help(value.isEmpty ? (emptyLabel ?? label) : displayValue)
+            .accessibilityLabel(label).accessibilityValue(displayValue)
             .accessibilityIdentifier(identifier ?? label)
             .popover(isPresented: $isOpen, arrowEdge: .bottom) {
-                ModelPickerPopover(label: label, value: value, emptyLabel: emptyLabel, models: models, source: source, debugPrefix: debugPrefix, allowCustom: allowCustom,
+                ModelPickerPopover(label: label, value: value, emptyLabel: emptyLabel, models: models, source: source, debugPrefix: debugPrefix, allowCustom: allowCustom, names: names,
                                    onSelect: { choice in
                                        if !disabled { onChange(choice) }
                                        isOpen = false

@@ -25,6 +25,7 @@ struct Composer: View {
     @State private var revokingRule = false
     @State private var mentionIndex = 0
     @State private var mentionDismissed = false
+    @State private var composing = false
 
     private var agentUI: AgentUI { AgentUI.shared }
     private var botID: String { conversation.botID }
@@ -62,7 +63,6 @@ struct Composer: View {
             if let job = conversation.replyJob { replyBar(job) }
             if let quote { quoteBar(quote) }
             if !mentions.isEmpty { mentionMenu }
-            if !conversation.attachments.isEmpty { AttachmentChips(conversation: conversation, onOpenImage: onOpenImage) }
             if let menuError { errorLine(menuError) }
             field
         }
@@ -74,6 +74,10 @@ struct Composer: View {
 
     private var field: some View {
         VStack(spacing: 4) {
+            if !conversation.attachments.isEmpty {
+                AttachmentChips(conversation: conversation, onOpenImage: onOpenImage)
+                    .padding(.horizontal, 4).padding(.top, 2)
+            }
             textInput.padding(.horizontal, 4).padding(.top, 5)
             HStack(spacing: 6) {
                 plusButton
@@ -90,13 +94,14 @@ struct Composer: View {
         .sheet(isPresented: $showSkills) {
             ChatSkillPicker(load: { try await workspace.skills() }) { conversation.draft = $0.adding(to: conversation.draft); focused = true }
         }
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(Theme.identityAccent.opacity(focused ? 0.5 : 0), lineWidth: 1.5))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(focused ? Theme.brand : .clear, lineWidth: 1.5))
+        .shadow(color: focused ? Theme.brandRing.opacity(0.45) : .clear, radius: 7, y: 0)
     }
 
     private var textInput: some View {
         ComposerTextEditor(text: $conversation.draft, focused: $focused, onPasteImage: { data, name in
             Task { await conversation.addAttachment(name: name, data: data) }
-        }, onContentHeight: { contentHeight = $0 }) { key in
+        }, onContentHeight: { contentHeight = $0 }, onComposing: { composing = $0 }) { key in
             switch key {
             case 125: return moveMention(1) == .handled
             case 126: return moveMention(-1) == .handled
@@ -114,9 +119,7 @@ struct Composer: View {
         }
             .frame(height: height)
             .overlay(alignment: .topLeading) {
-                // TextEditor may not publish marked (IME) text to the binding yet.
-                // Hide the overlay throughout editing so it cannot cover composition.
-                if conversation.draft.isEmpty && !focused {
+                if conversation.draft.isEmpty && !composing {
                     Text(conversation.replyJob.map { "回复后台任务：\($0.title)" } ?? "给 \(botName) 发消息…")
                         .font(.system(size: 14)).foregroundStyle(Theme.muted)
                         .padding(.leading, 5).allowsHitTesting(false)
@@ -181,8 +184,6 @@ struct Composer: View {
         case .models, nil: EmptyView()
         }
     }
-    /// The assistant's own model; empty while it follows the default.
-    private var chatModel: String { bot?.selectedModel ?? "" }
     private func close() { ui.composerMenu = nil; focused = true }
 
     private var addMenu: some View {
@@ -239,16 +240,6 @@ struct Composer: View {
 
     private var modelMenu: some View {
         ChatModelMenu(workspace: workspace, botID: botID, close: close, onError: { menuError = $0 }, composer: true)
-    }
-
-    private func setModel(_ next: String) {
-        close()
-        guard next != chatModel else { return }
-        menuError = nil
-        Task {
-            do { try await workspace.setAgentModel(botID: botID, model: next) }
-            catch { menuError = message(of: error) }
-        }
     }
 
     private func setMode(_ next: ApprovalMode) {

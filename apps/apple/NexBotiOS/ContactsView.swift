@@ -7,6 +7,7 @@ struct ContactsView: View {
     let agents: CliAgentsModel
     @Bindable var nav: Navigation
     @Environment(ContactPreferences.self) private var preferences
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var query = ""
     @State private var showCreate = false
     @State private var errorText: String?
@@ -14,42 +15,48 @@ struct ContactsView: View {
     private var groups: (pinned: [Bot], rest: [Bot]) { preferences.groups(of: workspace.bots) }
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var searching: Bool { !trimmedQuery.isEmpty }
+    private var isSplit: Bool { sizeClass == .regular && !nav.agentMode }
 
     var body: some View {
-        NavigationStack(path: $nav.path) {
-            VStack(spacing: 0) {
-                header
-                if nav.agentMode {
-                    AgentSessionsView(model: agents, workspace: workspace) { id in
-                        nav.agentMode = false
-                        workspace.select(id)
-                        nav.openChat(id)
+        Group {
+            if isSplit {
+                NavigationSplitView {
+                    sidebarColumn
+                        .background { WorkspaceSurface(kind: .stage) }
+                        .toolbar(.hidden, for: .navigationBar)
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            if workspace.state != nil, let notice = workspace.notice { NoticeBanner(text: notice) }
+                        }
+                } detail: {
+                    NavigationStack(path: $nav.path) {
+                        splitDetailRoot
+                            .navigationDestination(for: Navigation.Route.self) { route in
+                                nav.destination(for: route, model: model, workspace: workspace, agents: agents)
+                            }
                     }
-                } else {
-                    Button { nav.push(.todos) } label: {
-                        HStack { Label("待办", systemImage: "checklist"); Spacer(); Image(systemName: "chevron.right").font(.caption) }
-                            .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
-                            .padding(14).glass(RoundedRectangle(cornerRadius: 16))
-                    }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
-                    if let finance = workspace.financeBotID {
-                        Button { nav.openChat(finance) } label: { HStack { Label(workspace.bot(finance)?.name ?? "金融助手",systemImage:"bubble.left.and.bubble.right");Spacer();Image(systemName:"chevron.right") }.padding(14) }.buttonStyle(.plain).padding(.horizontal,16)
-                    }
-                    content
+                }
+            } else {
+                NavigationStack(path: $nav.path) {
+                    sidebarColumn
+                        .background { WorkspaceSurface(kind: nav.agentMode ? .nexAgent : .stage) }
+                        .toolbar(.hidden, for: .navigationBar)
+                        .navigationDestination(for: Navigation.Route.self) { route in
+                            nav.destination(for: route, model: model, workspace: workspace, agents: agents)
+                        }
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            if workspace.state != nil, let notice = workspace.notice { NoticeBanner(text: notice) }
+                        }
                 }
             }
-            .background { WorkspaceSurface(kind: .stage) }
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: Navigation.Route.self) { route in
-                nav.destination(for: route, model: model, workspace: workspace, agents: agents)
-            }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if workspace.state != nil, let notice = workspace.notice { NoticeBanner(text: notice) }
-            }
+        }
+        .onChange(of: isSplit, initial: true) { _, split in
+            nav.isSplit = split
         }
         .sheet(isPresented: $showCreate) {
             AgentEditorSheet(workspace: workspace) { id in
                 workspace.select(id)
-                nav.openChat(id)
+                preferences.selectedAgentID = id
+                if isSplit { nav.path = [] } else { nav.openChat(id) }
             }
         }
         .errorAlert($errorText)
@@ -64,6 +71,44 @@ struct ContactsView: View {
             case "pinlast": if let id = workspace.bots.last?.id { preferences.togglePin(id) }
             default: break
             }
+        }
+    }
+
+    private var sidebarColumn: some View {
+        VStack(spacing: 0) {
+            header
+            if nav.agentMode {
+                AgentSessionsView(model: agents, workspace: workspace) { id in
+                    nav.agentMode = false
+                    workspace.select(id)
+                    preferences.selectedAgentID = id
+                    if !isSplit { nav.openChat(id) }
+                }
+            } else {
+                Button { nav.push(.todos) } label: {
+                    HStack { Label("待办", systemImage: "checklist"); Spacer(); Image(systemName: "chevron.right").font(.caption) }
+                        .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
+                        .padding(14).glass(RoundedRectangle(cornerRadius: 16), strong: true, lift: .card)
+                }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
+                content
+            }
+        }
+    }
+
+    @ViewBuilder private var splitDetailRoot: some View {
+        let targetID = preferences.selectedAgentID.flatMap { id in workspace.bots.contains(where: { $0.id == id }) ? id : nil }
+            ?? workspace.selectedBotID
+            ?? workspace.bots.first?.id
+        if let id = targetID {
+            if id == workspace.financeBotID {
+                FinanceTopicsView(workspace: workspace, botID: id, onOpenDetail: { nav.openAgentDetail(id) })
+                    .id(id)
+            } else {
+                ChatView(workspace: workspace, botID: id)
+                    .id(id)
+            }
+        } else {
+            welcome
         }
     }
 
@@ -96,6 +141,7 @@ struct ContactsView: View {
             .listRowInsets(EdgeInsets(top: 0, leading: 22, bottom: 4, trailing: 22)).plainRow()
             if searching {
                 ConversationSearchRows(workspace: workspace, query: trimmedQuery) { match in
+                    preferences.selectedAgentID = match.botID
                     workspace.openSearchResult(match)
                     nav.openChat(match.botID)
                 }
@@ -105,8 +151,8 @@ struct ContactsView: View {
                     Text("你的 Agent 会出现在这里").font(.footnote).foregroundStyle(Theme.muted)
                         .frame(maxWidth: .infinity).padding(.vertical, 28).plainRow()
                 }
-                if !groups.pinned.isEmpty { section("置顶", groups.pinned) }
-                if !groups.rest.isEmpty { section("我的 Agent", groups.rest) }
+                if !groups.pinned.isEmpty { section("置顶", groups.pinned, showHeader: true) }
+                if !groups.rest.isEmpty { section("我的 Agent", groups.rest, showHeader: false) }
             }
         }
         .listStyle(.plain)
@@ -114,11 +160,18 @@ struct ContactsView: View {
         .refreshable { await workspace.refresh() }
     }
 
-    @ViewBuilder private func section(_ title: String, _ bots: [Bot]) -> some View {
-        Text(title).font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
-            .listRowInsets(EdgeInsets(top: 8, leading: 22, bottom: 2, trailing: 22)).plainRow()
+    @ViewBuilder private func section(_ title: String, _ bots: [Bot], showHeader: Bool) -> some View {
+        if showHeader {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                .listRowInsets(EdgeInsets(top: 8, leading: 22, bottom: 2, trailing: 22)).plainRow()
+        }
         ForEach(bots) { bot in
-            Button { nav.push(.chat(bot.id)) } label: {
+            Button {
+                preferences.selectedAgentID = bot.id
+                workspace.showLatest(botID: bot.id)
+                workspace.select(bot.id)
+                if isSplit { nav.path = [] } else { nav.push(.chat(bot.id)) }
+            } label: {
                 ContactRow(bot: bot, workspace: workspace)
             }
             .buttonStyle(.plain)
@@ -166,55 +219,53 @@ struct ContactsView: View {
             Spacer(minLength: 4)
             if !nav.agentMode {
                 Button { showCreate = true } label: {
-                    Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36).glass(Circle(), lift: .card)
+                    Image(systemName: "plus").font(.system(size: 16, weight: .medium)).foregroundStyle(Theme.foreground)
+                        .frame(width: 36, height: 36).glass(Circle(), strong: true, lift: .card)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("添加 Agent")
             }
-            Button { nav.showMenu = true } label: { AccountAvatar(size: 32, initial: accountInitial(workspace)) }
+            Button { nav.showMenu = true } label: { AccountAvatar(size: 32, initial: accountInitial(workspace), agentMode: nav.agentMode) }
                 .buttonStyle(.plain)
                 .accessibilityLabel("账号菜单")
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
     }
 
-    private var modeSwitcher: some View {
-        HStack(spacing: 2) {
-            modePill(title: "NexBot", agent: false, active: !nav.agentMode, badge: 0) {
-                nav.agentMode = false
-            }
-            modePill(title: "NexAgent", agent: true, active: nav.agentMode, badge: !nav.agentMode ? agents.waitingCount : 0) {
-                nav.agentMode = true
-            }
-        }
-        .padding(3)
-        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .disabled(workspace.state == nil)
+    private var agentWaitingCount: Int {
+        max(workspace.state?.cliAgents?.waiting ?? 0, agents.waitingCount)
     }
 
-    private func modePill(title: String, agent: Bool, active: Bool, badge: Int, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                BrandMark(size: 17, agent: agent)
-                Text(title)
-                    .font(.system(size: 13, weight: active ? .semibold : .medium))
-                    .foregroundStyle(active ? (agent ? Theme.nexAgentAccent : Theme.foreground) : Theme.muted)
+    /// Single-brand one-click mode switcher aligned with Windows/Android (`ModeSwitcher.tsx`).
+    private var modeSwitcher: some View {
+        let isAgent = nav.agentMode
+        let waiting = isAgent ? 0 : agentWaitingCount
+        let nextLabel = isAgent ? "NexBot" : "NexAgent"
+        return Button {
+            nav.path = []
+            nav.agentMode.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                BrandMark(size: 28, agent: isAgent)
+                Text(isAgent ? "NexAgent" : "NexBot")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(isAgent ? Theme.nexAgentInk : Theme.foreground)
                     .lineLimit(1)
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 10, weight: .bold))
+                if waiting > 0 {
+                    Text(waiting > 99 ? "99+" : "\(waiting)")
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Theme.approval, in: Capsule())
+                        .frame(minWidth: 19, minHeight: 19)
+                        .padding(.horizontal, waiting > 9 ? 5 : 4)
+                        .background(Theme.brand, in: Capsule())
                 }
             }
-            .padding(.horizontal, 9).padding(.vertical, 6)
-            .background(active ? Theme.card : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .shadow(color: active ? Theme.shadowInk.opacity(0.06) : .clear, radius: 3, y: 1)
+            .padding(.vertical, 3)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("切换到 \(title)")
+        .accessibilityLabel("切换到 \(nextLabel)")
+        .disabled(workspace.state == nil)
     }
 
     private var searchField: some View {

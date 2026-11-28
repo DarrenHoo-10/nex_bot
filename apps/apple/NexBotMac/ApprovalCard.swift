@@ -5,6 +5,7 @@ import NexClientKit
 struct ApprovalCard: View {
     let workspace: WorkspaceStore
     let approval: Approval
+    var jobTitle: String? = nil
     @State private var busy = false
     @State private var error: String?
     @State private var showArguments = false
@@ -24,7 +25,8 @@ struct ApprovalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(botName) 需要你的批准").font(.system(size: 13, weight: .semibold))
+            Text("\(botName) 需要你的批准" + (jobTitle.map { " · 后台任务「\($0)」" } ?? ""))
+                .font(.system(size: 13, weight: .semibold))
             Text(approval.rememberLabel ?? approval.title).font(.system(size: 11)).foregroundStyle(Theme.muted)
             Button { showArguments.toggle() } label: {
                 HStack(spacing: 4) {
@@ -35,7 +37,7 @@ struct ApprovalCard: View {
             }
             .buttonStyle(.plain)
             if showArguments {
-                ScrollView(.horizontal) {
+                ScrollView([.vertical, .horizontal]) {
                     Text(argumentsText.isEmpty ? "无参数" : argumentsText)
                         .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                         .padding(8).frame(maxWidth: .infinity, alignment: .leading)

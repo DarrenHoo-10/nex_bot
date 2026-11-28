@@ -36,7 +36,7 @@ public struct CoreOrigin: Hashable, Sendable, CustomStringConvertible {
 
     static func isPrivate(host: String) -> Bool {
         let h = bareHost(host).lowercased()
-        if h == "localhost" || h == "::1" { return true }
+        if h == "localhost" || h == "::1" || h.hasSuffix(".ts.net") { return true }
         let parts = h.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4 else { return false }
         let octets = parts.compactMap { p -> Int? in p.allSatisfy(\.isASCII) && !p.isEmpty && p.count <= 3 ? Int(p) : nil }

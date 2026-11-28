@@ -9,16 +9,15 @@ struct AccountMenu: View {
     let logout: () -> Void
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         VStack(spacing: 2) {
             item("gearshape", "设置", openSettings)
-            item("moon", dark ? "切换浅色模式" : "切换深色模式", toggleDark)
+            item(dark ? "sun.max" : "moon", dark ? "切换浅色模式" : "切换深色模式", toggleDark)
             Hairline().padding(.vertical, 6).padding(.horizontal, 6)
             item("rectangle.portrait.and.arrow.right", "退出当前账号", logout)
         }
         .padding(8)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
-        .shadow(color: .black.opacity(0.12), radius: 14, y: 4)
+        .glass(shape, strong: true, lift: .float)
     }
 
     private func item(_ icon: String, _ title: String, _ action: @escaping () -> Void) -> some View {

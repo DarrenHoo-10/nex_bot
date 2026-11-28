@@ -7,11 +7,11 @@ enum InspectorTab: String, CaseIterable { case work = "工作", settings = "设�
 
 /// Categories of the Settings window. Raw values double as the `@AppStorage("nexbot.settingsCategory")` value.
 enum SettingsCategory: String, CaseIterable {
-    case account = "账号与登录设备", model = "模型", memory = "长期记忆", connectors = "连接器", devices = "设备", about = "关于"
+    case account = "账号与登录设备", model = "模型", memory = "长期记忆", team = "协作", connectors = "连接器", devices = "设备", about = "关于"
     static let storageKey = "nexbot.settingsCategory"
     var icon: String {
         switch self {
-        case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .connectors: "powerplug"; case .devices: "cpu"; case .about: "info.circle"
+        case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .team: "network"; case .connectors: "powerplug"; case .devices: "cpu"; case .about: "info.circle"
         }
     }
 }
@@ -41,10 +41,10 @@ final class UIState {
     static let agentRailWidthKey = "nexagent.railWidth"
     var agentRailWidth: CGFloat = {
         let saved = UserDefaults.standard.double(forKey: UIState.agentRailWidthKey)
-        return saved >= 220 && saved <= 420 ? CGFloat(saved) : 272
+        return saved >= 220 && saved <= 520 ? CGFloat(saved) : 272
     }() {
         didSet {
-            let clamped = min(420, max(220, agentRailWidth))
+            let clamped = min(520, max(220, agentRailWidth))
             if clamped != agentRailWidth { agentRailWidth = clamped; return }
             UserDefaults.standard.set(Double(clamped), forKey: UIState.agentRailWidthKey)
         }
@@ -74,6 +74,14 @@ enum AppearanceOverride {
 
 /// Quitting stops the bundled executor first (without revoking the device), so no `node` child is left behind.
 final class ExecutorAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag, let main = sender.windows.first(where: { $0.identifier?.rawValue.contains("main") == true }) ?? sender.windows.first(where: { $0.canBecomeMain }) {
+            main.makeKeyAndOrderFront(nil)
+            sender.activate()
+        }
+        return true
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard LocalDeviceController.shared.isRunning else { return .terminateNow }
         Task { @MainActor in
@@ -147,14 +155,16 @@ struct NexBotMacApp: App {
                 .environment(device)
                 .preferredColorScheme(AppearanceOverride.scheme(appearance))
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1020, height: 760)
 
         MenuBarExtra {
             MenuBarContent()
                 .environment(model)
                 .environment(ui)
+                .environment(device)
         } label: {
-            MenuBarLabel(count: model.workspace?.pendingApprovalCount ?? 0)
+            MenuBarLabel(count: model.workspace?.pendingApprovalCount ?? 0, paused: device.state.paused == true)
         }
     }
 
@@ -185,21 +195,26 @@ struct RootView: View {
                 }
             }
         }
-        .frame(minWidth: 960, idealWidth: 1440, minHeight: 600, idealHeight: 960)
+        .frame(minWidth: 760, idealWidth: 1280, minHeight: 600, idealHeight: 880)
         .background(Theme.background)
         .background(WindowSizer())
-        .onChange(of: ui.settingsTick) { NSApp.activate(ignoringOtherApps: true); openWindow(id: "settings") }
+        .onChange(of: ui.settingsTick) { NSApp.activate(); openWindow(id: "settings") }
     }
 }
 
-/// The account avatar of the web sidebar: a blue circle with the user name initial and a green online dot.
+/// The account avatar of the web sidebar: blue gradient circle (emerald in NexAgent mode) with initial and green online dot.
 struct PersonAvatar: View {
     var initial = "N"
     var size: CGFloat = 34
     var online = true
+    var agentMode = false
 
     var body: some View {
-        Circle().fill(Color(hex: 0x3B66E8))
+        let colors: [Color] = agentMode
+            ? [Color(hex: 0x38BA72), Color(hex: 0x097246)]
+            : [Color(hex: 0x5285FF), Color(hex: 0x2859DC)]
+        Circle()
+            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
             .frame(width: size, height: size)
             .overlay(Text(initial).font(.system(size: size * 0.42, weight: .semibold)).foregroundStyle(.white))
             .overlay(alignment: .bottomTrailing) {

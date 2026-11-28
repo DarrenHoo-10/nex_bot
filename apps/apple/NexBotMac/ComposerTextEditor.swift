@@ -9,6 +9,8 @@ struct ComposerTextEditor: NSViewRepresentable {
     var onPasteImage: (Data, String) -> Void = { _, _ in }
     /// Called with the height of the laid-out text, so the composer can grow with wrapped and multi-line text.
     var onContentHeight: (CGFloat) -> Void = { _ in }
+    /// Called whenever IME marked-text composition starts or finishes, so placeholders hide only during active IME input.
+    var onComposing: (Bool) -> Void = { _ in }
     var onKey: (UInt16) -> Bool
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -39,6 +41,7 @@ struct ComposerTextEditor: NSViewRepresentable {
         editor.onKey = onKey
         editor.onPasteImage = onPasteImage
         editor.onContentHeight = onContentHeight
+        editor.onComposing = onComposing
         editor.onFocus = { focused.wrappedValue = $0 }
         // Replacing marked text during an update cancels the candidate session.
         if editor.string != text && !editor.hasMarkedText() { editor.string = text }
@@ -69,6 +72,7 @@ final class ComposerNSTextView: NSTextView {
     var onFocus: (Bool) -> Void = { _ in }
     var onPasteImage: (Data, String) -> Void = { _, _ in }
     var onContentHeight: (CGFloat) -> Void = { _ in }
+    var onComposing: (Bool) -> Void = { _ in }
     private var reportedHeight: CGFloat = -1
 
     /// The laid-out text height; reported only when it changes, and again after a width change re-wraps the text.
@@ -107,15 +111,22 @@ final class ComposerNSTextView: NSTextView {
     }
     private var imeEndedAt: TimeInterval = -.infinity
 
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        onComposing(hasMarkedText())
+    }
+
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let wasComposing = hasMarkedText()
         super.insertText(insertString, replacementRange: replacementRange)
+        onComposing(hasMarkedText())
         if wasComposing { imeEndedAt = ProcessInfo.processInfo.systemUptime }
     }
 
     override func unmarkText() {
         let wasComposing = hasMarkedText()
         super.unmarkText()
+        onComposing(false)
         if wasComposing { imeEndedAt = ProcessInfo.processInfo.systemUptime }
     }
 

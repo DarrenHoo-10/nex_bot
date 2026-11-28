@@ -85,10 +85,52 @@ public enum CliSessions {
         return false
     }
 
+    /// Drops the Windows long-path prefix (`\\?\D:\x` -> `D:\x`, `\\?\UNC\h\s` -> `\\h\s`).
+    public static func stripLongPath(_ path: String) -> String {
+        if path.lowercased().hasPrefix("\\\\?\\unc\\") { return "\\\\" + path.dropFirst(8) }
+        if path.hasPrefix("\\\\?\\") { return String(path.dropFirst(4)) }
+        return path
+    }
+
+    /// The repository root a linked-worktree cwd belongs to (`<root>/.claude/worktrees/<name>`,
+    /// `<parent>/.nexbot-worktrees/<repo>/<name>`); any other cwd is its own root.
+    public static func worktreeRoot(_ cwd: String) -> String {
+        var clean = stripLongPath(cwd)
+        while clean.count > 1 && (clean.hasSuffix("/") || clean.hasSuffix("\\")) { clean.removeLast() }
+        let sep = clean.contains("\\") ? "\\" : "/"
+        if let regex = try? NSRegularExpression(pattern: #"^(.*?)[\\/]\.claude[\\/]worktrees(?:[\\/]|$)"#, options: .caseInsensitive),
+           let m = regex.firstMatch(in: clean, range: NSRange(clean.startIndex..., in: clean)),
+           let r = Range(m.range(at: 1), in: clean) {
+            let root = String(clean[r])
+            return root.isEmpty ? sep : root
+        }
+        if let regex = try? NSRegularExpression(pattern: #"^(.*?)[\\/]\.nexbot-worktrees[\\/]([^\\/]+)(?:[\\/]|$)"#, options: .caseInsensitive),
+           let m = regex.firstMatch(in: clean, range: NSRange(clean.startIndex..., in: clean)),
+           let r1 = Range(m.range(at: 1), in: clean),
+           let r2 = Range(m.range(at: 2), in: clean) {
+            return "\(clean[r1])\(sep)\(clean[r2])"
+        }
+        return clean.isEmpty ? cwd : clean
+    }
+
+    /// The name of the linked worktree a cwd sits in, or nil.
+    public static func worktreeName(_ cwd: String) -> String? {
+        for pattern in [#"[\\/]\.claude[\\/]worktrees[\\/]([^\\/]+)"#, #"[\\/]\.nexbot-worktrees[\\/][^\\/]+[\\/]([^\\/]+)"#] {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let m = regex.firstMatch(in: cwd, range: NSRange(cwd.startIndex..., in: cwd)),
+               let r = Range(m.range(at: 1), in: cwd) {
+                return String(cwd[r])
+            }
+        }
+        return nil
+    }
+
     public static func projectLabel(_ s: CliSession) -> String {
         let explicit = s.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let candidate = explicit.isEmpty ? s.cwd : explicit
-        return isScratchCwd(candidate) ? scratchLabel : folderLabel(candidate)
+        if isScratchCwd(candidate) { return scratchLabel }
+        let root = explicit.isEmpty ? worktreeRoot(s.cwd) : stripLongPath(explicit)
+        return folderLabel(root)
     }
 
     public static func title(_ s: CliSession) -> String {
@@ -120,12 +162,13 @@ public enum CliSessions {
             // wherever they are (two `workspace` folders list once), and it starts new sessions in the one used last
             for s in mine {
                 let explicit = s.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let root = explicit.isEmpty ? s.cwd : explicit
-                let scratch = isScratchCwd(root)
+                let candidate = explicit.isEmpty ? s.cwd : explicit
+                let scratch = isScratchCwd(candidate)
+                let root = scratch ? "" : (explicit.isEmpty ? worktreeRoot(s.cwd) : stripLongPath(explicit))
                 let label = scratch ? scratchLabel : folderLabel(root)
                 let name = scratch ? scratchKey : label.lowercased()
                 if folders[name] == nil {
-                    folders[name] = CliFolderGroup(cwd: scratch ? "" : root, label: label, sessions: [], scratch: scratch)
+                    folders[name] = CliFolderGroup(cwd: root, label: label, sessions: [], scratch: scratch)
                     folderOrder.append(name)
                 }
                 if !scratch, folders[name]?.roots.contains(root) == false { folders[name]?.roots.append(root) }
@@ -160,12 +203,14 @@ public enum CliSessions {
         return fresh + saved
     }
 
-    /// Orders project folders by a saved ID list; unknown projects appear first in their natural order.
+    /// Orders project folders by a saved ID list; unknown projects appear first in their natural order, scratch always stays last.
     public static func orderProjects(_ folders: [CliFolderGroup], saved: [String]) -> [CliFolderGroup] {
-        guard !saved.isEmpty else { return folders }
+        let regular = folders.filter { !$0.scratch }
+        let scratch = folders.filter(\.scratch)
+        guard !saved.isEmpty else { return regular + scratch }
         var rank: [String: Int] = [:]
         for (i, id) in saved.enumerated() where rank[id] == nil { rank[id] = i }
-        return folders.enumerated().sorted { a, b in
+        let ordered = regular.enumerated().sorted { a, b in
             let ra = rank[a.element.id], rb = rank[b.element.id]
             switch (ra, rb) {
             case let (l?, r?): return l < r
@@ -174,6 +219,7 @@ public enum CliSessions {
             case (nil, nil): return a.offset < b.offset
             }
         }.map(\.element)
+        return ordered + scratch
     }
 
     /// Moves `moving` before or after `target` in an ordered list of project IDs.
@@ -234,7 +280,10 @@ public enum CliSessions {
         if s.state == .stopped { return .stopped(hint: s.writerUnknown ? "可能在电脑上打开" : nil) }
         if s.liveIn == .nexbot && s.terminal != nil { return .send(running: s.state == .running) }
         if s.sendVia == "acp" || s.sendVia == "host" { return .send(running: s.state == .running || s.state == .waiting) }
-        if s.engine == .codex && (s.sendVia == "inbox" || s.sendVia == "daemon") { return .send(running: false) }
+        if s.sendVia == "inbox" || s.sendVia == "daemon" {
+            let canStop = s.engine == .claude && s.sendVia == "inbox" && (s.state == .running || s.state == .waiting)
+            return .send(running: canStop)
+        }
         if s.liveIn == .desktop && s.engine == .claude { return .blocked(hint: "在 Claude 桌面应用中打开") }
         if s.liveIn == .desktop && s.engine == .zcode { return .blocked(hint: "在 ZCode 桌面应用中打开") }
         return .blocked(hint: s.writerUnknown ? "可能在电脑上打开" : "在电脑上运行")
@@ -933,5 +982,186 @@ public struct CliCreditMeter: Sendable {
         pending += bytes
         guard pending >= Self.chunk else { return nil }
         let grant = pending; pending = 0; return grant
+    }
+}
+
+// MARK: Session Activity (Todos, Subagents, Live Background Jobs)
+
+/// Live activity extracted from a session's transcript, ported from `src/personal/cli-agents/session-activity.ts`.
+public struct CliSessionActivity: Sendable, Equatable {
+    public struct Entry: Sendable, Equatable, Identifiable {
+        public var id: String
+        public var title: String
+        public var state: String
+        public init(id: String = UUID().uuidString, title: String, state: String) {
+            self.id = id; self.title = title; self.state = state
+        }
+    }
+
+    public var todos: [Entry]
+    public var agents: [Entry]
+    public var jobs: [Entry]
+    public static let empty = CliSessionActivity(todos: [], agents: [], jobs: [])
+
+    public var isEmpty: Bool { todos.isEmpty && agents.isEmpty && jobs.isEmpty }
+
+    public static func extract(items: [CliItem], state: CliSessionState, online: Bool) -> CliSessionActivity {
+        guard online, state != .stopped else { return .empty }
+        let finishedPattern = #"^(completed|failed|errored|cancelled|canceled|stopped|shutdown|not_found)$"#
+        func isFinished(_ text: String) -> Bool {
+            text.range(of: finishedPattern, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        func parseJSON(_ raw: String) -> [String: Any] {
+            (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
+        }
+        func firstMatch(_ pattern: String, in text: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                  let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let r = Range(m.range(at: 1), in: text) else { return nil }
+            return String(text[r])
+        }
+
+        var plan: [Entry] = []
+        var taskOrder: [String] = []
+        var tasks: [String: Entry] = [:]
+        var fgOrder: [String] = []
+        var foreground: [String: Entry] = [:]
+        var agentOrder: [String] = []
+        var agents: [String: Entry] = [:]
+        var jobOrder: [String] = []
+        var jobs: [String: Entry] = [:]
+        var failedJobs: [String: Entry] = [:]
+        var failedAgents: [String: Entry] = [:]
+        let inTurn = state == .running || state == .waiting
+
+        func setOrdered(_ map: inout [String: Entry], _ order: inout [String], key: String, value: Entry) {
+            if map[key] == nil { order.append(key) }
+            map[key] = value
+        }
+        func removeOrdered(_ map: inout [String: Entry], _ order: inout [String], key: String) {
+            map.removeValue(forKey: key)
+            order.removeAll { $0 == key }
+        }
+
+        for item in items {
+            if item.kind == .turn {
+                foreground.removeAll(); fgOrder.removeAll()
+                plan.removeAll()
+                failedJobs.removeAll(); failedAgents.removeAll()
+                continue
+            }
+            if item.kind == .notice, let taskEnd = item.taskEnd {
+                let id = taskEnd.id
+                let job = jobs[id], agent = agents[id]
+                if inTurn && taskEnd.state == "failed" {
+                    if var job { job.state = "失败"; failedJobs[id] = job }
+                    if var agent { agent.state = "失败"; failedAgents[id] = agent }
+                } else {
+                    failedJobs.removeValue(forKey: id)
+                    failedAgents.removeValue(forKey: id)
+                }
+                removeOrdered(&jobs, &jobOrder, key: id)
+                removeOrdered(&agents, &agentOrder, key: id)
+                continue
+            }
+            if item.kind == .user || item.kind == .notice {
+                if item.text.drop(while: \.isWhitespace).hasPrefix("<subagent_notification>") {
+                    let inner = item.text.replacingOccurrences(of: #"</?subagent_notification>"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let json = parseJSON(inner)
+                    if let path = json["agent_path"] as? String,
+                       let status = json["status"] as? [String: Any],
+                       status.keys.contains(where: isFinished) {
+                        removeOrdered(&agents, &agentOrder, key: path)
+                    }
+                } else if item.kind == .user && !item.queued {
+                    foreground.removeAll(); fgOrder.removeAll()
+                    plan.removeAll()
+                    failedJobs.removeAll(); failedAgents.removeAll()
+                }
+                continue
+            }
+            guard item.kind == .tool else { continue }
+            let name = item.name.lowercased().split(separator: ".").last.map(String.init) ?? ""
+            let data = parseJSON(item.input)
+            let output = item.output ?? ""
+            let result = parseJSON(output)
+            if name == "write_stdin", output.range(of: #"process exited with code"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                if let sid = data["session_id"] { removeOrdered(&jobs, &jobOrder, key: "\(sid)") }
+                continue
+            }
+            if item.status == .error { continue }
+            if name == "todowrite" || name == "update_plan" {
+                guard let rows = (data["todos"] ?? data["plan"]) as? [[String: Any]] else { continue }
+                plan = rows.enumerated().compactMap { idx, row in
+                    let title = (row["content"] as? String) ?? (row["step"] as? String) ?? ""
+                    guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                    let rawStatus = row["status"] as? String ?? ""
+                    let st = rawStatus == "completed" ? "已完成" : rawStatus == "in_progress" ? "进行中" : "待处理"
+                    return Entry(id: "plan:\(idx):\(title)", title: title, state: st)
+                }
+            } else if name == "taskcreate" {
+                let id = firstMatch(#"Task\s+#(\d+)"#, in: output) ?? ((result["task"] as? [String: Any])?["id"].map { "\($0)" })
+                if let id, let subject = data["subject"] as? String {
+                    setOrdered(&tasks, &taskOrder, key: id, value: Entry(id: "task:\(id)", title: subject, state: "待处理"))
+                }
+            } else if name == "taskupdate" {
+                let id = data["taskId"].map { "\($0)" } ?? ""
+                if (data["status"] as? String) == "deleted" {
+                    removeOrdered(&tasks, &taskOrder, key: id)
+                } else if var existing = tasks[id] {
+                    if let subject = data["subject"] as? String { existing.title = subject }
+                    if let rawStatus = data["status"] as? String {
+                        existing.state = rawStatus == "completed" ? "已完成" : rawStatus == "in_progress" ? "进行中" : "待处理"
+                    }
+                    tasks[id] = existing
+                }
+            } else if ["agent", "task", "spawn_agent"].contains(name) {
+                let rawTitle = (data["description"] as? String) ?? (data["message"] as? String) ?? (data["prompt"] as? String) ?? item.input
+                let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "子代理" : rawTitle
+                let entry = Entry(id: "agent:\(item.id)", title: title, state: "执行中")
+                if item.status == .running {
+                    setOrdered(&foreground, &fgOrder, key: item.id, value: entry)
+                } else {
+                    var id = result["agent_id"].map { "\($0)" }
+                    if id == nil && (name == "spawn_agent" || output.range(of: #"async|background"#, options: [.regularExpression, .caseInsensitive]) != nil) {
+                        id = firstMatch(#"(?:agent\s*id|agent_id|task_id)\s*[:=]\s*["']?([\w./-]+)"#, in: output)
+                    }
+                    if let id { setOrdered(&agents, &agentOrder, key: id, value: Entry(id: "agent:\(id)", title: title, state: "执行中")) }
+                }
+            } else if name == "wait_agent" || name == "wait" {
+                if let statuses = result["status"] as? [String: Any] {
+                    for (id, value) in statuses {
+                        if let s = value as? String, isFinished(s) {
+                            removeOrdered(&agents, &agentOrder, key: id)
+                        } else if let obj = value as? [String: Any], obj.keys.contains(where: isFinished) {
+                            removeOrdered(&agents, &agentOrder, key: id)
+                        }
+                    }
+                }
+            } else if name == "close_agent", let id = data["id"], item.status == .ok {
+                removeOrdered(&agents, &agentOrder, key: "\(id)")
+            } else if ["bash", "shell", "exec_command", "shell_command"].contains(name) {
+                let id = firstMatch(#"(?:running in (?:the )?background with (?:task )?id|process running with session id)\s*:?\s*([\w-]+)"#, in: output)
+                if id != nil || ((data["run_in_background"] as? Bool) == true && item.status == .running && inTurn) {
+                    let key = id ?? item.id
+                    let title = CliTranscript.backgroundTaskTitle(item) ?? "后台任务"
+                    setOrdered(&jobs, &jobOrder, key: key, value: Entry(id: "job:\(key)", title: title, state: "运行中"))
+                }
+            } else if name == "taskstop" || name == "taskoutput" {
+                if let rawId = data["task_id"] ?? data["shell_id"] {
+                    let id = "\(rawId)"
+                    if item.status == .ok && (name == "taskstop" || output.range(of: #"<status>(completed|failed|stopped)</status>"#, options: [.regularExpression, .caseInsensitive]) != nil) {
+                        removeOrdered(&agents, &agentOrder, key: id)
+                        removeOrdered(&jobs, &jobOrder, key: id)
+                    }
+                }
+            }
+        }
+
+        let allTodos = plan + taskOrder.compactMap { tasks[$0] }
+        let visibleTodos = inTurn && allTodos.contains(where: { $0.state != "已完成" }) ? allTodos : []
+        let visibleAgents = (inTurn ? fgOrder.compactMap { foreground[$0] } : []) + agentOrder.compactMap { agents[$0] } + Array(failedAgents.values)
+        let visibleJobs = jobOrder.compactMap { jobs[$0] } + Array(failedJobs.values)
+        return CliSessionActivity(todos: visibleTodos, agents: visibleAgents, jobs: visibleJobs)
     }
 }

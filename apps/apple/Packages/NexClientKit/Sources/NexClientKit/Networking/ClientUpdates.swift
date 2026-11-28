@@ -43,22 +43,88 @@ extension CoreClient {
         return ClientUpdateOffer(version: version, size: size, sha256: sha, url: url)
     }
 
-    /// Downloads the offered installer to `file`, reusing an already verified copy. Nothing is kept unless
-    /// its size and SHA-256 match the offer. The signed URL is fetched without the bearer.
-    public func downloadUpdate(_ offer: ClientUpdateOffer, to file: URL) async throws -> URL {
-        if let existing = try? Data(contentsOf: file), Self.matches(existing, offer) { return file }
-        var r = URLRequest(url: offer.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
+    /// Streams the offered installer directly to disk (never buffering a 512 MB DMG in RAM), verifies size and SHA-256
+    /// incrementally, and reuses an already verified copy. The signed URL is fetched without the bearer.
+    public func downloadUpdate(_ offer: ClientUpdateOffer, to file: URL, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
+        if Self.fileMatches(file, offer) {
+            onProgress?(1)
+            return file
+        }
+        var r = URLRequest(url: offer.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1800)
         r.httpShouldHandleCookies = false
-        let data: Data, response: URLResponse
-        do { (data, response) = try await session.data(for: r, delegate: Self.refuser) } catch { throw CoreError.wrap(error) }
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw CoreError(kind: .http, message: "下载更新失败", status: (response as? HTTPURLResponse)?.statusCode ?? 0) }
-        guard Self.matches(data, offer) else { throw CoreError(kind: .http, message: "更新文件校验失败", status: 0) }
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: file, options: .atomic)
+        let bytesStream: URLSession.AsyncBytes, response: URLResponse
+        do { (bytesStream, response) = try await session.bytes(for: r, delegate: Self.refuser) } catch { throw CoreError.wrap(error) }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw CoreError(kind: .http, message: "下载更新失败", status: (response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        let fm = FileManager.default
+        let dir = file.deletingLastPathComponent()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let part = dir.appendingPathComponent(file.lastPathComponent + ".part")
+        try? fm.removeItem(at: part)
+        guard fm.createFile(atPath: part.path, contents: nil), let handle = try? FileHandle(forWritingTo: part) else {
+            throw CoreError(kind: .http, message: "无法写入更新文件", status: 0)
+        }
+        var hasher = SHA256()
+        var received = 0
+        var buffer = Data()
+        buffer.reserveCapacity(65536)
+        var lastReported = -1.0
+        do {
+            for try await byte in bytesStream {
+                buffer.append(byte)
+                received += 1
+                if received > offer.size {
+                    try? handle.close()
+                    try? fm.removeItem(at: part)
+                    throw CoreError(kind: .http, message: "更新文件校验失败", status: 0)
+                }
+                if buffer.count >= 65536 {
+                    hasher.update(data: buffer)
+                    try handle.write(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                    let fraction = Double(received) / Double(max(1, offer.size))
+                    if fraction - lastReported >= 0.01 {
+                        lastReported = fraction
+                        onProgress?(min(1, fraction))
+                    }
+                }
+            }
+            if !buffer.isEmpty {
+                hasher.update(data: buffer)
+                try handle.write(contentsOf: buffer)
+                buffer.removeAll()
+            }
+            try handle.close()
+        } catch {
+            try? handle.close()
+            try? fm.removeItem(at: part)
+            throw CoreError.wrap(error)
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard received == offer.size && digest == offer.sha256 else {
+            try? fm.removeItem(at: part)
+            throw CoreError(kind: .http, message: "更新文件校验失败", status: 0)
+        }
+        try? fm.removeItem(at: file)
+        try fm.moveItem(at: part, to: file)
+        onProgress?(1)
         return file
     }
 
     static func matches(_ data: Data, _ offer: ClientUpdateOffer) -> Bool {
         data.count == offer.size && SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == offer.sha256
+    }
+
+    static func fileMatches(_ file: URL, _ offer: ClientUpdateOffer) -> Bool {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+              let size = attrs[.size] as? Int, size == offer.size,
+              let handle = try? FileHandle(forReadingFrom: file) else { return false }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try? handle.read(upToCount: 256 * 1024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined() == offer.sha256
     }
 }

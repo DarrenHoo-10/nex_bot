@@ -21,13 +21,14 @@ private struct CliSendBody: Encodable {
     var delivery: String? = nil; var clientMessageId: String? = nil; var requestId: String? = nil
     var questionId: String? = nil
     var interruptWaiting: Bool? = nil
+    var revisesMessageId: String? = nil
 }
 private struct CliImageResult: Decodable, Sendable { let path: String }
 private struct CliHideBody: Encodable { let key: String; let hidden: Bool }
 private struct CliAnswerBody: Encodable { let id: String; let decision: CliDecision; let answers: [String: String]?; var always: Bool? = nil }
 private struct CliForkBody: Encodable { let key: String; let botId: String; let itemId: String? }
 private struct CliSupervisionBody: Encodable { let settings: Settings
-    struct Settings: Encodable { let transientRetry: Bool?; let usageLimit: Bool?; let wakeup: Bool? }
+    struct Settings: Encodable { let transientRetry: Bool?; let usageLimit: Bool?; let wakeup: Bool?; let triage: Bool?; let decide: Bool?; let wake: Bool? }
 }
 
 public struct CliTranslationSelection: Codable, Sendable {
@@ -155,6 +156,11 @@ extension CoreClient {
         try await post(Self.cliBase + "/queue/edit", body: Body(entryId: entry.id, expectedVersion: entry.version, text: text))
     }
 
+    public func cliWithdrawQueued(_ entry: CliQueuedEntry) async throws {
+        struct Body: Encodable { let entryId: String; let expectedVersion: Int }
+        try await post(Self.cliBase + "/queue/withdraw", body: Body(entryId: entry.id, expectedVersion: entry.version))
+    }
+
     public func cliSteerQueued(_ entry: CliQueuedEntry, questionId: String?, interruptWaiting: Bool) async throws -> CliQueuedEntry {
         struct Body: Encodable { let entryId: String; let expectedVersion: Int; let questionId: String?; let interruptWaiting: Bool? }
         struct Response: Decodable, Sendable { let entry: CliQueuedEntry }
@@ -166,8 +172,12 @@ extension CoreClient {
         try await post(Self.cliBase + "/queue/resume", body: CliKeyBody(key: key))
     }
 
-    @discardableResult public func cliSend(key: CliSessionKey, text: String) async throws -> CliSendResult {
-        try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text), timeout: 90)
+    @discardableResult public func cliSend(key: CliSessionKey, text: String, revisesMessageId: String? = nil) async throws -> CliSendResult {
+        if let revisesMessageId, !revisesMessageId.isEmpty {
+            let body = CliSendBody(key: key, text: text, delivery: "send", clientMessageId: UUID().uuidString, requestId: UUID().uuidString, revisesMessageId: revisesMessageId)
+            return try await post(Self.cliBase + "/send", body: body, timeout: 90)
+        }
+        return try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text), timeout: 90)
     }
 
     /// Idempotent workbench send using stable `clientMessageId` and `requestId` so retries never duplicate delivery.
@@ -229,6 +239,17 @@ extension CoreClient {
         return try await cachedImagePreview(path + "?preview=1", workspaceID: workspaceID)
     }
 
+    /// Downloads the original full-resolution image (without `?preview=1`) along with its Content-Type for saving.
+    public func cliDownloadOriginalImage(_ path: String) async throws -> (data: Data, contentType: String?) {
+        guard Self.cliImageID(path) != nil else { throw CoreError(kind: .http, message: "图片不存在", status: 404) }
+        let (bytes, headers) = try await getData(path, timeout: 120)
+        let contentType = headers["content-type"]
+        guard contentType?.hasPrefix("image/") == true, CGImageSourceCreateWithData(bytes as CFData, nil) != nil else {
+            throw CoreError(kind: .http, message: "图片加载失败")
+        }
+        return (bytes, contentType)
+    }
+
     func cachedImagePreview(_ path: String, workspaceID: String?) async throws -> Data {
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
         let file = workspaceID.flatMap { scope -> URL? in
@@ -241,11 +262,29 @@ extension CoreClient {
         guard headers["content-type"]?.hasPrefix("image/") == true, CGImageSourceCreateWithData(bytes as CFData, nil) != nil else {
             throw CoreError(kind: .http, message: "图片加载失败")
         }
-        if let file {
-            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let file, bytes.count <= 2 * 1024 * 1024 {
+            let folder = file.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try? bytes.write(to: file, options: .atomic)
+            Self.trimImageCache(folder)
         }
         return bytes
+    }
+
+    private static func trimImageCache(_ folder: URL) {
+        let fm = FileManager.default
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        guard let files = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) else { return }
+        guard files.count > 160 || files.reduce(0, { $0 + ((try? $1.resourceValues(forKeys: keys).fileSize) ?? 0) }) > 32 * 1024 * 1024 else { return }
+        let entries = files.compactMap { url -> (URL, Date, Int)? in
+            guard let values = try? url.resourceValues(forKeys: keys), let size = values.fileSize else { return nil }
+            return (url, values.contentModificationDate ?? .distantPast, size)
+        }.sorted { $0.1 > $1.1 }
+        var total = 0
+        for (index, entry) in entries.enumerated() {
+            total += entry.2
+            if index >= 160 || total > 32 * 1024 * 1024 { try? fm.removeItem(at: entry.0) }
+        }
     }
 
     private static func cliImageID(_ path: String) -> UUID? {
@@ -254,9 +293,15 @@ extension CoreClient {
         return UUID(uuidString: String(path.dropFirst(prefix.count)))
     }
 
-    public func cliInterrupt(key: CliSessionKey) async throws {
-        let r: CliOutcomeResult = try await post(Self.cliBase + "/interrupt", body: CliKeyBody(key: key))
-        _ = r
+    public func cliInterrupt(key: CliSessionKey, requestId: String? = nil) async throws {
+        if let requestId {
+            struct Body: Encodable { let key: String; let requestId: String }
+            let r: CliOutcomeResult = try await post(Self.cliBase + "/interrupt", body: Body(key: key, requestId: requestId))
+            _ = r
+        } else {
+            let r: CliOutcomeResult = try await post(Self.cliBase + "/interrupt", body: CliKeyBody(key: key))
+            _ = r
+        }
     }
 
     public func cliHide(key: CliSessionKey, hidden: Bool) async throws { try await post(Self.cliBase + "/hide", body: CliHideBody(key: key, hidden: hidden)) }
@@ -346,11 +391,77 @@ extension CoreClient {
     public func cliSupervision() async throws -> CliSupervision { try await get(Self.cliBase + "/supervision") }
 
     /// Changes the given switches for every folder; the answer is the new state.
-    public func cliSaveSupervision(transientRetry: Bool? = nil, usageLimit: Bool? = nil, wakeup: Bool? = nil) async throws -> CliSupervision {
-        let body = try JSONEncoder().encode(CliSupervisionBody(settings: .init(transientRetry: transientRetry, usageLimit: usageLimit, wakeup: wakeup)))
+    public func cliSaveSupervision(transientRetry: Bool? = nil, usageLimit: Bool? = nil, wakeup: Bool? = nil,
+                                   triage: Bool? = nil, decide: Bool? = nil, wake: Bool? = nil) async throws -> CliSupervision {
+        let body = try JSONEncoder().encode(CliSupervisionBody(settings: .init(transientRetry: transientRetry, usageLimit: usageLimit, wakeup: wakeup, triage: triage, decide: decide, wake: wake)))
         var put = try request(Self.cliBase + "/supervision", query: [], body: body)
         put.httpMethod = "PUT"
         return try await send(put, as: CliSupervision.self)
+    }
+
+    // MARK: Multi-agent collaboration ("协作")
+
+    private static func teamPathComponent(_ raw: String) -> String {
+        raw.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)?.replacingOccurrences(of: "/", with: "%2F") ?? raw
+    }
+
+    public func cliTeams(lead: CliSessionKey? = nil) async throws -> [CliTeamRunView] {
+        struct Body: Decodable, Sendable { let runs: LossyList<CliTeamRunView>? }
+        let query: [(String, String)] = lead.map { [("lead", $0)] } ?? []
+        let body: Body = try await get(Self.cliBase + "/teams", query: query, timeout: 30)
+        return body.runs?.values ?? []
+    }
+
+    public func cliPauseTeam(runId: String) async throws -> CliTeamRunView? {
+        struct Body: Decodable, Sendable { let run: CliTeamRunView? }
+        struct Empty: Encodable {}
+        let res: Body = try await post(Self.cliBase + "/teams/\(Self.teamPathComponent(runId))/pause", body: Empty())
+        return res.run
+    }
+
+    public func cliResumeTeam(runId: String) async throws -> CliTeamRunView? {
+        struct Body: Decodable, Sendable { let run: CliTeamRunView? }
+        struct Empty: Encodable {}
+        let res: Body = try await post(Self.cliBase + "/teams/\(Self.teamPathComponent(runId))/resume", body: Empty())
+        return res.run
+    }
+
+    public func cliCancelTeam(runId: String) async throws -> CliTeamRunView? {
+        struct Body: Decodable, Sendable { let run: CliTeamRunView? }
+        struct Empty: Encodable {}
+        let res: Body = try await post(Self.cliBase + "/teams/\(Self.teamPathComponent(runId))/cancel", body: Empty())
+        return res.run
+    }
+
+    public func cliStopTeamWorker(runId: String, workerName: String) async throws -> CliTeamRunView? {
+        struct Body: Decodable, Sendable { let run: CliTeamRunView? }
+        struct Empty: Encodable {}
+        let res: Body = try await post(Self.cliBase + "/teams/\(Self.teamPathComponent(runId))/workers/\(Self.teamPathComponent(workerName))/stop", body: Empty())
+        return res.run
+    }
+
+    public func cliTeamSettings() async throws -> CliTeamSettings {
+        struct Wrapper: Decodable, Sendable { let settings: CliTeamSettings? }
+        let raw: JSONValue = try await get(Self.cliBase + "/team-settings", timeout: 30)
+        let data = try JSONEncoder().encode(raw)
+        if let wrapped = try? JSONDecoder().decode(Wrapper.self, from: data), let settings = wrapped.settings {
+            return settings
+        }
+        return (try? JSONDecoder().decode(CliTeamSettings.self, from: data)) ?? .defaults
+    }
+
+    public func cliSaveTeamSettings(_ patch: CliTeamSettingsPatch) async throws -> CliTeamSettings {
+        struct Req: Encodable { let settings: CliTeamSettingsPatch }
+        struct Wrapper: Decodable, Sendable { let settings: CliTeamSettings? }
+        let encoded = try JSONEncoder().encode(Req(settings: patch))
+        var put = try request(Self.cliBase + "/team-settings", query: [], body: encoded)
+        put.httpMethod = "PUT"
+        let raw: JSONValue = try await send(put, as: JSONValue.self)
+        let data = try JSONEncoder().encode(raw)
+        if let wrapped = try? JSONDecoder().decode(Wrapper.self, from: data), let settings = wrapped.settings {
+            return settings
+        }
+        return (try? JSONDecoder().decode(CliTeamSettings.self, from: data)) ?? .defaults
     }
 
     /// `ws(s)://host/api/cli-agents/stream` with the bearer in the `Authorization` header.

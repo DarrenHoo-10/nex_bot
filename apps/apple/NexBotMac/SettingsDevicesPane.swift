@@ -28,9 +28,17 @@ struct SettingsDevicesPane: View {
     var body: some View {
         ZStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 18) {
                     paneHeader("设备")
-                    VStack(spacing: 0) { ForEach(visible) { sessionRow($0) } }
+                    if !visible.isEmpty {
+                        MBCard(padding: 0) {
+                            VStack(spacing: 0) {
+                                ForEach(Array(visible.enumerated()), id: \.element.id) { index, session in
+                                    sessionRow(session, showDivider: index < visible.count - 1)
+                                }
+                            }
+                        }
+                    }
                     VStack(alignment: .leading, spacing: 14) {
                         if !loaded { Text("正在加载…").font(.system(size: 12)).foregroundStyle(Theme.muted) }
                         else if !listError && visible.isEmpty { Text("暂无设备").font(.system(size: 12)).foregroundStyle(Theme.muted) }
@@ -56,31 +64,50 @@ struct SettingsDevicesPane: View {
 
     // MARK: Rows
 
-    private func sessionRow(_ session: ClientSession) -> some View {
+    private func deviceSymbol(_ name: String) -> String {
+        let lower = name.lowercased()
+        if lower.range(of: #"\b(android|iphone|ipad|ios|mobile|phone|pixel|huawei|xiaomi|redmi|honor|oppo|vivo|oneplus|samsung)\b|手机"#, options: .regularExpression) != nil {
+            return "iphone"
+        }
+        if lower.range(of: #"\b(browser|chrome|safari|firefox|edge|web)\b|浏览器"#, options: .regularExpression) != nil {
+            return "globe"
+        }
+        return "laptopcomputer"
+    }
+
+    private func sessionRow(_ session: ClientSession, showDivider: Bool) -> some View {
         let isCurrent = session.sessionID == workspace.currentSessionID
         let online = session.lastSeenAt.map { clock.timeIntervalSince($0) < 90 } ?? false
         return VStack(spacing: 0) {
-            HStack(spacing: 16) {
-                Image(systemName: "laptopcomputer").font(.system(size: 18, weight: .light)).foregroundStyle(Theme.muted).frame(width: 26)
+            HStack(spacing: 14) {
+                Image(systemName: deviceSymbol(session.name))
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Theme.brand)
+                    .frame(width: 36, height: 36)
+                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))
                 HStack(spacing: 10) {
                     Text(session.name.isEmpty ? "未命名设备" : session.name).font(.system(size: 13, weight: .bold))
                     if isCurrent {
-                        Text("本设备").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.brand)
-                            .padding(.horizontal, 7).padding(.vertical, 2).background(Theme.brandSoft, in: RoundedRectangle(cornerRadius: 5))
+                        Text("当前设备").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.brandInk)
+                            .padding(.horizontal, 8).padding(.vertical, 2).background(Theme.brandSoft, in: Capsule())
                     }
                 }
                 Spacer()
                 HStack(spacing: 7) {
-                    Circle().fill(online ? Theme.brand : Theme.muted).frame(width: 6, height: 6)
+                    Circle()
+                        .fill(online ? Theme.success : Theme.muted)
+                        .frame(width: 7, height: 7)
+                        .shadow(color: online ? Theme.success.opacity(0.45) : .clear, radius: 3)
                     Text((online ? "在线" : "离线") + (isCurrent && local.paused ? " · 已暂停" : "")).font(.system(size: 12)).foregroundStyle(Theme.muted)
                 }
                 if isCurrent && local.available {
                     MBButton(title: localPending ? "处理中…" : local.paused ? "恢复控制" : "暂停控制", enabled: !localPending && local.authorized) { togglePause() }
                 }
             }
-            .padding(.vertical, 20)
+            .padding(.horizontal, 16).padding(.vertical, 15)
             if isCurrent && local.available && local.authorized && local.agentSessions.available { agentRow }
-            Hairline()
+            if showDivider { Hairline().padding(.leading, 66) }
         }
     }
 
@@ -93,9 +120,9 @@ struct SettingsDevicesPane: View {
             Text(status.text).font(.system(size: 12)).foregroundStyle(status.failed ? Theme.danger : Theme.muted).lineLimit(1)
             Spacer()
             Toggle("", isOn: Binding(get: { agent.enabled }, set: { setAgentSessions($0) }))
-                .toggleStyle(.switch).labelsHidden().controlSize(.mini).disabled(agentPending)
+                .toggleStyle(.switch).tint(Theme.brand).labelsHidden().controlSize(.mini).disabled(agentPending)
         }
-        .padding(.leading, 42).padding(.bottom, 18)
+        .padding(.leading, 66).padding(.trailing, 16).padding(.bottom, 14)
     }
 
     private var agentStatus: (text: String, failed: Bool) {
@@ -106,11 +133,17 @@ struct SettingsDevicesPane: View {
         case "error": return ("不可用", true)
         case "ready":
             let found = agent.engines.map { engine in
-                let name = engine.engine == "claude" ? "Claude" : engine.engine == "codex" ? "Codex" : engine.engine
+                let name: String = switch engine.engine {
+                case "claude": "Claude Code"
+                case "codex": "Codex"
+                case "zcode": "ZCode"
+                case "agy": "Antigravity"
+                default: engine.engine
+                }
                 let number = engine.version.range(of: #"\d+(\.\d+)+"#, options: .regularExpression).map { String(engine.version[$0]) }
                 return [name, number].compactMap { $0 }.joined(separator: " ")
             }
-            return (found.isEmpty ? "未找到 Claude 或 Codex" : found.joined(separator: " · "), false)
+            return (found.isEmpty ? "未找到可用 CLI 工具" : found.joined(separator: " · "), false)
         default: return ("正在启动", false)
         }
     }

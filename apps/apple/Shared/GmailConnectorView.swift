@@ -2,9 +2,9 @@ import SwiftUI
 import NexClientKit
 
 struct GmailMark: View {
-    var size: CGFloat = 60
+    var size: CGFloat = 44
     var body: some View {
-        Image("Gmail").resizable().scaledToFit().padding(size * 0.12)
+        Image("Gmail").resizable().scaledToFit().padding(size * 0.14)
             .frame(width: size, height: size).background(.white, in: RoundedRectangle(cornerRadius: size * 0.25))
             .overlay(RoundedRectangle(cornerRadius: size * 0.25).strokeBorder(Theme.border)).accessibilityHidden(true)
     }
@@ -39,11 +39,11 @@ struct GmailCatalogButton: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Button(action: open) {
-                    HStack(spacing: 16) {
-                        GmailMark(size: 54)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Gmail").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.foreground)
-                            Text("搜索、读取邮件与会话。").font(.system(size: 13)).foregroundStyle(Theme.muted)
+                    HStack(spacing: 14) {
+                        GmailMark(size: 44)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Gmail").font(.system(size: 15.5, weight: .semibold)).foregroundStyle(Theme.foreground)
+                            Text("搜索、读取邮件与会话。").font(.system(size: 12.5)).foregroundStyle(Theme.muted)
                         }
                         Spacer(minLength: 8)
                         if added {
@@ -51,7 +51,7 @@ struct GmailCatalogButton: View {
                             Text("已添加").font(.system(size: 12)).foregroundStyle(Theme.muted)
                         } else if !direct { Image(systemName: "chevron.right").foregroundStyle(Theme.muted) }
                     }
-                    .padding(.vertical, 16).contentShape(Rectangle())
+                    .padding(.vertical, 12).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).accessibilityIdentifier("gmail-catalog")
                 if direct && authorization.authorizationURL == nil { connectButton }

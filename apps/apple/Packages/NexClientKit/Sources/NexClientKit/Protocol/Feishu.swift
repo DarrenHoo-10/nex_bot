@@ -6,16 +6,28 @@ public struct FeishuJob: Codable, Sendable, Hashable {
     public let appID: String?
     public let stage: String
     public let url: String?
+    /// Relative Core scan path (e.g. `/feishu/scan/...`) used as QR target when available.
+    public let scanPath: String?
     public let expiresAt: Date?
     public let error: String?
     public init(row: Row) {
         appID = row.string("id")
         stage = row.string("stage") ?? ""
         url = row.string("url")
+        scanPath = row.string("scanPath").flatMap { $0.isEmpty ? nil : $0 }
         expiresAt = dateFromMilliseconds(row.double("expiresAt"))
         error = row.string("error").flatMap { $0.isEmpty ? nil : $0 }
     }
     public var isRunning: Bool { stage == "preparing" || stage == "qr" || stage == "polling" }
+    /// Preferred QR payload: Core-hosted scanPath if present and valid, else the direct Feishu URL.
+    public func qrValue(origin: CoreOrigin) -> String? {
+        if let scanPath, scanPath.hasPrefix("/") {
+            let base = origin.url.absoluteString
+            let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
+            return trimmed + scanPath
+        }
+        return url
+    }
 }
 
 /// `feishu.apps[]`：一个飞书自建应用绑定一个助手。凭据不下发。
@@ -117,3 +129,173 @@ public struct FeishuGroup: RowBacked {
     }
 }
 public struct FeishuGroupList: Decodable, Sendable { public let groups: [FeishuGroup]; public let error: String?; public let cacheForMs: Int? }
+
+// MARK: - Shared Feishu delivery, finance channel & outbox reconciliation
+
+public struct FeishuSharedApp: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var id: String { appID }
+    public var appID: String { row.string("appId") ?? "" }
+    public var brand: String { row.string("brand") ?? "feishu" }
+    public var bound: Bool { row.bool("bound") ?? false }
+    public var canManageChannel: Bool { row.bool("canManageChannel") ?? false }
+    public var status: String? { row.string("status") }
+    public var tenantKey: String? { row.string("tenantKey") }
+    public var bindingVersion: Int? { row.int("bindingVersion") }
+}
+
+public struct FeishuDestination: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var id: String { "\(appID):\(chatID)" }
+    public var appID: String { row.string("app_id") ?? "" }
+    public var chatID: String { row.string("chat_id") ?? "" }
+    public var chatType: String { row.string("chat_type") ?? "" }
+    public var enabled: Bool { (row.int("enabled") ?? 0) != 0 || (row.bool("enabled") ?? false) }
+}
+
+public struct FeishuSubscription: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var appID: String { row.string("app_id") ?? "" }
+    public var chatID: String { row.string("chat_id") ?? "" }
+    public var instanceID: String { row.string("instance_id") ?? "" }
+    public var kinds: [String] { row["kinds"]?.arrayValue?.compactMap(\.stringValue) ?? [] }
+    public var scenarios: [String] { row["scenarios"]?.arrayValue?.compactMap(\.stringValue) ?? [] }
+    public var audience: String { row.string("audience") ?? "private" }
+    public var enabled: Bool { (row.int("enabled") ?? 0) != 0 || (row.bool("enabled") ?? false) }
+    public var version: Int { row.int("version") ?? 0 }
+}
+
+public struct FeishuSubscriptionSaveBody: Encodable, Sendable {
+    public let appId: String
+    public let chatId: String
+    public let instanceId: String
+    public let kinds: [String]
+    public let scenarios: [String]
+    public let audience: String
+    public let enabled: Bool
+    public let version: Int?
+    public init(appId: String, chatId: String, instanceId: String, kinds: [String], scenarios: [String], audience: String, enabled: Bool, version: Int? = nil) {
+        self.appId = appId; self.chatId = chatId; self.instanceId = instanceId; self.kinds = kinds
+        self.scenarios = scenarios; self.audience = audience; self.enabled = enabled; self.version = version
+    }
+}
+
+public struct FeishuFinanceChannel: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var id: String { appID }
+    public var appID: String { row.string("appId") ?? "" }
+    public var version: Int { row.int("version") ?? 0 }
+    /// `"stock"`, `"paused"`, or `"core"`.
+    public var owner: String { row.string("owner") ?? "paused" }
+    public var reportsError: String? { row["reports"]?.objectValue?.string("error").flatMap { $0.isEmpty ? nil : $0 } }
+    public var ownerLabel: String {
+        switch owner {
+        case "stock": "nex_stock"
+        case "core": "NexBot"
+        default: "已暂停"
+        }
+    }
+}
+
+public struct FeishuDeliveryReconciliation: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var id: String { "\(recordedAt?.timeIntervalSince1970 ?? 0):\(action):\(evidence)" }
+    public var action: String { row.string("action") ?? "" }
+    public var actor: String { row.string("actor") ?? "" }
+    public var evidence: String { row.string("evidence") ?? "" }
+    public var messageID: String? { row.string("message_id").flatMap { $0.isEmpty ? nil : $0 } }
+    public var recordedAt: Date? { dateFromMilliseconds(row.double("recorded_at")) }
+}
+
+public struct FeishuDeliveryPart: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var sourceKey: String { row.string("source_key") ?? "" }
+    public var appID: String { row.string("app_id") ?? "" }
+    public var chatID: String { row.string("chat_id") ?? "" }
+    public var conversationID: String { row.string("conversation_id") ?? "" }
+    public var part: Int { row.int("part") ?? 0 }
+    public var state: String { row.string("state") ?? "" }
+    public var operation: String { row.string("operation") ?? "" }
+    public var content: String { row.string("content") ?? "" }
+    public var attempts: Int { row.int("attempts") ?? 0 }
+    public var firstPostAt: Date? { dateFromMilliseconds(row.double("first_post_at")) }
+    public var dedupUntil: Date? { dateFromMilliseconds(row.double("dedupUntil")) }
+    public var messageID: String? { row.string("message_id").flatMap { $0.isEmpty ? nil : $0 } }
+    public var error: String? { row.string("error").flatMap { $0.isEmpty ? nil : $0 } }
+    public var reconciliation: [FeishuDeliveryReconciliation] {
+        row["reconciliation"]?.arrayValue?.compactMap(\.objectValue).map(FeishuDeliveryReconciliation.init) ?? []
+    }
+    public var stateLabel: String {
+        switch state {
+        case "pending": "等待发送"
+        case "sending": "正在发送"
+        case "sent": "已送达"
+        case "cancelled": "已取消"
+        case "needs_reconciliation": "待人工对账"
+        default: state
+        }
+    }
+    public var previewText: String {
+        guard let data = content.data(using: .utf8),
+              let parsed = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let elements = parsed["elements"]?.arrayValue else { return content }
+        let lines = elements.compactMap { $0["content"]?.stringValue }
+        return lines.isEmpty ? content : lines.joined(separator: "\n")
+    }
+}
+
+private struct FeishuAppIDBody: Encodable { let appId: String }
+private struct FeishuClaimBody: Encodable { let appId: String; let chatId: String }
+private struct FeishuChannelTransferBody: Encodable { let appId: String; let expectedVersion: Int; let owner: String }
+private struct FeishuDeliveriesResponse: Decodable, Sendable { let parts: [FeishuDeliveryPart] }
+private struct FeishuReconcileBody: Encodable {
+    let id: String
+    let action: String
+    let messageId: String
+    let evidence: String
+    let confirmedNotDelivered: Bool
+}
+
+extension CoreClient {
+    public func feishuAccounts() async throws -> [FeishuSharedApp] {
+        try await get("/api/feishu/accounts")
+    }
+    public func feishuAccountBind(appID: String) async throws -> String {
+        struct CodeRes: Decodable, Sendable { let code: String }
+        return try await post("/api/feishu/accounts/bind", body: FeishuAppIDBody(appId: appID), as: CodeRes.self).code
+    }
+    public func feishuAccountUnbind(appID: String) async throws {
+        try await post("/api/feishu/accounts/unbind", body: FeishuAppIDBody(appId: appID))
+    }
+    public func feishuAccountClaim(appID: String, chatID: String) async throws {
+        try await post("/api/feishu/accounts/claim", body: FeishuClaimBody(appId: appID, chatId: chatID))
+    }
+    public func feishuDestinations() async throws -> [FeishuDestination] {
+        try await get("/api/feishu/destinations")
+    }
+    public func feishuSubscriptions() async throws -> [FeishuSubscription] {
+        try await get("/api/feishu/subscriptions")
+    }
+    public func saveFeishuSubscription(_ body: FeishuSubscriptionSaveBody) async throws {
+        try await post("/api/feishu/subscriptions", body: body)
+    }
+    public func financeChannel() async throws -> FeishuFinanceChannel {
+        try await get("/api/finance/channel")
+    }
+    public func transferFinanceChannel(appID: String, expectedVersion: Int, owner: String) async throws -> FeishuFinanceChannel {
+        try await post("/api/finance/channel", body: FeishuChannelTransferBody(appId: appID, expectedVersion: expectedVersion, owner: owner), as: FeishuFinanceChannel.self)
+    }
+    public func feishuDeliveries() async throws -> [FeishuDeliveryPart] {
+        let res: FeishuDeliveriesResponse = try await get("/api/feishu/deliveries")
+        return res.parts
+    }
+    public func reconcileFeishuDelivery(id: String, action: String, messageID: String, evidence: String, confirmedNotDelivered: Bool) async throws {
+        try await post("/api/feishu/deliveries/reconcile", body: FeishuReconcileBody(id: id, action: action, messageId: messageID, evidence: evidence, confirmedNotDelivered: confirmedNotDelivered))
+    }
+}

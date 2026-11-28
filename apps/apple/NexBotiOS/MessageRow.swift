@@ -11,7 +11,7 @@ struct DateDivider: View {
     }
 }
 
-/// Block Markdown for chat text. Like `MarkdownText`, plus file-path code spans that open the preview.
+/// Full GFM Markdown for iOS chat bubbles, sharing `ChatMarkdownBlocks` with macOS.
 struct ChatMarkdown: View {
     let source: String
     var fontSize: CGFloat = 16
@@ -19,12 +19,10 @@ struct ChatMarkdown: View {
     /// Shrink to the content width (bubbles) instead of filling the column.
     var hug = false
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
-    @Environment(\.chatInk) private var ink
-    @Environment(\.chatOnAccent) private var onAccent
     private var size: CGFloat { fontSize * scale }
 
     /// URL scheme of a file-path chip; `ChatView` turns taps into previews.
-    static let fileScheme = "nexbot-file"
+    static let fileScheme = ChatLinks.scheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: size * 0.6) {
@@ -38,70 +36,14 @@ struct ChatMarkdown: View {
     }
 
     @ViewBuilder private func ordinary(_ source: String) -> some View {
-        if let html = ChatDocument(source).staticHTML {
+        let document = ChatDocument(source)
+        if let html = document.staticHTML {
             StaticHTMLMessage(fragment: html, fontSize: size)
         } else {
-        VStack(alignment: .leading, spacing: size * 0.6) {
-            ForEach(Array(Markdown.blocks(source).enumerated()), id: \.offset) { _, block in
-                view(for: block)
-            }
+            ChatMarkdownBlocks(blocks: document.blocks, fontSize: size)
+                .textSelection(.enabled)
+                .frame(maxWidth: hug ? nil : .infinity, alignment: .leading)
         }
-        .textSelection(.enabled)
-        .frame(maxWidth: hug ? nil : .infinity, alignment: .leading)
-        }
-    }
-
-    /// Inline Markdown where `` `path/to/file.md` `` spans become tappable chips.
-    static func inline(_ text: String, onAccent: Bool = false) -> AttributedString {
-        var result = Markdown.attributed(text)
-        var spans: [(Range<AttributedString.Index>, String)] = []
-        for run in result.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            let code = String(result[run.range].characters)
-            if FilePathMatcher.isFilePath(code) { spans.append((run.range, code)) }
-        }
-        for (range, path) in spans {
-            var components = URLComponents()
-            components.scheme = fileScheme; components.host = "preview"
-            components.queryItems = [URLQueryItem(name: "path", value: path)]
-            result[range].link = components.url
-            result[range].foregroundColor = onAccent ? .white : Theme.brand
-            result[range].backgroundColor = onAccent ? Color.white.opacity(0.2) : Theme.brandSoft
-            result[range].underlineStyle = nil
-        }
-        return result
-    }
-
-    @ViewBuilder private func view(for block: MarkdownBlock) -> some View {
-        switch block {
-        case .paragraph(let text): line(text)
-        case .heading(let level, let text):
-            line(text, size: size + CGFloat(max(0, 4 - level)) * 2, weight: .semibold)
-        case .bullet(let level, let text): item(marker: level == 0 ? "•" : "◦", level: level, text: text)
-        case .ordered(let level, let number, let text): item(marker: "\(number).", level: level, text: text)
-        case .quote(let text):
-            line(text).foregroundStyle(onAccent ? ink.opacity(0.85) : Theme.muted)
-                .padding(.leading, 10)
-                .overlay(alignment: .leading) { Rectangle().fill(onAccent ? ink.opacity(0.55) : Theme.muted.opacity(0.45)).frame(width: 3) }
-        case .code(_, let text):
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(text).font(.system(size: size - 1, design: .monospaced)).foregroundStyle(Theme.foreground).padding(10)
-            }
-            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        case .rule: Rectangle().fill(onAccent ? ink.opacity(0.4) : Theme.border).frame(height: 1)
-        }
-    }
-
-    private func line(_ text: String, size lineSize: CGFloat? = nil, weight: Font.Weight = .regular) -> some View {
-        Text(Self.inline(text, onAccent: onAccent)).font(.system(size: lineSize ?? size, weight: weight)).lineSpacing(size * 0.35).foregroundStyle(ink)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func item(marker: String, level: Int, text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(marker).font(.system(size: size)).foregroundStyle(ink).frame(minWidth: 12, alignment: .trailing)
-            line(text)
-        }
-        .padding(.leading, CGFloat(level) * 18 + 4)
     }
 }
 
@@ -114,8 +56,10 @@ struct MessageRow: View {
     var bot: Bot?
     /// Last message of its group: it carries the avatar and the time.
     var groupEnd = true
+    var hasJobReply = false
     var onQuote: (_ author: String, _ text: String) -> Void = { _, _ in }
     var onOpenStep: (ToolStep) -> Void = { _ in }
+    var onOpenFile: ((String) -> Void)? = nil
     var onOpenPeer: (String) -> Void = { _ in }
     var onOpenJob: (String) -> Void = { _ in }
     var onReplyJob: (Job) -> Void = { _ in }
@@ -147,7 +91,7 @@ struct MessageRow: View {
                 HStack(alignment: .bottom, spacing: 8) {
                     if let bot { AgentAvatar(appearance: workspace.appearance(of: bot), state: .idle, size: 26).padding(.bottom, 22) }
                     VStack(alignment: .leading, spacing: 4) {
-                        JobReportCard(message: message, workspace: workspace, open: { if let id = message.jobID { onOpenJob(id) } }, reply: onReplyJob) {
+                        JobReportCard(message: message, workspace: workspace, open: { if let id = message.jobID { onOpenJob(id) } }, reply: onReplyJob, hasReply: hasJobReply) {
                             let pictures = AttachmentLink.embeddedImages(message.content)
                             if !pictures.isEmpty {
                                 AttachmentCards(links: pictures, workspace: workspace, conversation: workspace.conversation(for: message.botID), messageID: message.id)
@@ -225,7 +169,9 @@ struct MessageRow: View {
             if !message.streamProgress.isEmpty || !message.toolSteps.isEmpty {
                 MoreContent(durationMs: workDurationMs(steps: message.toolSteps, endedAt: message.createdAt)) {
                     if !message.streamProgress.isEmpty { ChatMarkdown(source: message.streamProgress) }
-                    if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps, onOpen: onOpenStep) }
+                    if !message.toolSteps.isEmpty {
+                        InlineToolStepsList(workspace: workspace, steps: message.toolSteps, onPreviewFile: onOpenFile)
+                    }
                 }
             }
             let conversation = workspace.conversation(for: message.botID)

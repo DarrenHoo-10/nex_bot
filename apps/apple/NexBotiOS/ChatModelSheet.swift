@@ -9,6 +9,7 @@ struct ChatModelSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewedID = ""
     @State private var catalogs: [String: [String]] = [:]
+    @State private var loadingCatalog = false
     @State private var loadError = ""
     @State private var query = ""
 
@@ -83,7 +84,11 @@ struct ChatModelSheet: View {
                             .buttonStyle(.plain)
                         }
                         if !loadError.isEmpty { Text(loadError).font(.footnote).foregroundStyle(Theme.danger).padding(16) }
-                        if models.isEmpty && loadError.isEmpty { ProgressView().padding(20) }
+                        if loadingCatalog && models.isEmpty { ProgressView().padding(20) }
+                        else if models.isEmpty && loadError.isEmpty {
+                            Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "暂无可用模型" : "没有匹配的模型")
+                                .font(.footnote).foregroundStyle(Theme.muted).padding(20)
+                        }
                     }
                     .padding(.top, 6)
                 }
@@ -102,7 +107,9 @@ struct ChatModelSheet: View {
 
     private func loadCatalog() async {
         guard let viewed, viewed.models == nil, catalogs[viewed.id] == nil else { return }
+        loadingCatalog = true
         loadError = ""
+        defer { loadingCatalog = false }
         do { catalogs[viewed.id] = try await workspace.listModels(connectionID: viewed.id).models }
         catch { loadError = (error as? CoreError)?.message ?? error.localizedDescription }
     }

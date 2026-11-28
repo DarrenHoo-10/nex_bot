@@ -31,14 +31,19 @@ struct SettingsModelPane: View {
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.border))
             .padding(.top, 20)
-            if workspace.state?.config != nil {
-                Hairline().padding(.vertical, 28)
-                ImageModelSection(workspace: workspace, active: active).id("\(workspace.state?.config?.providerID ?? "")|\(workspace.state?.config?.endpoint ?? "")")
+            MBCard {
+                ImageModelSection(workspace: workspace, active: active)
+                    .id("\(workspace.state?.config?.providerID ?? "")|\(workspace.state?.config?.endpoint ?? "")")
             }
-            Hairline().padding(.vertical, 28)
-            TranslationModelSection(workspace: workspace, active: active)
-            Hairline().padding(.vertical, 28)
-            RetrievalSection(workspace: workspace, active: active)
+            .padding(.top, 20)
+            MBCard {
+                TranslationModelSection(workspace: workspace, active: active)
+            }
+            .padding(.top, 16)
+            MBCard {
+                RetrievalSection(workspace: workspace, active: active)
+            }
+            .padding(.top, 16)
         }
         .onAppear { if connection == nil { selected = connections.first?.id ?? "new" } }
         .onChange(of: connections.map(\.id)) { if selected != "new" && connection == nil { selected = connections.first?.id ?? "new" } }
@@ -105,7 +110,7 @@ private struct ProviderForm: View {
                 Spacer()
                 if let connection {
                     Toggle("", isOn: Binding(get: { connection.enabled }, set: { value in run { try await workspace.updateConnection(connection, enabled: value) } }))
-                        .toggleStyle(.switch).labelsHidden().controlSize(.small).disabled(saving || connection.isDefault)
+                        .toggleStyle(.switch).tint(Theme.brand).labelsHidden().controlSize(.small).disabled(saving || connection.isDefault)
                         .help(connection.isDefault ? "默认供应商不能停用" : "启用供应商").accessibilityLabel("启用供应商")
                     Menu {
                         Button(connection.isDefault ? "已是默认供应商" : "设为默认供应商") { run { try await workspace.setDefaultConnection(id: connection.id) } }.disabled(connection.isDefault)
@@ -180,6 +185,7 @@ private struct ProviderModels: View {
     let connection: ModelConnection
     var active = true
     @State private var fetched: [String] = []
+    @State private var fetchedNames: [String: String] = [:]
     @State private var loading = false
     @State private var error = ""
     @State private var notice = ""
@@ -196,9 +202,12 @@ private struct ProviderModels: View {
         return (fetched + (selection ?? []) + [connection.defaultModel] + Array(connection.options.keys)).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
     }
     private var enabled: Set<String> { Set(selection ?? all) }
+    private func displayName(_ model: String) -> String {
+        fetchedNames[model] ?? connection.displayName(model)
+    }
     private var rows: [String] {
         let terms = query.lowercased().split(separator: " ").map(String.init)
-        return all.filter { model in terms.allSatisfy { (model + " " + connection.displayName(model)).lowercased().contains($0) } }
+        return all.filter { model in terms.allSatisfy { (model + " " + displayName(model)).lowercased().contains($0) } }
     }
 
     var body: some View {
@@ -250,7 +259,7 @@ private struct ProviderModels: View {
 
     @ViewBuilder private func row(_ model: String) -> some View {
         let options = connection.options[model], on = enabled.contains(model), isDefault = model == connection.defaultModel
-        let name = connection.displayName(model)
+        let name = displayName(model)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 ScrollView(.horizontal) {
@@ -265,12 +274,18 @@ private struct ProviderModels: View {
                 if isDefault { tag("默认", accent: true) }
                 if options?.imageInput != false { tag("视觉") }
                 if !isDefault {
-                    Button { Task { try? await workspace.updateConnection(connection, defaultModel: model) } } label: { Image(systemName: "star").font(.system(size: 12)).foregroundStyle(Theme.muted).frame(width: 26, height: 26) }
+                    Button {
+                        error = ""
+                        Task {
+                            do { try await workspace.updateConnection(connection, defaultModel: model) }
+                            catch { self.error = mbFallbackMessage(error) }
+                        }
+                    } label: { Image(systemName: "star").font(.system(size: 12)).foregroundStyle(Theme.muted).frame(width: 26, height: 26) }
                         .buttonStyle(.plain).help("设为默认模型").accessibilityLabel("设为默认模型：\(model)")
                 }
                 Button { editing = editing == model ? "" : model } label: { Image(systemName: "pencil").font(.system(size: 12)).foregroundStyle(Theme.muted).frame(width: 26, height: 26) }
                     .buttonStyle(.plain).help("编辑").accessibilityLabel("编辑 \(model)")
-                Toggle("", isOn: Binding(get: { on }, set: { _ in autosave?.toggle(model, all: all) })).toggleStyle(.switch).labelsHidden().controlSize(.mini).fixedSize().accessibilityLabel("启用 \(model)")
+                Toggle("", isOn: Binding(get: { on }, set: { _ in autosave?.toggle(model, all: all) })).toggleStyle(.switch).tint(Theme.brand).labelsHidden().controlSize(.mini).fixedSize().accessibilityLabel("启用 \(model)")
             }
             .padding(.leading, 12).padding(.trailing, 8).frame(minHeight: 40)
             if editing == model { ModelOptionsEditor(workspace: workspace, connection: connection, model: model) { editing = "" } }
@@ -302,7 +317,7 @@ private struct ProviderModels: View {
         defer { loading = false }
         do {
             let result = try await workspace.listModels(connectionID: connection.id)
-            fetched = result.models; notice = result.hasMore ? "服务仍有未返回的模型，可手动添加。" : ""
+            fetched = result.models; fetchedNames = result.names; notice = result.hasMore ? "服务仍有未返回的模型，可手动添加。" : ""
         } catch { self.error = mbFallbackMessage(error) }
     }
 }
@@ -334,10 +349,13 @@ private struct ModelOptionsEditor: View {
         .task {
             let stored = connection.options[model]
             imageInput = stored?.imageInput ?? true
-            guard let result = try? await workspace.modelLimits(provider: connection.provider, endpoint: connection.endpoint, model: model) else { return }
-            info = result
-            context = result.manual.contextWindow.map(String.init) ?? ""; output = result.manual.maxOutputTokens.map(String.init) ?? ""
-            // A model never configured starts from what the catalog says it can do.
+            do {
+                let result = try await workspace.modelLimits(provider: connection.provider, endpoint: connection.endpoint, model: model)
+                info = result
+                context = result.manual.contextWindow.map(String.init) ?? ""; output = result.manual.maxOutputTokens.map(String.init) ?? ""
+            } catch {
+                self.error = mbFallbackMessage(error)
+            }
         }
     }
 

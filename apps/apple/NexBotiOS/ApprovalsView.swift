@@ -8,7 +8,8 @@ struct ApprovalsView: View {
 
     var body: some View {
         List(workspace.approvals) { approval in
-            ApprovalCard(approval: approval, botName: workspace.bot(approval.botID)?.name ?? "") { allow, remember in await decide(approval, allow, remember: remember) }
+            let jobTitle = workspace.state?.jobs.first(where: { $0.taskID == approval.taskID })?.title
+            ApprovalCard(approval: approval, botName: workspace.bot(approval.botID)?.name ?? "", jobTitle: jobTitle) { allow, remember in await decide(approval, allow, remember: remember) }
                 .listRowBackground(Color.clear).listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .swipeActions(edge: .trailing) {

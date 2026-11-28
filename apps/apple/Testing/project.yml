@@ -35,13 +35,16 @@ targetTemplates:
       - path: ../Shared/RoleAvatarOptions.swift
       - path: ../Shared/Theme.swift
       - path: ../Shared/Glass.swift
+      - path: ../Shared/ChatMarkdownBlocks.swift
       - path: ../Shared/MarkdownText.swift
+      - path: ../Shared/ToolStepDetailView.swift
       - path: ../Shared/RoutineOccurrenceDetailView.swift
       - path: ../Shared/JobViews.swift
       - path: ../Shared/ConversationActionButtonStyle.swift
       - path: ../Shared/WorkspaceSurface.swift
       - path: ../Shared/AgentSessionsView.swift
       - path: ../Shared/AgentSessionDetail.swift
+      - path: ../Shared/AgentTeamViews.swift
       - path: ../Shared/AgentWorkbenchInspector.swift
       - path: ../Shared/ChatSkillPicker.swift
       - path: ../Shared/AgentImages.swift

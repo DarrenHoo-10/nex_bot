@@ -13,40 +13,47 @@ struct MBButton: View {
     var enabled = true
     var minWidth: CGFloat?
     let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         Button(action: action) {
             HStack(spacing: 6) {
                 if busy { ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14) }
                 else if let icon { Image(systemName: icon).font(.system(size: 11, weight: .medium)) }
-                Text(title).font(.system(size: 12, weight: kind == .primary || kind == .brand ? .semibold : .regular))
+                Text(title).font(.system(size: 12.5, weight: kind == .primary || kind == .brand ? .semibold : .medium))
             }
             .foregroundStyle(foreground)
             .padding(.horizontal, 14).frame(minWidth: minWidth).frame(height: 34)
             .background(background, in: shape)
-            .overlay(shape.strokeBorder(kind == .secondary || kind == .danger ? Theme.border : .clear))
-            .opacity(enabled ? 1 : 0.5)
+            .overlay(shape.strokeBorder(borderColor))
+            .opacity(enabled ? (hovering ? 0.92 : 1) : 0.45)
             .contentShape(Rectangle())
         }
         .plainActionFeedback()
+        .onHover { hovering = $0 }
         .disabled(!enabled || busy)
     }
 
     private var foreground: Color {
         switch kind {
-        case .primary: Theme.primaryForeground
-        case .brand: .white
+        case .primary, .brand: .white
         case .secondary: Theme.foreground
-        case .danger: Theme.danger
+        case .danger: hovering ? .white : Theme.danger
         }
     }
     private var background: Color {
         switch kind {
-        case .primary: Theme.primary
-        case .brand: Theme.brand
-        case .secondary: Theme.secondary
-        case .danger: Theme.card
+        case .primary, .brand: Theme.brand
+        case .secondary: hovering ? Theme.wash : Theme.card
+        case .danger: hovering ? Theme.danger : Theme.card
+        }
+    }
+    private var borderColor: Color {
+        switch kind {
+        case .primary, .brand: .clear
+        case .secondary: hovering ? Theme.borderStrong : Theme.border
+        case .danger: hovering ? Theme.danger : Theme.border
         }
     }
 }
@@ -68,7 +75,7 @@ struct MBChip: View {
     }
 }
 
-/// A labelled single-line input in the web style (white box, hairline border).
+/// A labelled single-line input in the web style (white box, hairline border, brand-blue focus ring).
 struct MBInput: View {
     let label: String
     @Binding var text: String
@@ -78,8 +85,10 @@ struct MBInput: View {
     var hint: String?
     var required = false
     var identifier: String?
+    @FocusState private var focused: Bool
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         VStack(alignment: .leading, spacing: 8) {
             Text(label).font(.system(size: 12, weight: .medium))
             Group {
@@ -87,14 +96,16 @@ struct MBInput: View {
                 else { TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Theme.muted.opacity(0.7))) }
             }
             .textFieldStyle(.plain)
-            .font(.system(size: 12, design: mono ? .monospaced : .default))
+            .font(.system(size: 12.5, design: mono ? .monospaced : .default))
             .autocorrectionDisabled()
-            .padding(.horizontal, 12).frame(height: 38)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.border))
+            .focused($focused)
+            .padding(.horizontal, 12).frame(height: 40)
+            .background(Theme.card, in: shape)
+            .overlay(shape.strokeBorder(focused ? Theme.brand : Theme.borderStrong, lineWidth: focused ? 1.2 : 1))
+            .overlay(shape.stroke(focused ? Theme.brandSoft : .clear, lineWidth: 3))
             .accessibilityLabel(label)
             .accessibilityIdentifier(identifier ?? label)
-            if let hint { Text(hint).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+            if let hint { Text(hint).font(.system(size: 10.5)).foregroundStyle(Theme.muted) }
         }
     }
 }

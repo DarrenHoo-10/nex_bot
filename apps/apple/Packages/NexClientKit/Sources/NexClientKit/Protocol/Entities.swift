@@ -130,8 +130,8 @@ public struct Job: RowBacked {
     public var isOpen: Bool { endedAt == nil && stage != "stopped" }
     /// Running or about to run: the assistant counts as working.
     public var isBusy: Bool { ["running", "queued", "approval"].contains(stage) }
-    /// Its report card may still offer 停止.
-    public var isStoppable: Bool { ["running", "queued", "approval", "question", "blocked", "failed"].contains(stage) }
+    /// Its report card may still offer 停止. Failed jobs offer 重试/查看 instead.
+    public var isStoppable: Bool { ["running", "queued", "approval", "question", "blocked"].contains(stage) }
     public var stageText: String { Job.stageText(stage) }
     public static func stageText(_ stage: String) -> String {
         switch stage {
@@ -180,6 +180,7 @@ public struct JobRoundReport: RowBacked {
     public var taskID: String? { row.string("task_id") }
     public var state: String { row.string("state") ?? "" }
     public var summary: String { row.string("summary") ?? "" }
+    public var question: String? { row.string("question").flatMap { $0.isEmpty ? nil : $0 } }
     public var automatic: Bool { row.int("automatic") == 1 }
     public var createdAt: Date? { dateFromMilliseconds(row.double("created_at")) }
 }

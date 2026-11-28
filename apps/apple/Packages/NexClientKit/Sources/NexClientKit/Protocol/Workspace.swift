@@ -90,6 +90,21 @@ public struct AgentTask: RowBacked {
     public var phrase: String { ToolLabels.taskPhrase(self) }
 }
 
+/// Summary of CLI agent sessions returned by `/api/state` (`cliAgents`).
+public struct CliAgentsSummary: Codable, Sendable, Hashable {
+    public var waiting: Int
+    public var running: Int
+    public init(waiting: Int = 0, running: Int = 0) {
+        self.waiting = waiting
+        self.running = running
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        waiting = c.lenient(.init("waiting"))?.intValue ?? 0
+        running = c.lenient(.init("running"))?.intValue ?? 0
+    }
+}
+
 /// `GET /api/state`. Unknown fields are ignored; collections are typed wrappers over open rows (`row` keeps every column).
 public struct WorkspaceState: Codable, Sendable {
     public var sync: SyncIdentity
@@ -111,6 +126,9 @@ public struct WorkspaceState: Codable, Sendable {
     /// GitHub 监视配置（docs/design/github-connector.md 第 7 节）。Absent on older Cores.
     public var connectorMonitors: [ConnectorMonitor] = []
     public var gmailAvailable: Bool { connectorCatalog.first { $0.id == "gmail" }?.available == true }
+    public var githubAvailable: Bool { connectorCatalog.first { $0.id == "github" }?.available == true }
+    /// Agent mode waiting/running summary (`cliAgents`); nil on older Cores.
+    public var cliAgents: CliAgentsSummary?
     /// Feishu connection state (job, user auth, apps). Nil on older Cores.
     public var feishu: FeishuState?
     public var memories: [Memory]
@@ -161,6 +179,7 @@ public struct WorkspaceState: Codable, Sendable {
         connectors = rows("connectors").map(ConnectorView.init); memories = rows("memories").map(Memory.init)
         connectorCatalog = rows("connectorCatalog").map(ConnectorCatalogEntry.init)
         connectorMonitors = (try? c.decodeIfPresent([ConnectorMonitor].self, forKey: .init("connectorMonitors"))) ?? []
+        cliAgents = try? c.decodeIfPresent(CliAgentsSummary.self, forKey: .init("cliAgents"))
         feishu = object("feishu").map(FeishuState.init)
         journal = rows("journal").map(JournalEntry.init); usage = rows("usage").map(Usage.init)
         config = object("config").map(ModelConfig.init); node = object("node").map(NodeState.init)

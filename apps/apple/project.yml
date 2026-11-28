@@ -102,6 +102,7 @@ targets:
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        NSPhotoLibraryAddUsageDescription: "淇濆瓨瀵硅瘽涓殑鍥剧墖鍒扮浉鍐?
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nexbot.ios

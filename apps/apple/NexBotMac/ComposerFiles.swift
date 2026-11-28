@@ -94,19 +94,32 @@ struct AttachmentChips: View {
         ZStack(alignment: .topTrailing) {
             if let preview = file.preview, let image = NSImage(data: preview) {
                 Button {
-                    onOpenImage(ChatImagePreview(image: image) { conversation.removeAttachment(file) })
+                    if file.canRetry {
+                        Task { await conversation.retryAttachment(file) }
+                    } else {
+                        onOpenImage(ChatImagePreview(image: image) { conversation.removeAttachment(file) })
+                    }
                 } label: {
                     Image(nsImage: image).resizable().scaledToFit()
                         .frame(width: 96, height: 96).background(Theme.secondary)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(file.errorMessage != nil ? Theme.danger.opacity(0.6) : Theme.border))
                         .overlay {
                             if file.isUploading { ProgressView().controlSize(.small) }
-                            else if file.errorMessage != nil { Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.danger) }
+                            else if file.errorMessage != nil {
+                                VStack(spacing: 3) {
+                                    Image(systemName: file.canRetry ? "arrow.clockwise.circle.fill" : "exclamationmark.circle.fill")
+                                        .font(.system(size: 18)).foregroundStyle(.white)
+                                    if file.canRetry { Text("重试").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white) }
+                                }
+                                .padding(8)
+                                .background(Theme.danger.opacity(0.85), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
                         }
                 }
                 .buttonStyle(.plain)
-                .help(file.errorMessage ?? file.name).accessibilityLabel("查看图片 \(file.name)")
+                .help(file.canRetry ? "上传失败，点击重试：\(file.errorMessage ?? "")" : (file.errorMessage ?? file.name))
+                .accessibilityLabel(file.canRetry ? "重试上传 \(file.name)" : "查看图片 \(file.name)")
             } else { ComposerImagePlaceholder(uploading: file.isUploading) }
             Button { conversation.removeAttachment(file) } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
@@ -127,7 +140,20 @@ struct AttachmentChips: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                 if file.isUploading { Text("正在上传…").font(.system(size: 10)).foregroundStyle(Theme.muted) }
-                if let message = file.errorMessage { Text(message).font(.system(size: 10)).foregroundStyle(Theme.danger).lineLimit(2) }
+                if let message = file.errorMessage {
+                    if file.canRetry {
+                        Button { Task { await conversation.retryAttachment(file) } } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.clockwise").font(.system(size: 9))
+                                Text("点击重试 · \(message)").lineLimit(1)
+                            }
+                            .font(.system(size: 10)).foregroundStyle(Theme.danger)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(message).font(.system(size: 10)).foregroundStyle(Theme.danger).lineLimit(2)
+                    }
+                }
             }
             Button { conversation.removeAttachment(file) } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.muted)
@@ -249,14 +275,25 @@ struct AttachmentThumbnail: View {
 
     private var fileName: String { link.name.contains(".") ? link.name : link.name + ".png" }
     private func save() {
-        guard let data else { return }
-        _ = try? FilePanels.save(data, suggested: fileName)
+        Task { @MainActor in
+            do {
+                let original = try await conversation.download(link)
+                let suggested = original.filename == "attachment" ? fileName : original.filename
+                _ = try FilePanels.save(original.data, suggested: suggested)
+            } catch {
+                if let data { _ = try? FilePanels.save(data, suggested: fileName) }
+            }
+        }
     }
     private func open() {
         guard let image else { return }
-        onOpen(ChatImagePreview(image: image) {
+        onOpen(ChatImagePreview(image: image, save: {
+            let original = try await conversation.download(link)
+            let suggested = original.filename == "attachment" ? fileName : original.filename
+            _ = try FilePanels.save(original.data, suggested: suggested)
+        }, delete: {
             try await conversation.deleteImage(link, messageID: messageID)
-        })
+        }))
     }
 }
 
@@ -264,6 +301,7 @@ struct AttachmentThumbnail: View {
 struct ChatImagePreview: Identifiable {
     let id = UUID()
     let image: NSImage
+    var save: (@MainActor () async throws -> Void)? = nil
     let delete: @MainActor () async throws -> Void
 }
 
@@ -271,6 +309,7 @@ struct ChatImageViewer: View {
     let preview: ChatImagePreview
     let onClose: () -> Void
     @State private var deleting = false
+    @State private var saving = false
     @State private var error = ""
 
     var body: some View {
@@ -282,6 +321,20 @@ struct ChatImageViewer: View {
                 .padding(32)
                 .overlay(alignment: .topTrailing) {
                     HStack(spacing: 8) {
+                        if let saveAction = preview.save {
+                            Button { saveOriginal(saveAction) } label: {
+                                Group {
+                                    if saving { ProgressView().controlSize(.small) }
+                                    else { Image(systemName: "arrow.down.to.line").font(.system(size: 13, weight: .semibold)) }
+                                }
+                                .frame(width: 34, height: 34)
+                                .foregroundStyle(.white)
+                                .background(.black.opacity(0.55), in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(saving)
+                            .help("存储原图…").accessibilityLabel("存储原图")
+                        }
                         Button(action: remove) {
                             Group {
                                 if deleting { ProgressView().controlSize(.small) }
@@ -313,6 +366,16 @@ struct ChatImageViewer: View {
             }
         }
         .onExitCommand(perform: onClose)
+    }
+
+    private func saveOriginal(_ action: @escaping @MainActor () async throws -> Void) {
+        guard !saving else { return }
+        saving = true; error = ""
+        Task { @MainActor in
+            defer { saving = false }
+            do { try await action() }
+            catch { self.error = error.localizedDescription }
+        }
     }
 
     private func remove() {

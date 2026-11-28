@@ -4,9 +4,9 @@ import NexClientKit
 
 /// Categories of the Settings screen (index list pushing into each category detail screen).
 enum SettingsCategory: String, CaseIterable, Hashable {
-    case account = "账号与登录设备", model = "模型", memory = "长期记忆", connectors = "连接器", devices = "设备", about = "关于"
+    case account = "账号与登录设备", model = "模型", memory = "长期记忆", team = "协作", connectors = "连接器", devices = "设备", about = "关于"
     var icon: String {
-        switch self { case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .connectors: "powerplug"; case .devices: "cpu"; case .about: "info.circle" }
+        switch self { case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .team: "network"; case .connectors: "powerplug"; case .devices: "cpu"; case .about: "info.circle" }
     }
 }
 
@@ -21,6 +21,10 @@ final class Navigation {
     var path: [Route] = []
     /// Top-level dual-brand mode (`NexBot` vs `NexAgent`), matching Android/Web and Mac.
     var agentMode = false
+    /// Whether iPad split-view is active (contacts in sidebar, active chat at detail root).
+    var isSplit = false
+    /// Callback wired by ConnectedView to switch the split-view detail root cleanly.
+    var onSelectSplitBot: ((String) -> Void)?
     /// The account menu sheet.
     var showMenu = false
     /// The last selected Settings category (kept for deep links & debug hooks).
@@ -40,7 +44,15 @@ final class Navigation {
 
     /// Pushes a route unless it is already on top.
     func push(_ route: Route) { showMenu = false; if path.last != route { path.append(route) } }
-    func openChat(_ botID: String) { showMenu = false; path = [.chat(botID)] }
+    func openChat(_ botID: String) {
+        showMenu = false
+        if isSplit {
+            onSelectSplitBot?(botID)
+            path = []
+        } else {
+            path = [.chat(botID)]
+        }
+    }
     /// Connectors and devices are Settings categories, not pages of their own.
     func openConnectors() { openSettings(.connectors) }
     func openDevices() { openSettings(.devices) }
@@ -73,8 +85,11 @@ final class Navigation {
     func destination(for route: Route, model: AppModel, workspace: WorkspaceStore, agents: CliAgentsModel) -> some View {
         switch route {
         case .chat(let id):
-            if id == workspace.financeBotID { FinanceTopicsView(workspace: workspace, botID: id) }
-            else { ChatView(workspace: workspace, botID: id) }
+            if id == workspace.financeBotID {
+                FinanceTopicsView(workspace: workspace, botID: id, onOpenDetail: { self.openAgentDetail(id) })
+            } else {
+                ChatView(workspace: workspace, botID: id)
+            }
         case .approvals: ApprovalsView(workspace: workspace)
         case .todos: TodosView(workspace: workspace) { id in workspace.select(id); self.openChat(id) }.toolbar(.visible, for: .navigationBar)
         case .agentSessions:

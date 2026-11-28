@@ -21,9 +21,14 @@ struct SettingsConnectorsPane: View {
     @State private var showingGithub = false
 
     private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && !$0.isGithub && $0.kind != "feishu" } }
+    private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    private var matchesGmail: Bool { query.isEmpty || "gmail 邮件 google".contains(query) || "gmail".contains(query) }
+    private var matchesGithub: Bool { query.isEmpty || "github 仓库 pr ci issue".contains(query) || "github".contains(query) }
+    private var matchesFeishu: Bool { query.isEmpty || "飞书 lark feishu 群聊".contains(query) || "飞书".contains(query) }
     private var visible: [ConnectorView] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        return q.isEmpty ? connectors : connectors.filter { $0.name.lowercased().contains(q) }
+        return query.isEmpty ? connectors : connectors.filter {
+            $0.name.lowercased().contains(query) || $0.url.lowercased().contains(query)
+        }
     }
     private var selected: ConnectorView? { visible.first { $0.id == selectedID } ?? visible.first }
 
@@ -36,12 +41,44 @@ struct SettingsConnectorsPane: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
-                        GmailCatalogButton(workspace: workspace, open: { showingGmail = true }).padding(.top, 20)
-                        GithubCatalogButton(workspace: workspace, open: { showingGithub = true }).padding(.top, 20)
-                        if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 24) }
-                        if workspace.state?.feishu != nil { SettingsFeishuCard(workspace: workspace).padding(.top, 24) }
-                        if workspace.state != nil, connectors.isEmpty { emptyState.padding(.top, 28) }
-                        else if !connectors.isEmpty { twoPane.padding(.top, 24) }
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                            TextField("", text: $search, prompt: Text("搜索 Gmail、GitHub、飞书或 MCP 地址…").foregroundStyle(Theme.muted))
+                                .textFieldStyle(.plain).font(.system(size: 12.5))
+                                .accessibilityLabel("搜索连接器")
+                            if !search.isEmpty {
+                                Button { search = "" } label: {
+                                    Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 12).frame(height: 36)
+                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .padding(.top, 16)
+
+                        if matchesGmail || matchesGithub {
+                            VStack(spacing: 0) {
+                                if matchesGmail {
+                                    GmailCatalogButton(workspace: workspace, open: { showingGmail = true })
+                                        .padding(.horizontal, 14)
+                                }
+                                if matchesGmail && matchesGithub { Hairline().padding(.leading, 72) }
+                                if matchesGithub {
+                                    GithubCatalogButton(workspace: workspace, open: { showingGithub = true })
+                                        .padding(.horizontal, 14)
+                                }
+                            }
+                            .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.border))
+                            .padding(.top, 18)
+                        }
+                        if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 18) }
+                        if workspace.state?.feishu != nil && matchesFeishu { SettingsFeishuCard(workspace: workspace).padding(.top, 18) }
+                        if !connectors.isEmpty { twoPane.padding(.top, 20) }
+                        else if !query.isEmpty && !matchesGmail && !matchesGithub && !matchesFeishu {
+                            Text("没有匹配的连接器").font(.system(size: 12.5)).foregroundStyle(Theme.muted)
+                                .frame(maxWidth: .infinity).padding(.vertical, 36)
+                        }
                     }
                     .padding(.bottom, 34)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,24 +104,11 @@ struct SettingsConnectorsPane: View {
         #endif
     }
 
-    // MARK: Header and empty state
+    // MARK: Header
 
     private var header: some View {
         paneHeader("连接器", "") {
             MBButton(title: "添加连接器", kind: .brand, icon: "plus") { editor = Editor(id: "new", existing: nil) }
-        }
-    }
-
-    private var emptyState: some View {
-        MBCard(padding: 48) {
-            VStack(spacing: 10) {
-                Image(systemName: "powerplug").font(.system(size: 22)).foregroundStyle(Theme.muted).padding(.bottom, 6)
-                Text("把常用工具带进对话").font(.system(size: 17, weight: .bold))
-                Text("添加 MCP 服务地址，测试连接后，为需要的 Agent 选择工具。").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                MBButton(title: "添加第一个连接器", kind: .primary) { editor = Editor(id: "new", existing: nil) }.padding(.top, 10)
-                Text("支持 Streamable HTTP 与 SSE，可使用 Bearer Token 认证。").font(.system(size: 10)).foregroundStyle(Theme.muted).padding(.top, 4)
-            }
-            .frame(maxWidth: .infinity)
         }
     }
 
@@ -107,13 +131,6 @@ struct SettingsConnectorsPane: View {
 
     private var list: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                TextField("", text: $search, prompt: Text("搜索连接器").foregroundStyle(Theme.muted)).textFieldStyle(.plain).font(.system(size: 12))
-                    .accessibilityLabel("搜索连接器")
-            }
-            .padding(.horizontal, 12).frame(height: 36)
-            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             ForEach(visible) { c in
                 let on = c.id == selected?.id
                 Button { selectedID = c.id } label: {

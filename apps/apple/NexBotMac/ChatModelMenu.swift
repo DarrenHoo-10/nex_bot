@@ -11,6 +11,7 @@ struct ChatModelMenu: View {
     @State private var viewedID = ""
     @State private var picking = false
     @State private var catalogs: [String: [String]] = [:]
+    @State private var loadingCatalog = false
     @State private var loadError = ""
 
     private var state: WorkspaceState? { workspace.state }
@@ -48,7 +49,14 @@ struct ChatModelMenu: View {
                 Text("模型").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
                 if !offered.isEmpty && viewed?.id == current?.id { effort }
                 ModelListView(models: models, value: viewed?.id == current?.id ? chosenModel : "", emptyLabel: nil, allowCustom: false, debugPrefix: "cm",
-                              names: viewed?.names ?? [:], onSelect: { pick($0) }, onEscape: close)
+                              names: viewed?.names ?? [:], options: viewed?.options ?? [:], onSelect: { pick($0) }, onEscape: close)
+                if loadingCatalog {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在获取模型…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                }
                 if !loadError.isEmpty { Text(loadError).font(.system(size: 11)).foregroundStyle(Theme.danger).padding(.horizontal, 12).padding(.vertical, 6) }
             }
         }
@@ -95,7 +103,9 @@ struct ChatModelMenu: View {
 
     private func loadCatalog() async {
         guard let viewed, viewed.models == nil, catalogs[viewed.id] == nil else { return }
+        loadingCatalog = true
         loadError = ""
+        defer { loadingCatalog = false }
         do { catalogs[viewed.id] = try await workspace.listModels(connectionID: viewed.id).models }
         catch { loadError = mbFallbackMessage(error) }
     }

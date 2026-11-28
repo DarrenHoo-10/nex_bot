@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 0 25 24">
+  <defs>
+    <clipPath id="agy-clip">
+      <path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z"/>
+    </clipPath>
+    <radialGradient id="agy-r" cx="18.5" cy="5.5" r="11.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FC413D"/>
+      <stop offset="55%" stop-color="#FC413D" stop-opacity="0.88"/>
+      <stop offset="100%" stop-color="#FC413D" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="agy-y" cx="7.5" cy="2" r="10.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FBBC04"/>
+      <stop offset="55%" stop-color="#FBBC04" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#FBBC04" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="agy-g" cx="3" cy="12" r="10.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00B95C"/>
+      <stop offset="55%" stop-color="#00B95C" stop-opacity="0.88"/>
+      <stop offset="100%" stop-color="#00B95C" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g clip-path="url(#agy-clip)">
+    <rect x="-1" y="0" width="26" height="24" fill="#3186FF"/>
+    <rect x="-1" y="0" width="26" height="24" fill="url(#agy-r)"/>
+    <rect x="-1" y="0" width="26" height="24" fill="url(#agy-y)"/>
+    <rect x="-1" y="0" width="26" height="24" fill="url(#agy-g)"/>
+  </g>
+</svg>

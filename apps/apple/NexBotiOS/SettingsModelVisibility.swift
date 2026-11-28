@@ -145,6 +145,7 @@ private struct ImageProviderModelsIOS: View {
     let workspace: WorkspaceStore
     let connection: ModelConnection
     @State private var catalog: [String] = []
+    @State private var catalogNames: [String: String] = [:]
     @State private var autosave: ModelSelectionAutosave?
     @State private var loading = false
     @State private var notice = ""
@@ -158,9 +159,15 @@ private struct ImageProviderModelsIOS: View {
         return (catalog + selection + (connection.models ?? [])).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
     }
 
+    private var mergedNames: [String: String] {
+        var out = catalogNames
+        for (k, v) in connection.names { out[k] = v }
+        return out
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            ModelMultiList(models: all, selected: Set(selection), maxHeight: 260, onToggle: { autosave?.toggle($0, all: all) })
+            ModelMultiList(models: all, selected: Set(selection), maxHeight: 260, names: mergedNames, onToggle: { autosave?.toggle($0, all: all) })
                 .disabled(loading)
             let status = loading ? "获取中…" : autosave?.busy == true ? "保存中…" : notice
             if !status.isEmpty { Text(status).font(.caption).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
@@ -186,7 +193,7 @@ private struct ImageProviderModelsIOS: View {
         defer { loading = false }
         do {
             let result = try await workspace.listModels(connectionID: connection.id)
-            catalog = result.models; notice = result.hasMore ? "模型列表未全部返回" : ""
+            catalog = result.models; catalogNames = result.names; notice = result.hasMore ? "模型列表未全部返回" : ""
         } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
     }
 }

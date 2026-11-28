@@ -81,7 +81,7 @@ private struct RetrievalModelForm: View {
                 HStack {
                     Text("启用").font(.system(size: 12, weight: .medium))
                     Spacer()
-                    Toggle("启用", isOn: edited($enabled)).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                    Toggle("启用", isOn: edited($enabled)).labelsHidden().toggleStyle(.switch).tint(Theme.brand).controlSize(.small)
                         .accessibilityIdentifier("\(kind.rawValue)-enabled")
                 }
             }

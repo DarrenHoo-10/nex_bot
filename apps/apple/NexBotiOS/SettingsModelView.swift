@@ -122,7 +122,8 @@ struct SettingsModelView: View {
                     .buttonStyle(.plain).foregroundStyle(Theme.brand)
                 }
                 .cardStyle()
-                if let config = workspace.state?.config { ImageModelSection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)") }
+                ImageModelSection(workspace: workspace)
+                    .id("\(workspace.state?.config?.providerID ?? "")|\(workspace.state?.config?.endpoint ?? "")")
                 TranslationModelSection(workspace: workspace)
                 RetrievalSection(workspace: workspace)
             }
@@ -225,8 +226,10 @@ private struct ProviderModelsIOS: View {
     let workspace: WorkspaceStore
     let connection: ModelConnection
     @State private var fetched: [String] = []
+    @State private var fetchedNames: [String: String] = [:]
     @State private var loading = false
     @State private var error = ""
+    @State private var notice = ""
     @State private var custom = ""
     @State private var query = ""
     @State private var editing: String?
@@ -240,9 +243,12 @@ private struct ProviderModelsIOS: View {
         return (fetched + (selection ?? []) + [connection.defaultModel] + Array(connection.options.keys)).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
     }
     private var enabled: Set<String> { Set(selection ?? all) }
+    private func displayName(_ model: String) -> String {
+        fetchedNames[model] ?? connection.displayName(model)
+    }
     private var rows: [String] {
         let terms = query.lowercased().split(separator: " ").map(String.init)
-        return all.filter { model in terms.allSatisfy { (model + " " + connection.displayName(model)).lowercased().contains($0) } }
+        return all.filter { model in terms.allSatisfy { (model + " " + displayName(model)).lowercased().contains($0) } }
     }
 
     var body: some View {
@@ -259,6 +265,7 @@ private struct ProviderModelsIOS: View {
             }
             if !error.isEmpty { InlineBanner(text: error) }
             if let failure = autosave?.error, !failure.isEmpty { InlineBanner(text: failure) }
+            if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(Theme.muted) }
             if all.count > 12 || !query.isEmpty {
                 TextField("搜索模型", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled()
                     .padding(.horizontal, 12).padding(.vertical, 9).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -293,7 +300,7 @@ private struct ProviderModelsIOS: View {
 
     @ViewBuilder private func row(_ model: String) -> some View {
         let options = connection.options[model], isDefault = model == connection.defaultModel
-        let name = connection.displayName(model)
+        let name = displayName(model)
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 ScrollView(.horizontal) {
@@ -309,11 +316,19 @@ private struct ProviderModelsIOS: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Menu {
-                if !isDefault { Button("设为默认模型") { Task { try? await workspace.updateConnection(connection, defaultModel: model) } } }
+                if !isDefault {
+                    Button("设为默认模型") {
+                        error = ""
+                        Task {
+                            do { try await workspace.updateConnection(connection, defaultModel: model) }
+                            catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
+                        }
+                    }
+                }
                 Button("编辑") { editing = model }
             } label: { Image(systemName: "ellipsis").foregroundStyle(Theme.muted).frame(width: 30, height: 30) }
                 .accessibilityLabel("\(model) 的操作")
-            Toggle("启用 \(model)", isOn: Binding(get: { enabled.contains(model) }, set: { _ in autosave?.toggle(model, all: all) })).labelsHidden().fixedSize()
+            Toggle("启用 \(model)", isOn: Binding(get: { enabled.contains(model) }, set: { _ in autosave?.toggle(model, all: all) })).tint(Theme.brand).labelsHidden().fixedSize()
         }
         .padding(.vertical, 6)
     }
@@ -335,7 +350,12 @@ private struct ProviderModelsIOS: View {
         guard !loading else { return }
         loading = true; error = ""
         defer { loading = false }
-        do { fetched = try await workspace.listModels(connectionID: connection.id).models }
+        do {
+            let result = try await workspace.listModels(connectionID: connection.id)
+            fetched = result.models
+            fetchedNames = result.names
+            notice = result.hasMore ? "服务仍有未返回的模型，可手动添加。" : ""
+        }
         catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
     }
 }
@@ -372,9 +392,13 @@ private struct ModelOptionsSheetIOS: View {
         .task {
             let stored = connection.options[model]
             imageInput = stored?.imageInput ?? true
-            guard let result = try? await workspace.modelLimits(provider: connection.provider, endpoint: connection.endpoint, model: model) else { return }
-            info = result
-            context = result.manual.contextWindow.map(String.init) ?? ""; output = result.manual.maxOutputTokens.map(String.init) ?? ""
+            do {
+                let result = try await workspace.modelLimits(provider: connection.provider, endpoint: connection.endpoint, model: model)
+                info = result
+                context = result.manual.contextWindow.map(String.init) ?? ""; output = result.manual.maxOutputTokens.map(String.init) ?? ""
+            } catch {
+                self.error = (error as? CoreError)?.message ?? error.localizedDescription
+            }
         }
     }
 

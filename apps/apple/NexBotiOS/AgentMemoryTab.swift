@@ -142,15 +142,19 @@ struct PreviewCard: View {
                 Button(action: close) { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)).frame(width: 30, height: 30) }
                     .buttonStyle(.plain).foregroundStyle(Theme.muted).accessibilityLabel("关闭预览")
             }
-            if let arguments = item.arguments, !arguments.isEmpty {
-                DisclosureGroup("调用参数") {
-                    ToolCodeBlock(text: arguments)
-                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            if item.isTool {
+                ToolStepDetailView(tool: item.title, item: item)
+            } else {
+                if let arguments = item.arguments, !arguments.isEmpty {
+                    DisclosureGroup("调用参数") {
+                        ToolCodeBlock(text: arguments)
+                            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .font(.footnote).tint(Theme.muted)
                 }
-                .font(.footnote).tint(Theme.muted)
+                ToolCodeBlock(text: item.content.isEmpty ? "暂无内容" : item.content, maxHeight: 260)
+                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            ToolCodeBlock(text: item.content.isEmpty ? "暂无内容" : item.content, maxHeight: 260)
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .padding(12).cardStyle()
         .accessibilityElement(children: .contain).accessibilityLabel("内容预览")

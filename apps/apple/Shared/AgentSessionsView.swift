@@ -21,31 +21,26 @@ extension CliTone {
 struct CliChip: View {
     let text: String
     let tone: CliTone
+    var customColor: Color? = nil
 
     var body: some View {
-        Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(tone.color)
+        let fg = customColor ?? tone.color
+        Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(fg)
             .padding(.horizontal, 8).padding(.vertical, 2)
-            .background(tone.color.opacity(0.14), in: Capsule())
+            .background(fg.opacity(0.14), in: Capsule())
     }
-}
-
-private enum AgentSheet: Identifiable {
-    case supervision
-    var id: String { "supervision" }
 }
 
 /// "NexAgent": the coding-agent workbench of the person's computers.
 /// On macOS the session list lives directly in the left sidebar (`ContactsList`) so this view renders the right-hand
-/// workbench stage; on iOS it renders the list and pushes sessions or the new-session composer.
+/// opaque Emerald-Teal Studio stage; on iOS it renders the list and pushes sessions or the new-session composer.
 struct AgentSessionsView: View {
     let model: CliAgentsModel
     let workspace: WorkspaceStore
     /// After 交给助手: show the assistant's conversation.
     let openAssistant: (String) -> Void
     @Environment(\.scenePhase) private var scenePhase
-    @State private var sheet: AgentSheet?
     @State private var errorText = ""
-    @State private var deleting: CliSession?
     #if os(macOS)
     @Binding var composing: AgentNewTarget?
     init(model: CliAgentsModel, workspace: WorkspaceStore, composing: Binding<AgentNewTarget?>, openAssistant: @escaping (String) -> Void) {
@@ -73,19 +68,6 @@ struct AgentSessionsView: View {
             .onDisappear { if !model.notificationsOn { model.stop() } }
             #endif
             .onChange(of: scenePhase) { _, phase in sceneChanged(phase) }
-            .sheet(item: $sheet) { _ in AgentSupervisionSheet(model: model) }
-            .alert("删除会话？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { session in
-                Button("取消", role: .cancel) { deleting = nil }
-                Button("删除会话", role: .destructive) {
-                    let target = session
-                    deleting = nil
-                    Task {
-                        do { try await model.deleteSession(target.key) } catch { errorText = CliErrorText.text(for: error) }
-                    }
-                }
-            } message: { session in
-                Text("将永久删除「\(CliSessions.title(session))」在电脑上的原生会话记录，无法恢复。")
-            }
     }
 
     private func sceneChanged(_ phase: ScenePhase) {
@@ -105,36 +87,25 @@ struct AgentSessionsView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            BrandMark(size: 20, agent: true)
-            Text("NexAgent").font(.system(size: 16, weight: .bold))
-            if !linkText.isEmpty { Text(linkText).font(.caption).foregroundStyle(Theme.muted) }
-            Spacer()
-            headerActions
-        }
-        .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 6)
-    }
-
-    @ViewBuilder private var headerActions: some View {
-        Button { Task { await toggleBell() } } label: {
-            Image(systemName: model.notificationsOn ? "bell.fill" : "bell.slash")
-        }
-        .buttonStyle(.plain).foregroundStyle(model.notificationsOn ? Theme.nexAgentAccent : Theme.muted)
-        .help(model.notificationsOn ? "关闭通知" : "开启通知").accessibilityLabel(model.notificationsOn ? "关闭通知" : "开启通知")
-        Button { sheet = .supervision } label: { Image(systemName: "gearshape") }
-            .buttonStyle(.plain).foregroundStyle(Theme.muted)
-            .help("自动处理设置").accessibilityLabel("自动处理设置")
-    }
-
     private var banner: some View {
         let text = !errorText.isEmpty ? errorText : (model.loadError ?? "")
         return Group {
-            if !text.isEmpty {
-                HStack {
-                    Text(text).font(.caption).foregroundStyle(Theme.danger)
-                    Button("重新加载") { errorText = ""; Task { await model.refresh() } }.font(.caption).buttonStyle(.plain).foregroundStyle(Theme.nexAgentAccent)
+            if !text.isEmpty || !linkText.isEmpty {
+                HStack(spacing: 8) {
+                    if !linkText.isEmpty {
+                        ProgressView().controlSize(.small)
+                        Text(linkText).font(.caption).foregroundStyle(Theme.nexAgentMuted)
+                    }
+                    if !text.isEmpty {
+                        Text(text).font(.caption).foregroundStyle(Theme.danger)
+                        Button("重新加载") { errorText = ""; Task { await model.refresh() } }
+                            .font(.caption.weight(.medium)).buttonStyle(.plain).foregroundStyle(Theme.nexAgentAccent)
+                    }
+                    Spacer()
                 }
+                .padding(.horizontal, 16).padding(.vertical, 6)
+                .background(Theme.nexAgentInset)
+                .overlay(alignment: .bottom) { Rectangle().fill(Theme.nexAgentBorder).frame(height: 1) }
             }
         }
     }
@@ -145,28 +116,14 @@ struct AgentSessionsView: View {
             selected: composing == nil ? model.selectedKey : nil,
             onSelect: { key in composing = nil; onSelect(key) },
             onCreate: { composing = AgentNewTarget(deviceId: model.selected?.deviceId, cwd: model.selected?.cwd) },
-            onNew: { composing = AgentNewTarget(deviceId: $0, cwd: $1) },
-            onArchive: { session, archived in
-                Task {
-                    do { try await model.archiveSession(session.key, archived: archived) } catch { errorText = CliErrorText.text(for: error) }
-                }
-            },
-            onDelete: { session in deleting = session })
-    }
-
-    private func toggleBell() async {
-        if model.notificationsOn { model.setNotifications(false); return }
-        model.setNotifications(await AgentNotifier.requestAuthorization())
+            onNew: { composing = AgentNewTarget(deviceId: $0, cwd: $1) }
+        )
     }
 
     #if os(macOS)
     private var layout: some View {
-        let showingDetail = composing != nil || model.selectedLaunch != nil || (model.selectedKey != nil && model.selected != nil)
-        return VStack(spacing: 0) {
-            if !showingDetail || !linkText.isEmpty {
-                header
-            }
-            banner.padding(.horizontal, 16).padding(.bottom, 6)
+        VStack(spacing: 0) {
+            banner
             Group {
                 if let target = composing {
                     AgentNewSessionPage(model: model, target: target) { _ in composing = nil }.id(target.id)
@@ -177,22 +134,21 @@ struct AgentSessionsView: View {
                         model: model,
                         workspace: workspace,
                         key: key,
-                        openAssistant: openAssistant,
-                        onToggleBell: { Task { await toggleBell() } },
-                        onOpenSettings: { sheet = .supervision }
+                        openAssistant: openAssistant
                     ) { model.select($0) }
                         .id(key)
                 } else {
-                    VStack(spacing: 10) {
-                        BrandMark(size: 36, agent: true)
-                        Text("选择一个会话或新建会话").font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.muted)
+                    VStack(spacing: 12) {
+                        BrandMark(size: 40, agent: true)
+                        Text("NexAgent").font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.nexAgentInk)
+                        Text("选择一个会话或新建会话").font(.system(size: 13.5)).foregroundStyle(Theme.nexAgentMuted)
                         Button {
                             composing = AgentNewTarget(deviceId: model.devices.first(where: \.online)?.id ?? model.devices.first?.id, cwd: nil)
                         } label: {
                             Label("新建会话", systemImage: "plus")
                                 .font(.system(size: 13, weight: .semibold))
-                                .padding(.horizontal, 14).padding(.vertical, 7)
-                                .background(Theme.nexAgentAccent, in: Capsule())
+                                .padding(.horizontal, 16).padding(.vertical, 8)
+                                .background(Theme.nexAgentSolid, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 .foregroundStyle(.white)
                         }
                         .buttonStyle(.plain)
@@ -203,22 +159,15 @@ struct AgentSessionsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .glass(RoundedRectangle(cornerRadius: 18, style: .continuous), strong: true, lift: .card)
+        .background(Theme.nexAgentCanvas)
     }
     #else
     private var layout: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                if !linkText.isEmpty { Text(linkText).font(.caption).foregroundStyle(Theme.muted) }
-                Spacer()
-                headerActions
-            }
-            .padding(.horizontal, 4)
+        VStack(spacing: 0) {
             banner
             list { key in model.select(key); pushed = key }
         }
-        .padding(.horizontal, 12).padding(.top, 4)
-        .background { WorkspaceSurface(kind: .stage) }
+        .background { WorkspaceSurface(kind: .nexAgent) }
         .navigationDestination(item: $pushed) { key in
             Group {
                 if let launch = model.launches.first(where: { $0.key == key }) {
@@ -231,17 +180,28 @@ struct AgentSessionsView: View {
                     .id(key)
                 }
             }
-            .background { WorkspaceSurface(kind: .stage) }
+            .background { WorkspaceSurface(kind: .nexAgent) }
             .toolbar(.visible, for: .navigationBar)
         }
         .navigationDestination(item: $composing) { target in
             AgentNewSessionPage(model: model, target: target) { key in
                 composing = nil
-                // the page leaves first, then the new session is pushed in its place
                 DispatchQueue.main.async { pushed = key }
             }
-            .background { WorkspaceSurface(kind: .stage) }
+            .background { WorkspaceSurface(kind: .nexAgent) }
             .toolbar(.visible, for: .navigationBar)
+        }
+        .onAppear {
+            if let pending = model.pendingNavigationKey {
+                model.pendingNavigationKey = nil
+                pushed = pending
+            }
+        }
+        .onChange(of: model.pendingNavigationKey) { _, pending in
+            if let pending {
+                model.pendingNavigationKey = nil
+                pushed = pending
+            }
         }
         .onChange(of: model.selectedKey) { previous, next in
             if CliLaunches.isLaunchKey(previous), pushed == previous { pushed = next }
@@ -250,17 +210,15 @@ struct AgentSessionsView: View {
     #endif
 }
 
-/// A new-session button, toolbar (timeline toggle + full-text search), what is running pinned on top,
-/// then computers (only when there are several), draggable projects and sessions.
+/// A new-session button, toolbar (timeline toggle + notification bell + full-text search), what is running pinned on top,
+/// then computers (only when there are several), draggable projects, 7-day history folding, and team worker trees.
 struct AgentSessionList: View {
     let model: CliAgentsModel
     let selected: CliSessionKey?
     let onSelect: (CliSessionKey) -> Void
     let onCreate: () -> Void
     let onNew: (String, String?) -> Void
-    var onArchive: ((CliSession, Bool) -> Void)? = nil
-    var onDelete: ((CliSession) -> Void)? = nil
-    var onHide: ((CliSession, Bool) -> Void)? = nil
+
     @AppStorage("nexagent.activeFolded") private var activeFolded = false
     @AppStorage("nexagent.timeSort") private var byTime = false
     @AppStorage("nexagent.projectOrder") private var projectOrderJSON = "{}"
@@ -270,12 +228,17 @@ struct AgentSessionList: View {
     @State private var contentHits: [CliSessionKey: String] = [:]
     @State private var searchError = ""
     @State private var closedNodes: Set<String> = []
+    @State private var earlierOpen: Set<String> = []
+    @State private var teamHistoryOpen: Set<CliSessionKey> = []
     @State private var draggingProject: String?
+    @State private var dropTarget: (id: String, after: Bool)?
     @State private var archivedMode = false
     @State private var renaming: (session: CliSession, id: String?, version: Int?)?
     @State private var renameText = ""
+    @State private var confirmingArchive: CliSession?
     @State private var confirmingDelete: (session: CliSession, id: String?, version: Int?)?
     @State private var showingID: CliSession?
+    @State private var pendingFork: (parentKey: CliSessionKey, title: String)?
     @State private var pendingForkRequestId: [CliSessionKey: String] = [:]
     @State private var actionBusy = false
     @State private var actionError = ""
@@ -284,6 +247,9 @@ struct AgentSessionList: View {
     @State private var hoveredFolder: String?
     #endif
     @FocusState private var searchFocused: Bool
+
+    private static let recentMs = 7 * 24 * 3600 * 1000
+    private static let foldMin = 2
 
     private var query: String { filter.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -304,7 +270,8 @@ struct AgentSessionList: View {
         var changed = false
         for group in groups {
             let current = map[group.device.id] ?? []
-            let remembered = CliSessions.rememberProjects(group.folders, saved: current)
+            let nonScratch = group.folders.filter { !$0.scratch }
+            let remembered = CliSessions.rememberProjects(nonScratch, saved: current)
             if remembered != current {
                 map[group.device.id] = remembered
                 changed = true
@@ -316,7 +283,8 @@ struct AgentSessionList: View {
     private func moveProject(deviceId: String, folders: [CliFolderGroup], moving: String, target: String, after: Bool) {
         guard moving != target else { return }
         var map = projectOrder
-        let current = CliSessions.rememberProjects(folders, saved: map[deviceId] ?? [])
+        let nonScratch = folders.filter { !$0.scratch }
+        let current = CliSessions.rememberProjects(nonScratch, saved: map[deviceId] ?? [])
         map[deviceId] = CliSessions.moveProject(current, moving: moving, target: target, after: after)
         saveOrder(map)
     }
@@ -324,6 +292,7 @@ struct AgentSessionList: View {
     private func matches(_ session: CliSession, folderLabel: String = "", root: String = "") -> Bool {
         guard !query.isEmpty else { return true }
         if contentHits[session.key] != nil { return true }
+        let binding = model.teamIndex.workerBySession[session.key]
         let hay = [
             model.displayTitle(for: session),
             folderLabel,
@@ -331,12 +300,20 @@ struct AgentSessionList: View {
             session.cwd,
             agentName(session.engine),
             session.gitBranch ?? "",
+            binding?.worker.role ?? "",
+            binding?.worker.name ?? "",
+            binding?.run.title ?? "",
         ].joined(separator: " ")
         return CliSessions.matchesTerms(hay, query: query)
     }
 
+    private func isFailedWorker(_ session: CliSession) -> Bool {
+        guard let binding = model.teamIndex.workerBySession[session.key] else { return false }
+        return !binding.worker.isVisible
+    }
+
     private func listed(_ sessions: [CliSession]) -> [CliSession] {
-        sessions.filter { !model.isDeleted($0) && !model.isSideSession($0) && model.isArchived($0) == archivedMode }
+        sessions.filter { !model.isDeleted($0) && !model.isSideSession($0) && !isFailedWorker($0) && model.isArchived($0) == archivedMode }
     }
 
     private func isClosed(_ id: String) -> Bool {
@@ -357,6 +334,7 @@ struct AgentSessionList: View {
     }
 
     private func canFork(_ session: CliSession) -> (allowed: Bool, reason: String?) {
+        if model.isTeamWorker(session) { return (false, "协作工人会话暂不支持分支") }
         if let blocker = CliSessions.deviceBlocker(model.device(session.deviceId), engine: session.engine) {
             return (false, blocker)
         }
@@ -373,9 +351,76 @@ struct AgentSessionList: View {
         return (true, nil)
     }
 
-    /// Builds the visible hierarchical tree for a folder, preserving ancestor chains on search matches
-    /// and never promoting collapsed descendants to top-level roots.
-    private func treeRows(allEntries: [CliSession], folderLabel: String, root: String) -> [(session: CliSession, depth: Int, hasChildren: Bool)] {
+    private enum TreeEntry: Identifiable {
+        case session(CliSession, depth: Int, hasChildren: Bool, historyStyle: Bool)
+        case pendingFork(parentKey: CliSessionKey, title: String, depth: Int)
+        case teamHistoryToggle(leadKey: CliSessionKey, count: Int, expanded: Bool, depth: Int)
+        case teamHistoryHeader(runId: String, title: String, status: String, depth: Int)
+
+        var id: String {
+            switch self {
+            case .session(let s, _, _, _): "s:\(s.key)"
+            case .pendingFork(let p, _, _): "fork:\(p)"
+            case .teamHistoryToggle(let l, _, _, _): "th-toggle:\(l)"
+            case .teamHistoryHeader(let r, _, _, _): "th-head:\(r)"
+            }
+        }
+    }
+
+    /// Re-groups a device's sessions so team workers always sit in their lead's project folder.
+    private func projectFoldersForDevice(_ group: CliDeviceGroup) -> [CliFolderGroup] {
+        let all = listed(group.folders.flatMap(\.sessions))
+        let byKey = Dictionary(all.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        var folders: [String: CliFolderGroup] = [:]
+        var folderOrder: [String] = []
+        for s in all.sorted(by: { $0.lastActivityAt > $1.lastActivityAt }) {
+            let anchor: CliSession
+            if model.isTeamWorker(s), let leadKey = model.parentKey(of: s), let lead = byKey[leadKey] {
+                anchor = lead
+            } else {
+                anchor = s
+            }
+            let explicit = anchor.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let candidate = explicit.isEmpty ? anchor.cwd : explicit
+            let scratch = CliSessions.isScratchCwd(candidate)
+            let root = scratch ? "" : (explicit.isEmpty ? CliSessions.worktreeRoot(anchor.cwd) : CliSessions.stripLongPath(explicit))
+            let label = scratch ? CliSessions.scratchLabel : CliSessions.folderLabel(root)
+            let name = scratch ? CliSessions.scratchKey : label.lowercased()
+            if folders[name] == nil {
+                folders[name] = CliFolderGroup(cwd: root, label: label, sessions: [], scratch: scratch)
+                folderOrder.append(name)
+            }
+            if !scratch, folders[name]?.roots.contains(root) == false { folders[name]?.roots.append(root) }
+            folders[name]?.sessions.append(s)
+        }
+        let sorted = folderOrder.compactMap { folders[$0] }.sorted {
+            if $0.scratch != $1.scratch { return !$0.scratch }
+            return ($0.sessions.first?.lastActivityAt ?? 0) > ($1.sessions.first?.lastActivityAt ?? 0)
+        }
+        return CliSessions.orderProjects(sorted, saved: projectOrder[group.device.id] ?? [])
+    }
+
+    private func workerLiveNow(_ s: CliSession, binding: CliTeamWorkerBinding?, pending: [CliSessionKey: Int]) -> Bool {
+        let asked = pending[s.key] ?? 0
+        let shown = CliSessions.asked(s, pending: asked)
+        return asked > 0 || (shown.online && (shown.state == .running || shown.state == .waiting)) || binding?.worker.status == .waiting
+    }
+
+    private func isRecentOrLive(_ s: CliSession, pending: [CliSessionKey: Int], nowMs: Int) -> Bool {
+        let shown = CliSessions.asked(s, pending: pending[s.key] ?? 0)
+        return s.key == selected
+            || (shown.online && (shown.state == .running || shown.state == .waiting))
+            || (nowMs - s.lastActivityAt) <= Self.recentMs
+    }
+
+    /// Builds the visible hierarchical tree for a folder, folding >7d history (`更早 N`) and historical team runs (`历史协作 N`).
+    private func buildFolderTree(
+        allEntries: [CliSession],
+        folderNodeId: String,
+        folderLabel: String,
+        root: String,
+        pending: [CliSessionKey: Int]
+    ) -> (rows: [TreeEntry], totalVisible: Int, olderCount: Int) {
         let allKeys = Set(allEntries.map(\.key))
         var fullParentOf: [CliSessionKey: CliSessionKey] = [:]
         for s in allEntries {
@@ -383,29 +428,64 @@ struct AgentSessionList: View {
                 fullParentOf[s.key] = p
             }
         }
-        let entries: [CliSession]
+        // Break any cycles
+        for s in allEntries {
+            var seen: Set<CliSessionKey> = [s.key]
+            var cur = fullParentOf[s.key]
+            while let p = cur {
+                if p == s.key { fullParentOf[s.key] = nil; break }
+                if !seen.insert(p).inserted { break }
+                cur = fullParentOf[p]
+            }
+        }
+
+        let visible: [CliSession]
         if query.isEmpty {
-            entries = allEntries
+            visible = allEntries
         } else {
             let hits = allEntries.filter { matches($0, folderLabel: folderLabel, root: root) }
             var matched = Set(hits.map(\.key))
             for hit in hits {
                 var cur = fullParentOf[hit.key]
-                var guardSteps = 0
-                while let p = cur, !matched.contains(p), guardSteps < 32 {
+                var steps = 0
+                while let p = cur, !matched.contains(p), steps < 32 {
                     matched.insert(p)
                     cur = fullParentOf[p]
-                    guardSteps += 1
+                    steps += 1
                 }
             }
-            entries = allEntries.filter { matched.contains($0.key) }
+            visible = allEntries.filter { matched.contains($0.key) }
         }
-        guard !entries.isEmpty else { return [] }
+        guard !visible.isEmpty else { return ([], 0, 0) }
 
-        let keys = Set(entries.map(\.key))
+        // 7-day history folding (when not searching or viewing archive)
+        var olderCount = 0
+        let shownSessions: [CliSession]
+        if query.isEmpty && !archivedMode {
+            let nowMs = model.now
+            var keep = Set<CliSessionKey>()
+            for s in visible where isRecentOrLive(s, pending: pending, nowMs: nowMs) {
+                var cur: CliSessionKey? = s.key
+                while let k = cur, !keep.contains(k) {
+                    keep.insert(k)
+                    cur = fullParentOf[k]
+                }
+            }
+            let folded = visible.count - keep.count
+            if folded >= Self.foldMin {
+                olderCount = folded
+                shownSessions = earlierOpen.contains(folderNodeId) ? visible : visible.filter { keep.contains($0.key) }
+            } else {
+                shownSessions = visible
+            }
+        } else {
+            shownSessions = visible
+        }
+
+        let keys = Set(shownSessions.map(\.key))
         var childrenOf: [CliSessionKey: [CliSession]] = [:]
         var roots: [CliSession] = []
-        for s in entries {
+        for s in shownSessions {
             if let p = fullParentOf[s.key], keys.contains(p) {
                 childrenOf[p, default: []].append(s)
             } else {
@@ -413,7 +493,7 @@ struct AgentSessionList: View {
             }
         }
 
-        var out: [(CliSession, Int, Bool)] = []
+        var out: [TreeEntry] = []
         var reachable = Set<CliSessionKey>()
 
         func markSubtreeReachable(_ key: CliSessionKey) {
@@ -423,41 +503,101 @@ struct AgentSessionList: View {
             }
         }
 
-        func visit(_ list: [CliSession], depth: Int) {
-            let sorted = list.sorted { $0.lastActivityAt > $1.lastActivityAt }
-            for s in sorted where !reachable.contains(s.key) {
+        func visit(_ list: [CliSession], parent: CliSessionKey?, depth: Int) {
+            var primary: [CliSession] = []
+            var historical: [(session: CliSession, binding: CliTeamWorkerBinding)] = []
+            for s in list {
+                let binding = model.teamIndex.workerBySession[s.key]
+                if parent != nil, let binding, !binding.inPrimaryGroup, query.isEmpty, !archivedMode,
+                   s.key != selected, !workerLiveNow(s, binding: binding, pending: pending) {
+                    historical.append((s, binding))
+                } else {
+                    primary.append(s)
+                }
+            }
+            primary.sort { $0.lastActivityAt > $1.lastActivityAt }
+
+            for s in primary where !reachable.contains(s.key) {
                 reachable.insert(s.key)
                 let kids = childrenOf[s.key] ?? []
-                out.append((s, depth, !kids.isEmpty))
-                if !kids.isEmpty {
+                let creatingChild = pendingFork?.parentKey == s.key
+                let hasKids = !kids.isEmpty || creatingChild
+                let binding = model.teamIndex.workerBySession[s.key]
+                let historyStyle = parent != nil && binding != nil && binding?.isActiveRun == false
+                out.append(.session(s, depth: depth, hasChildren: hasKids, historyStyle: historyStyle))
+                if hasKids {
                     if depth < 24 && !isClosed("branch:\(s.key)") {
-                        visit(kids, depth: depth + 1)
+                        if let pf = pendingFork, pf.parentKey == s.key {
+                            out.append(.pendingFork(parentKey: s.key, title: pf.title, depth: depth + 1))
+                        }
+                        if !kids.isEmpty { visit(kids, parent: s.key, depth: depth + 1) }
                     } else {
                         markSubtreeReachable(s.key)
                     }
                 }
             }
+
+            if let parent, !historical.isEmpty {
+                let expanded = teamHistoryOpen.contains(parent)
+                out.append(.teamHistoryToggle(leadKey: parent, count: historical.count, expanded: expanded, depth: depth))
+                if expanded {
+                    var byRun: [String: (run: CliTeamRunView, items: [CliSession])] = [:]
+                    for entry in historical {
+                        if byRun[entry.binding.run.id] == nil {
+                            byRun[entry.binding.run.id] = (entry.binding.run, [])
+                        }
+                        byRun[entry.binding.run.id]?.items.append(entry.session)
+                    }
+                    let sortedRuns = byRun.values.sorted {
+                        ($0.run.finishedAt ?? $0.run.updatedAt) > ($1.run.finishedAt ?? $1.run.updatedAt)
+                    }
+                    for bucket in sortedRuns {
+                        out.append(.teamHistoryHeader(runId: bucket.run.id, title: bucket.run.title, status: bucket.run.status.label, depth: depth))
+                        for item in bucket.items.sorted(by: { $0.lastActivityAt > $1.lastActivityAt }) where !reachable.contains(item.key) {
+                            reachable.insert(item.key)
+                            out.append(.session(item, depth: depth, hasChildren: false, historyStyle: true))
+                        }
+                    }
+                } else {
+                    for entry in historical { reachable.insert(entry.session.key) }
+                }
+            }
         }
 
-        visit(roots, depth: 0)
-        // Only genuinely unreachable cycles (no root in the component) fall back to depth 0.
-        let cycleNodes = entries.filter { !reachable.contains($0.key) }
-        if !cycleNodes.isEmpty { visit(cycleNodes, depth: 0) }
-        return out
+        visit(roots, parent: nil, depth: 0)
+        let cycleNodes = shownSessions.filter { !reachable.contains($0.key) }
+        if !cycleNodes.isEmpty { visit(cycleNodes, parent: nil, depth: 0) }
+        return (out, visible.count, olderCount)
     }
 
     var body: some View {
         let groups = model.allGroups
         let pending = model.pendingCounts
-        let active = (byTime || archivedMode || !query.isEmpty) ? [] : model.activeSessions.filter { !model.isDeleted($0) && !model.isSideSession($0) && !model.isArchived($0) }
-        // one computer that is online needs no computer row: its projects are the list
+        let allListed = groups.flatMap { listed($0.folders.flatMap(\.sessions)) }
+        let sessionsByKey = Dictionary(allListed.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+
+        // Pinned "进行中": fold normal working workers into their lead row; keep waiting workers pinned.
+        let active: [CliSession] = (byTime || archivedMode || !query.isEmpty) ? [] : allListed.filter { s in
+            let asked = pending[s.key] ?? 0
+            let shown = CliSessions.asked(s, pending: asked)
+            if let binding = model.teamIndex.workerBySession[s.key] {
+                return asked > 0 || (shown.online && shown.state == .waiting) || binding.worker.status == .waiting
+            }
+            if shown.online && (shown.state == .running || shown.state == .waiting) { return true }
+            if let activeRun = model.teamIndex.activeRunByLead[s.key], activeRun.status.isLive {
+                let counts = model.teamIndex.activeWorkingWorkers(for: s.key, sessionsByKey: sessionsByKey, pending: pending)
+                return counts.working > 0 || activeRun.status == .paused
+            }
+            return false
+        }.sorted { $0.lastActivityAt > $1.lastActivityAt }
+
         let single = groups.count == 1 && groups.first?.device.online == true
         let flat: [CliSession] = byTime
-            ? groups.flatMap { listed($0.folders.flatMap(\.sessions)) }
-                .filter { matches($0, folderLabel: CliSessions.folderLabel($0.repoRoot ?? $0.cwd), root: $0.repoRoot ?? $0.cwd) }
+            ? allListed
+                .filter { matches($0, folderLabel: CliSessions.projectLabel($0), root: $0.repoRoot ?? $0.cwd) }
                 .sorted { $0.lastActivityAt > $1.lastActivityAt }
             : []
-        let archivedCount = model.displaySessions.filter { !model.isDeleted($0) && !model.isSideSession($0) && model.isArchived($0) }.count
+        let archivedCount = model.displaySessions.filter { !model.isDeleted($0) && !model.isSideSession($0) && !isFailedWorker($0) && model.isArchived($0) }.count
         let projectSignature = groups.map { "\($0.device.id):\($0.folders.map(\.id).joined(separator: ","))" }
 
         ScrollView {
@@ -465,75 +605,62 @@ struct AgentSessionList: View {
                 if !archivedMode {
                     Button(action: onCreate) {
                         Label("新建会话", systemImage: "plus").font(.system(size: 13, weight: .semibold))
-                            .frame(maxWidth: .infinity).frame(height: 34)
-                            .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))
+                            .frame(maxWidth: .infinity).frame(height: 36)
+                            .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.nexAgentBorderStrong))
                     }
-                    .buttonStyle(.plain).foregroundStyle(Theme.foreground)
+                    .buttonStyle(.plain).foregroundStyle(Theme.nexAgentInk)
                     .disabled(model.devices.isEmpty)
                 }
 
-                // Toolbar: title + timeline toggle + search toggle
-                HStack(spacing: 6) {
+                // Toolbar: title + timeline toggle + notification bell + search toggle
+                HStack(spacing: 4) {
                     Text(archivedMode ? "已归档" : byTime ? "按时间" : "会话目录")
                         .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(Theme.muted)
+                        .foregroundStyle(Theme.nexAgentMuted)
                     Spacer()
-                    Button { byTime.toggle() } label: {
-                        Image(systemName: "clock")
-                            .font(.system(size: 13))
-                            .foregroundStyle(byTime ? Theme.nexAgentAccent : Theme.muted)
-                            .frame(width: 24, height: 24)
-                            .background(byTime ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 6))
-                            .contentShape(Rectangle())
+                    toolbarIcon("clock", label: byTime ? "恢复项目目录" : "按时间排序", active: byTime) {
+                        byTime.toggle()
                     }
-                    .buttonStyle(.plain)
-                    .help(byTime ? "恢复项目目录" : "按时间排序")
-                    .accessibilityLabel("按时间排序")
-
-                    Button {
+                    toolbarIcon(model.notificationsOn ? "bell.fill" : "bell.slash", label: model.notificationsOn ? "关闭通知" : "开启通知", active: model.notificationsOn) {
+                        Task {
+                            if model.notificationsOn { model.setNotifications(false) }
+                            else { model.setNotifications(await AgentNotifier.requestAuthorization()) }
+                        }
+                    }
+                    toolbarIcon("magnifyingglass", label: "搜索会话", active: searchOpen) {
                         if searchOpen { searchOpen = false; filter = "" }
                         else { searchOpen = true; searchFocused = true }
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 13))
-                            .foregroundStyle(searchOpen ? Theme.nexAgentAccent : Theme.muted)
-                            .frame(width: 24, height: 24)
-                            .background(searchOpen ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 6))
-                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .help("搜索会话")
-                    .accessibilityLabel("搜索会话")
                 }
                 .padding(.horizontal, 4)
 
                 if searchOpen {
                     HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+                        Image(systemName: "magnifyingglass").font(.system(size: 11.5)).foregroundStyle(Theme.nexAgentMuted)
                         searchFieldInput
                         if !filter.isEmpty {
                             Button { filter = ""; searchFocused = true } label: {
-                                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.nexAgentMuted)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("清除搜索")
                         }
                     }
-                    .padding(.horizontal, 9).frame(height: 30)
-                    .background(Theme.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.nexAgentAccent.opacity(searchFocused ? 0.5 : 0), lineWidth: 1.5))
+                    .padding(.horizontal, 9).frame(height: 32)
+                    .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(searchFocused ? Theme.nexAgentAccent : Theme.nexAgentBorder, lineWidth: searchFocused ? 1.5 : 1))
                 }
 
                 if !searchError.isEmpty {
-                    Text(searchError).font(.caption2).foregroundStyle(Theme.muted).padding(.horizontal, 6)
+                    Text(searchError).font(.caption2).foregroundStyle(Theme.nexAgentMuted).padding(.horizontal, 6)
                 }
 
                 if !actionError.isEmpty {
                     HStack(spacing: 6) {
                         Text(actionError).font(.caption).foregroundStyle(Theme.danger)
                         Spacer()
-                        Button { actionError = "" } label: { Image(systemName: "xmark").font(.system(size: 10)).foregroundStyle(Theme.muted) }.buttonStyle(.plain)
+                        Button { actionError = "" } label: { Image(systemName: "xmark").font(.system(size: 10)).foregroundStyle(Theme.nexAgentMuted) }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, 6)
                 }
@@ -541,26 +668,28 @@ struct AgentSessionList: View {
                 if !model.loaded {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 24)
                 } else if groups.isEmpty {
-                    Text("还没有电脑接入").font(.footnote).foregroundStyle(Theme.muted).frame(maxWidth: .infinity).padding(.top, 24)
+                    Text("还没有电脑接入").font(.footnote).foregroundStyle(Theme.nexAgentMuted).frame(maxWidth: .infinity).padding(.top, 24)
                 }
 
-                if !active.isEmpty { pinned(active, pending: pending) }
+                if !active.isEmpty { pinned(active, sessionsByKey: sessionsByKey, pending: pending) }
 
                 if byTime {
                     if flat.isEmpty && model.loaded {
                         Text(archivedMode ? "没有已归档的会话" : query.isEmpty ? "暂无会话" : "没有匹配的会话")
-                            .font(.caption).foregroundStyle(Theme.muted)
+                            .font(.caption).foregroundStyle(Theme.nexAgentMuted)
                             .frame(maxWidth: .infinity).padding(.top, 16)
                     } else {
                         ForEach(flat) { session in
-                            row(session, asked: pending[session.key] ?? 0, context: CliSessions.projectLabel(session), snippet: contentHits[session.key], depth: 0, hasChildren: false)
+                            let binding = model.teamIndex.workerBySession[session.key]
+                            let ctx = binding.map { b in b.worker.role.map { "协作 · \($0)" } ?? "协作" } ?? CliSessions.projectLabel(session)
+                            row(session, asked: pending[session.key] ?? 0, context: ctx, snippet: contentHits[session.key], depth: 0, hasChildren: false)
                         }
                     }
                 } else {
                     ForEach(groups) { group in device(group, pending: pending, single: single) }
                     if archivedMode && archivedCount == 0 {
                         Text("没有已归档的会话")
-                            .font(.caption).foregroundStyle(Theme.muted)
+                            .font(.caption).foregroundStyle(Theme.nexAgentMuted)
                             .frame(maxWidth: .infinity).padding(.top, 16)
                     }
                 }
@@ -570,8 +699,8 @@ struct AgentSessionList: View {
                         Image(systemName: archivedMode ? "arrow.uturn.backward" : "archivebox").font(.system(size: 12))
                         Text(archivedMode ? "返回会话目录" : archivedCount > 0 ? "已归档 (\(archivedCount))" : "已归档").font(.system(size: 12))
                     }
-                    .foregroundStyle(Theme.muted)
-                    .padding(.horizontal, 6).padding(.vertical, 4)
+                    .foregroundStyle(Theme.nexAgentMuted)
+                    .padding(.horizontal, 6).padding(.vertical, 6)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -614,6 +743,20 @@ struct AgentSessionList: View {
                 }
             }
         }
+        .alert("归档会话？", isPresented: Binding(get: { confirmingArchive != nil }, set: { if !$0 { confirmingArchive = nil } }), presenting: confirmingArchive) { target in
+            Button("取消", role: .cancel) { confirmingArchive = nil }
+            Button("归档会话") {
+                confirmingArchive = nil
+                Task {
+                    actionBusy = true; defer { actionBusy = false }
+                    do { try await model.archiveWorkbenchSession(target, archived: true) }
+                    catch { actionError = CliErrorText.text(for: error) }
+                }
+            }
+        } message: { target in
+            let hasWorkers = !(model.teamIndex.workerKeysByLead[target.key]?.isEmpty ?? true)
+            Text(hasWorkers ? "归档后会同步归档其协作工人会话，可在「已归档」中一起恢复。" : "归档后会同步隐藏电脑上的原生会话，可在「已归档」中恢复。")
+        }
         .alert("删除会话？", isPresented: Binding(get: { confirmingDelete != nil }, set: { if !$0 { confirmingDelete = nil } })) {
             Button("取消", role: .cancel) { confirmingDelete = nil }
             Button("删除", role: .destructive) {
@@ -639,6 +782,20 @@ struct AgentSessionList: View {
         }
     }
 
+    private func toolbarIcon(_ symbol: String, label: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13))
+                .foregroundStyle(active ? Theme.nexAgentAccent : Theme.nexAgentMuted)
+                .frame(width: 26, height: 26)
+                .background(active ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+
     @ViewBuilder private var searchFieldInput: some View {
         let field = TextField("搜索会话标题或内容", text: $filter)
             .textFieldStyle(.plain)
@@ -651,135 +808,235 @@ struct AgentSessionList: View {
         #endif
     }
 
-    /// Running or waiting sessions on every computer; folds to its heading, which still counts them and says when one waits.
-    private func pinned(_ active: [CliSession], pending: [CliSessionKey: Int]) -> some View {
+    private func pinned(_ active: [CliSession], sessionsByKey: [CliSessionKey: CliSession], pending: [CliSessionKey: Int]) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Button { activeFolded.toggle() } label: {
                 HStack(spacing: 5) {
                     Image(systemName: activeFolded ? "chevron.right" : "chevron.down").font(.system(size: 9, weight: .semibold))
                     Text("进行中").font(.system(size: 11, weight: .semibold))
-                    if activeFolded, active.contains(where: { $0.state == .waiting }) {
+                    if activeFolded, active.contains(where: { s in
+                        CliSessions.asked(s, pending: pending[s.key] ?? 0).state == .waiting
+                            || model.teamIndex.workerBySession[s.key]?.worker.status == .waiting
+                    }) {
                         Circle().fill(Theme.approval).frame(width: 6, height: 6).accessibilityLabel("有会话等你处理")
                     }
                     Spacer()
                     Text("\(active.count)").font(.system(size: 11))
                 }
-                .foregroundStyle(Theme.muted).padding(.horizontal, 6).padding(.vertical, 3).contentShape(Rectangle())
+                .foregroundStyle(Theme.nexAgentMuted).padding(.horizontal, 6).padding(.vertical, 3).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(activeFolded ? "展开进行中" : "收起进行中")
+
             if !activeFolded {
-                ForEach(active) { session in row(session, asked: pending[session.key] ?? 0, context: CliSessions.projectLabel(session), snippet: nil, depth: 0, hasChildren: false) }
+                ForEach(active) { session in
+                    let binding = model.teamIndex.workerBySession[session.key]
+                    let leadSession = binding.flatMap { sessionsByKey[$0.run.leadKey] }
+                    let activeRun = model.teamIndex.activeRunByLead[session.key]
+                    let counts = model.teamIndex.activeWorkingWorkers(for: session.key, sessionsByKey: sessionsByKey, pending: pending)
+                    let teamSummary: (working: Int, paused: Bool)? = activeRun.flatMap { run in
+                        run.status.isLive && (counts.working > 0 || run.status == .paused) ? (counts.working, run.status == .paused) : nil
+                    }
+                    let workerSub: String? = binding.map { b in
+                        "协作 · 来自 \(leadSession.map { model.displayTitle(for: $0) } ?? b.run.title)"
+                    }
+                    let ctx = (binding != nil || teamSummary != nil) ? nil : CliSessions.projectLabel(session)
+                    VStack(alignment: .leading, spacing: 1) {
+                        row(session, asked: pending[session.key] ?? 0, context: ctx, snippet: nil, depth: 0, hasChildren: false, activeSection: true, teamSummary: teamSummary)
+                        if let workerSub {
+                            Text(workerSub).font(.system(size: 11)).foregroundStyle(Theme.nexAgentMuted).lineLimit(1).padding(.leading, 44).padding(.bottom, 2)
+                        }
+                    }
+                }
             }
-            Divider().padding(.top, 4)
+            Divider().overlay(Theme.nexAgentBorder).padding(.top, 4)
         }
     }
 
     private func device(_ group: CliDeviceGroup, pending: [CliSessionKey: Int], single: Bool) -> some View {
         let deviceNodeId = "dev:\(group.device.id)"
-        let orderedFolders = CliSessions.orderProjects(group.folders, saved: projectOrder[group.device.id] ?? [])
+        let orderedFolders = projectFoldersForDevice(group)
         return VStack(alignment: .leading, spacing: 4) {
             if !single {
                 HStack(spacing: 6) {
                     Button { toggleNode(deviceNodeId) } label: {
                         Image(systemName: isClosed(deviceNodeId) ? "chevron.right" : "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(Theme.muted)
+                            .foregroundStyle(Theme.nexAgentMuted)
                             .frame(width: 14, height: 14)
                     }
                     .buttonStyle(.plain)
                     Circle().fill(group.device.online ? Theme.success : Theme.offline).frame(width: 7, height: 7)
-                    Text(group.device.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                    Text(group.device.online ? "\(group.count)" : "离线").font(.caption).foregroundStyle(Theme.muted)
+                    Text(group.device.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.nexAgentInk).lineLimit(1)
+                    Text(group.device.online ? "\(group.count)" : "离线").font(.caption).foregroundStyle(Theme.nexAgentMuted)
                     Spacer()
                     if !archivedMode {
                         Button { onNew(group.device.id, nil) } label: { Image(systemName: "plus") }
-                            .buttonStyle(.plain).foregroundStyle(Theme.muted)
+                            .buttonStyle(.plain).foregroundStyle(Theme.nexAgentMuted)
                             .accessibilityLabel("在 \(group.device.name) 上新建会话")
                     }
                 }
             }
             if single || !isClosed(deviceNodeId) {
                 ForEach(orderedFolders) { folder in
-                    let folderSessions = listed(folder.sessions)
-                    let rows = treeRows(allEntries: folderSessions, folderLabel: folder.label, root: folder.cwd)
-                    if !rows.isEmpty {
-                        let folderId = folder.id
-                        let folderNodeId = "proj:\(group.device.id):\(folderId)"
+                    let folderId = folder.id
+                    let folderNodeId = "proj:\(group.device.id):\(folderId)"
+                    let tree = buildFolderTree(allEntries: folder.sessions, folderNodeId: folderNodeId, folderLabel: folder.label, root: folder.cwd, pending: pending)
+                    if !tree.rows.isEmpty {
                         let dragPayload = "\(group.device.id)\n\(folderId)"
+                        let movable = !folder.scratch && query.isEmpty && !archivedMode
+                        let dropHere = dropTarget?.id == folderNodeId
                         VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 5) {
-                                Button { toggleNode(folderNodeId) } label: {
-                                    Image(systemName: isClosed(folderNodeId) ? "chevron.right" : "chevron.down")
-                                        .font(.system(size: 9, weight: .semibold))
-                                        .foregroundStyle(Theme.muted)
-                                        .frame(width: 14, height: 14)
-                                }
-                                .buttonStyle(.plain)
-                                Text(folder.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
-                                Spacer()
-                                if !archivedMode {
-                                    #if os(macOS)
-                                    let showFolderAdd = hoveredFolder == folderNodeId
-                                    Button { onNew(group.device.id, folder.cwd) } label: {
-                                        Image(systemName: "plus").font(.system(size: 11.5)).frame(width: 22, height: 22)
-                                            .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
-                                    .opacity(showFolderAdd ? 1 : 0)
-                                    .allowsHitTesting(showFolderAdd)
-                                    .help("新建会话")
-                                    .accessibilityLabel("在 \(folder.label) 中新建会话")
-                                    #else
-                                    Button { onNew(group.device.id, folder.cwd) } label: {
-                                        Image(systemName: "plus").font(.system(size: 12)).frame(width: 24, height: 24)
-                                            .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
-                                    .help("新建会话")
-                                    .accessibilityLabel("在 \(folder.label) 中新建会话")
-                                    #endif
-                                }
-                                Text("\(rows.count)").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                            if dropHere && dropTarget?.after == false {
+                                Rectangle().fill(Theme.nexAgentAccent).frame(height: 2).padding(.horizontal, 4)
                             }
-                            .padding(.horizontal, 4).padding(.top, 6).padding(.bottom, 2)
-                            .contentShape(Rectangle())
-                            #if os(macOS)
-                            .onHover { inside in
-                                if inside { hoveredFolder = folderNodeId }
-                                else if hoveredFolder == folderNodeId { hoveredFolder = nil }
+                            folderHeader(group: group, folder: folder, folderNodeId: folderNodeId, count: tree.totalVisible, dragPayload: dragPayload, movable: movable)
+                            if dropHere && dropTarget?.after == true {
+                                Rectangle().fill(Theme.nexAgentAccent).frame(height: 2).padding(.horizontal, 4)
                             }
-                            #endif
-                            .opacity(draggingProject == dragPayload ? 0.5 : 1)
-                            .help(folder.roots.count > 1 ? folder.roots.joined(separator: "\n") : folder.cwd)
-                            .draggable(dragPayload) {
-                                Text(folder.label).font(.system(size: 12, weight: .semibold))
-                                    .padding(.horizontal, 10).padding(.vertical, 5)
-                                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
-                            }
-                            .dropDestination(for: String.self) { items, location in
-                                guard let payload = items.first else { return false }
-                                let parts = payload.split(separator: "\n", maxSplits: 1).map(String.init)
-                                guard parts.count == 2, parts[0] == group.device.id else { return false }
-                                moveProject(deviceId: group.device.id, folders: group.folders, moving: parts[1], target: folder.id, after: location.y > 16)
-                                return true
-                            }
+
                             if !isClosed(folderNodeId) {
-                                ForEach(rows, id: \.session.key) { entry in
-                                    row(entry.session, asked: pending[entry.session.key] ?? 0, context: nil, snippet: contentHits[entry.session.key], depth: entry.depth, hasChildren: entry.hasChildren)
+                                ForEach(tree.rows) { entry in
+                                    switch entry {
+                                    case .session(let s, let depth, let hasChildren, let historyStyle):
+                                        row(s, asked: pending[s.key] ?? 0, context: nil, snippet: contentHits[s.key], depth: depth, hasChildren: hasChildren, historyStyle: historyStyle)
+                                    case .pendingFork(_, let title, let depth):
+                                        HStack(spacing: 7) {
+                                            Color.clear.frame(width: 16, height: 14)
+                                            ProgressView().controlSize(.mini)
+                                            Text(title).font(.system(size: 12.5)).foregroundStyle(Theme.nexAgentMuted).lineLimit(1)
+                                            Spacer()
+                                        }
+                                        .padding(.leading, CGFloat(min(depth, 6) * 14) + 6)
+                                        .padding(.vertical, 6)
+                                    case .teamHistoryToggle(let leadKey, let count, let expanded, let depth):
+                                        Button {
+                                            if expanded { teamHistoryOpen.remove(leadKey) } else { teamHistoryOpen.insert(leadKey) }
+                                        } label: {
+                                            HStack(spacing: 5) {
+                                                Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
+                                                Text("历史协作 \(count)").font(.system(size: 11.5, weight: .medium))
+                                                Spacer()
+                                            }
+                                            .foregroundStyle(Theme.nexAgentMuted)
+                                            .padding(.leading, CGFloat(min(depth, 6) * 14) + 22)
+                                            .padding(.vertical, 4)
+                                            .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                    case .teamHistoryHeader(_, let title, let status, let depth):
+                                        HStack(spacing: 6) {
+                                            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted).lineLimit(1)
+                                            Spacer()
+                                            Text(status).font(.system(size: 10.5)).foregroundStyle(Theme.nexAgentMuted)
+                                        }
+                                        .padding(.leading, CGFloat(min(depth, 6) * 14) + 24)
+                                        .padding(.trailing, 8).padding(.top, 4).padding(.bottom, 1)
+                                    }
+                                }
+
+                                if tree.olderCount > 0 {
+                                    let open = earlierOpen.contains(folderNodeId)
+                                    Button {
+                                        if open { earlierOpen.remove(folderNodeId) } else { earlierOpen.insert(folderNodeId) }
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: open ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
+                                            Text("更早 \(tree.olderCount)").font(.system(size: 11.5))
+                                            Spacer()
+                                        }
+                                        .foregroundStyle(Theme.nexAgentMuted)
+                                        .padding(.leading, 22).padding(.vertical, 4)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
                     }
                 }
             }
-            if group.count == 0 && !archivedMode { Text("暂无会话").font(.caption).foregroundStyle(Theme.muted) }
+            if group.count == 0 && !archivedMode { Text("暂无会话").font(.caption).foregroundStyle(Theme.nexAgentMuted) }
+        }
+    }
+
+    @ViewBuilder
+    private func folderHeader(group: CliDeviceGroup, folder: CliFolderGroup, folderNodeId: String, count: Int, dragPayload: String, movable: Bool) -> some View {
+        let header = HStack(spacing: 5) {
+            Button { toggleNode(folderNodeId) } label: {
+                Image(systemName: isClosed(folderNodeId) ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.nexAgentMuted)
+                    .frame(width: 14, height: 14)
+            }
+            .buttonStyle(.plain)
+            Text(folder.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.nexAgentInk).lineLimit(1)
+            Spacer()
+            if !archivedMode && !folder.scratch && !folder.cwd.isEmpty {
+                #if os(macOS)
+                let showFolderAdd = hoveredFolder == folderNodeId
+                Button { onNew(group.device.id, folder.cwd) } label: {
+                    Image(systemName: "plus").font(.system(size: 11.5)).frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.nexAgentMuted)
+                .opacity(showFolderAdd ? 1 : 0)
+                .allowsHitTesting(showFolderAdd)
+                .help("新建会话")
+                .accessibilityLabel("在 \(folder.label) 中新建会话")
+                #else
+                Button { onNew(group.device.id, folder.cwd) } label: {
+                    Image(systemName: "plus").font(.system(size: 12.5)).frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.nexAgentMuted)
+                .help("新建会话")
+                .accessibilityLabel("在 \(folder.label) 中新建会话")
+                #endif
+            }
+            Text("\(count)").font(.system(size: 11)).foregroundStyle(Theme.nexAgentMuted)
+        }
+        .padding(.horizontal, 4).padding(.top, 6).padding(.bottom, 2)
+        .contentShape(Rectangle())
+        #if os(macOS)
+        .onHover { inside in
+            if inside { hoveredFolder = folderNodeId }
+            else if hoveredFolder == folderNodeId { hoveredFolder = nil }
+        }
+        #endif
+        .opacity(draggingProject == dragPayload ? 0.45 : 1)
+        .help(folder.roots.count > 1 ? folder.roots.joined(separator: "\n") : folder.cwd)
+
+        if movable {
+            header
+                .draggable(dragPayload) {
+                    Text(folder.label).font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 8))
+                        .onAppear { draggingProject = dragPayload }
+                        .onDisappear { if draggingProject == dragPayload { draggingProject = nil } }
+                }
+                .dropDestination(for: String.self) { items, location in
+                    dropTarget = nil
+                    draggingProject = nil
+                    guard let payload = items.first else { return false }
+                    let parts = payload.split(separator: "\n", maxSplits: 1).map(String.init)
+                    guard parts.count == 2, parts[0] == group.device.id else { return false }
+                    moveProject(deviceId: group.device.id, folders: group.folders, moving: parts[1], target: folder.id, after: location.y > 16)
+                    return true
+                } isTargeted: { targeted in
+                    if targeted { dropTarget = (folderNodeId, true) }
+                    else if dropTarget?.id == folderNodeId { dropTarget = nil }
+                }
+        } else {
+            header
         }
     }
 
     @ViewBuilder
     private func sessionMenuItems(for session: CliSession) -> some View {
         let forkCheck = canFork(session)
+        let isWorker = model.isTeamWorker(session)
         let dev = model.device(session.deviceId)
         let manageBlocked = dev.map { !$0.online || !($0.cliAgents?.features.contains("sessionManage") ?? false) } ?? !session.online
         let legacyHiddenOnly = session.hidden && !session.archived && model.workbenchMeta[session.key]?.archived != true
@@ -807,34 +1064,35 @@ struct AgentSessionList: View {
                 renaming = (session, frozen?.id, frozen?.version)
             } label: { Label("重命名", systemImage: "pencil") }
 
-            Button {
-                let reqId = pendingForkRequestId[session.key] ?? UUID().uuidString
-                pendingForkRequestId[session.key] = reqId
-                let originSelected = model.selectedKey
-                Task {
-                    actionBusy = true; defer { actionBusy = false }
-                    do {
-                        let key = try await model.forkWorkbenchSession(session, title: "", kind: .fork, requestId: reqId)
-                        pendingForkRequestId[session.key] = nil
-                        if model.selectedKey == originSelected && model.displaySessions.contains(where: { $0.key == key }) {
-                            onSelect(key)
-                        }
-                    } catch {
-                        if let status = CoreError.wrap(error).status, (400..<500).contains(status) {
+            if !isWorker {
+                Button {
+                    let reqId = pendingForkRequestId[session.key] ?? UUID().uuidString
+                    pendingForkRequestId[session.key] = reqId
+                    let originSelected = model.selectedKey
+                    let forkTitle = model.displayTitle(for: session) + "（fork）"
+                    closedNodes.remove("branch:\(session.key)")
+                    pendingFork = (session.key, forkTitle)
+                    Task {
+                        actionBusy = true; defer { actionBusy = false; pendingFork = nil }
+                        do {
+                            let key = try await model.forkWorkbenchSession(session, title: forkTitle, kind: .fork, requestId: reqId)
                             pendingForkRequestId[session.key] = nil
+                            if model.selectedKey == originSelected && model.displaySessions.contains(where: { $0.key == key }) {
+                                onSelect(key)
+                            }
+                        } catch {
+                            if let status = CoreError.wrap(error).status, (400..<500).contains(status) {
+                                pendingForkRequestId[session.key] = nil
+                            }
+                            actionError = CliErrorText.text(for: error)
                         }
-                        actionError = CliErrorText.text(for: error)
                     }
-                }
-            } label: { Label(forkCheck.allowed ? "创建分支" : (forkCheck.reason ?? "暂不支持分支"), systemImage: "arrow.triangle.branch") }
-            .disabled(!forkCheck.allowed || actionBusy)
+                } label: { Label(forkCheck.allowed ? "创建分支" : (forkCheck.reason ?? "暂不支持分支"), systemImage: "arrow.triangle.branch") }
+                .disabled(!forkCheck.allowed || actionBusy)
+            }
 
             Button {
-                Task {
-                    actionBusy = true; defer { actionBusy = false }
-                    do { try await model.archiveWorkbenchSession(session, archived: true) }
-                    catch { actionError = CliErrorText.text(for: error) }
-                }
+                confirmingArchive = session
             } label: { Label("归档会话", systemImage: "archivebox") }
             .disabled(manageBlocked)
 
@@ -854,9 +1112,25 @@ struct AgentSessionList: View {
         } label: { Label("查看会话 ID", systemImage: "number") }
     }
 
-    private func row(_ session: CliSession, asked: Int, context: String?, snippet: String?, depth: Int, hasChildren: Bool) -> some View {
-        let tone = CliSessions.tone(session)
-        let waiting = asked > 0 || tone == .waiting
+    private func row(
+        _ session: CliSession,
+        asked: Int,
+        context: String?,
+        snippet: String?,
+        depth: Int,
+        hasChildren: Bool,
+        historyStyle: Bool = false,
+        activeSection: Bool = false,
+        teamSummary: (working: Int, paused: Bool)? = nil
+    ) -> some View {
+        let binding = model.teamIndex.workerBySession[session.key]
+        let baseTone = CliSessions.tone(session)
+        let workerState = binding?.worker.status
+        let waiting = asked > 0 || baseTone == .waiting || workerState == .waiting
+        let failedWorker = binding != nil && workerState == .failed
+        let effectiveTone: CliTone = waiting ? .waiting
+            : (baseTone == .running || (binding != nil && workerState == .starting && session.online)) ? .running
+            : baseTone
         let waitingLabel = asked > 1 ? "等你处理 \(asked)" : "等你处理"
         let title = model.displayTitle(for: session)
         let branchNodeId = "branch:\(session.key)"
@@ -866,24 +1140,44 @@ struct AgentSessionList: View {
         let showMenu = isHovered || isSelected
         #endif
         return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 if hasChildren {
                     Button { toggleNode(branchNodeId) } label: {
                         Image(systemName: isClosed(branchNodeId) ? "chevron.right" : "chevron.down")
                             .font(.system(size: 8.5, weight: .semibold))
-                            .foregroundStyle(Theme.muted)
-                            .frame(width: 12, height: 14)
+                            .foregroundStyle(Theme.nexAgentMuted)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                } else {
+                    Color.clear.frame(width: 16, height: 16)
                 }
+
                 Button { onSelect(session.key) } label: {
                     HStack(spacing: 7) {
-                        AgentEngineIcon(engine: session.engine, tone: tone)
+                        AgentEngineIcon(engine: session.engine, tone: effectiveTone, size: 18, failed: failedWorker)
                         Text(title).font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                            .foregroundStyle(Theme.foreground).lineLimit(1)
+                            .foregroundStyle(historyStyle ? Theme.nexAgentMuted : Theme.nexAgentInk).lineLimit(1)
+                        if let role = binding?.worker.role, !role.isEmpty, !activeSection, !waiting, !failedWorker {
+                            Text(role)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Theme.nexAgentMuted)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                .lineLimit(1)
+                        }
                         Spacer(minLength: 4)
-                        if let context { Text(context).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1) }
-                        if waiting { CliChip(text: waitingLabel, tone: .waiting).fixedSize() }
+                        if let context { Text(context).font(.system(size: 11)).foregroundStyle(Theme.nexAgentMuted).lineLimit(1) }
+                        if let ts = teamSummary, ts.working > 0 {
+                            CliChip(text: "\(ts.working) 个工人工作中", tone: .running).fixedSize()
+                        } else if let ts = teamSummary, ts.paused {
+                            CliChip(text: "协作已暂停", tone: .waiting).fixedSize()
+                        } else if waiting {
+                            CliChip(text: waitingLabel, tone: .waiting).fixedSize()
+                        } else if failedWorker {
+                            CliChip(text: "失败", tone: .stopped, customColor: Theme.danger).fixedSize()
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }
@@ -897,8 +1191,8 @@ struct AgentSessionList: View {
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 12))
-                            .foregroundStyle(Theme.muted.opacity(0.8))
-                            .frame(width: 20, height: 20)
+                            .foregroundStyle(Theme.nexAgentMuted.opacity(0.85))
+                            .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
@@ -912,9 +1206,9 @@ struct AgentSessionList: View {
                         sessionMenuItems(for: session)
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.muted.opacity(0.75))
-                            .frame(width: 24, height: 24)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.nexAgentMuted.opacity(0.8))
+                            .frame(width: 34, height: 36)
                             .contentShape(Rectangle())
                     }
                     .accessibilityLabel("\(title) 的操作")
@@ -924,30 +1218,39 @@ struct AgentSessionList: View {
             if let snippet, !snippet.isEmpty {
                 Text(snippet)
                     .font(.system(size: 11))
-                    .foregroundStyle(Theme.muted)
+                    .foregroundStyle(Theme.nexAgentMuted)
                     .lineLimit(2)
-                    .padding(.leading, 22)
+                    .padding(.leading, 40)
             }
         }
-        .padding(.leading, CGFloat(min(depth, 6) * 14) + 8)
+        .padding(.leading, CGFloat(min(depth, 6) * 14) + 6)
         .padding(.trailing, 6)
+        #if os(iOS)
+        .frame(minHeight: 42)
+        .padding(.vertical, 3)
+        #else
         .padding(.vertical, 5.5)
+        #endif
         .background {
             #if os(macOS)
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(isSelected ? Theme.nexAgentSoft : isHovered ? Theme.wash.opacity(0.75) : .clear)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? Theme.nexAgentSoft : isHovered ? Theme.nexAgentInset : .clear)
             #else
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(isSelected ? Theme.nexAgentSoft : .clear)
             #endif
         }
         .overlay(alignment: .leading) {
-            if depth > 0 {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Theme.nexAgentAccent)
+                    .frame(width: 2.5)
+                    .padding(.vertical, 5)
+            } else if depth > 0 {
                 Rectangle()
-                    .fill(Theme.border.opacity(0.7))
+                    .fill(Theme.nexAgentBorderStrong.opacity(0.75))
                     .frame(width: 1)
                     .padding(.leading, CGFloat(min(depth, 6) * 14) - 2)
-                    .padding(.vertical, 3)
             }
         }
         #if os(macOS)
@@ -956,48 +1259,74 @@ struct AgentSessionList: View {
             else if hoveredSession == session.key { hoveredSession = nil }
         }
         #endif
-        .opacity(model.isArchived(session) ? 0.65 : 1)
+        .opacity(model.isArchived(session) ? 0.65 : historyStyle ? 0.78 : 1)
         .contextMenu { if !CliLaunches.isLaunchKey(session.key) { sessionMenuItems(for: session) } }
         .help("\(agentName(session.engine)) · \(CliSessions.statusLabel(session))")
     }
 }
 
-/// Compact colored engine badge with a live status indicator dot when running or waiting.
+/// Official brand Harness mark tile matching `HarnessMark.tsx` & `harnessBrand.ts`,
+/// with a live status indicator dot when running, waiting, or failed.
 struct AgentEngineIcon: View {
     let engine: CliEngine
     var tone: CliTone = .idle
-    var size: CGFloat = 15
+    var size: CGFloat = 18
+    var failed: Bool = false
     @State private var breathing = false
 
-    private var accent: Color {
+    private var assetName: String {
         switch engine {
-        case .claude: Color(red: 0.85, green: 0.47, blue: 0.34)
-        case .codex: Color(red: 0.36, green: 0.43, blue: 0.96)
-        case .agy: Color(red: 0.06, green: 0.73, blue: 0.51)
-        case .zcode: Color(red: 0.55, green: 0.36, blue: 0.96)
+        case .claude: "HarnessClaude"
+        case .codex: "HarnessCodex"
+        case .agy: "HarnessAgy"
+        case .zcode: "HarnessZCode"
         }
     }
 
-    private var symbol: String {
+    private var tileBackground: Color {
         switch engine {
-        case .claude: "sparkle"
-        case .codex: "chevron.left.forwardslash.chevron.right"
-        case .agy: "sparkles"
-        case .zcode: "terminal.fill"
+        case .claude: Color(hex: 0xFAF9F5)
+        case .codex: Color(hex: 0x3941FF)
+        case .agy: Color.white
+        case .zcode: Color(hex: 0x171717)
+        }
+    }
+
+    private var tileBorder: Color {
+        switch engine {
+        case .claude: Color(hex: 0xE8E0D6)
+        case .agy: Color(hex: 0xDCE4F2)
+        case .codex, .zcode: Color.clear
         }
     }
 
     var body: some View {
+        let radius = max(4, size * 0.28)
+        let glyphSize = size * 0.68
         ZStack(alignment: .bottomTrailing) {
-            Image(systemName: symbol)
-                .font(.system(size: size * 0.68, weight: .semibold))
-                .foregroundStyle(tone == .offline ? Theme.offline : accent)
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(tileBackground)
+                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(tileBorder, lineWidth: 0.75))
+                .overlay {
+                    Image(assetName)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: glyphSize, height: glyphSize)
+                }
                 .frame(width: size, height: size)
-            if tone == .running || tone == .waiting {
+                .opacity(tone == .offline ? 0.45 : 1)
+
+            if failed {
+                Circle()
+                    .fill(Theme.danger)
+                    .frame(width: 6.5, height: 6.5)
+                    .overlay(Circle().stroke(Theme.nexAgentSurface, lineWidth: 1.2))
+                    .offset(x: 2, y: 2)
+            } else if tone == .running || tone == .waiting {
                 Circle()
                     .fill(tone == .running ? Theme.nexAgentAccent : Theme.approval)
-                    .frame(width: 6, height: 6)
-                    .overlay(Circle().stroke(Theme.card, lineWidth: 1))
+                    .frame(width: 6.5, height: 6.5)
+                    .overlay(Circle().stroke(Theme.nexAgentSurface, lineWidth: 1.2))
                     .overlay(Circle().stroke(tone == .running ? Theme.nexAgentAccent.opacity(breathing ? 0 : 0.45) : .clear, lineWidth: breathing ? 4 : 1))
                     .offset(x: 2, y: 2)
                     .onAppear {

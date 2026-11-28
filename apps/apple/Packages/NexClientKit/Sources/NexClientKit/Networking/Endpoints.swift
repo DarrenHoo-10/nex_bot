@@ -113,6 +113,8 @@ public struct ModelCatalog: RowBacked {
     public let row: Row
     public init(row: Row) { self.row = row }
     public var models: [String] { row["models"]?.arrayValue?.compactMap(\.stringValue) ?? [] }
+    /// Provider-reported display names keyed by model id (absent on older Cores).
+    public var names: [String: String] { row["names"]?.objectValue?.compactMapValues(\.stringValue) ?? [:] }
     /// The provider returned more models than were listed (a partial catalog).
     public var hasMore: Bool { row.bool("hasMore") ?? false }
 }

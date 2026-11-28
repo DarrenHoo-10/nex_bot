@@ -3,6 +3,7 @@
 //
 //   Swift -> host  {op:"init", key:<base64 32 bytes>}                       first line, once
 //                  {id, op:"start", session:{origin,name,token,coreId,sessionId,expiresAt}}
+//                  {id, op:"updateSession", session:{origin,name,token,coreId,sessionId,expiresAt}}
 //                  {id, op:"stop", revoke:bool} | {id, op:"pause", paused:bool}
 //                  {id, op:"reconcile", callId, version} | {id, op:"state"}
 //                  {id, op:"cliAgents", enabled:bool}                         the Agent session switch
@@ -164,6 +165,17 @@ export async function runHost({ input, output, directory, ClientDevice, createNo
   async function handle(message) {
     switch (message.op) {
       case "start": await loginReady; await device.start(validSession(message.session)); return device.state();
+      case "updateSession": {
+        const next = validSession(message.session);
+        // Rotate token in place when the same session is already running or intentionally paused so active commands and CLI agents are not interrupted.
+        if (device.session && (device.runtime || device.consent?.paused) && device.session.origin === next.origin && device.session.coreId === next.coreId && device.session.sessionId === next.sessionId) {
+          device.session = { ...device.session, token: next.token, expiresAt: next.expiresAt };
+          return device.state();
+        }
+        await loginReady;
+        await device.start(next);
+        return device.state();
+      }
       case "cliAgents": if (typeof message.enabled !== "boolean") throw new Error("invalid enabled"); return device.setCliAgentsEnabled(message.enabled);
       case "stop": await device.stop({ revoke: message.revoke === true }); return device.state();
       case "pause": if (typeof message.paused !== "boolean") throw new Error("invalid paused"); return device.setPaused(message.paused);

@@ -24,18 +24,51 @@ struct ConnectorsView: View {
     @State private var showingGithub = false
 
     private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && !$0.isGithub && $0.kind != "feishu" } }
+    private var needle: String { query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    private var matchesGmail: Bool { needle.isEmpty || "gmail 邮件 google".contains(needle) || "gmail".contains(needle) }
+    private var matchesGithub: Bool { needle.isEmpty || "github 仓库 pr ci issue".contains(needle) || "github".contains(needle) }
+    private var matchesFeishu: Bool { needle.isEmpty || "飞书 lark feishu 群聊".contains(needle) || "飞书".contains(needle) }
     private var filtered: [ConnectorView] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        return q.isEmpty ? connectors : connectors.filter { $0.name.localizedCaseInsensitiveContains(q) }
+        return needle.isEmpty ? connectors : connectors.filter {
+            $0.name.lowercased().contains(needle) || $0.url.lowercased().contains(needle)
+        }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            header
-            GmailCatalogButton(workspace: workspace, open: { showingGmail = true })
-            GithubCatalogButton(workspace: workspace, open: { showingGithub = true })
-            if workspace.state?.feishu != nil { FeishuSection(workspace: workspace) }
-            if !connectors.isEmpty { list }
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
+                    TextField("搜索连接器或地址", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted) }.buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Button { editor = ConnectorEditorRequest() } label: {
+                    Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.primaryForeground)
+                        .frame(width: 40, height: 40)
+                        .background(Theme.primary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("添加连接器")
+            }
+            if matchesGmail || matchesGithub {
+                VStack(spacing: 0) {
+                    if matchesGmail { GmailCatalogButton(workspace: workspace, open: { showingGmail = true }) }
+                    if matchesGmail && matchesGithub { Divider().overlay(Theme.border) }
+                    if matchesGithub { GithubCatalogButton(workspace: workspace, open: { showingGithub = true }) }
+                }
+                .padding(.horizontal, 14).cardStyle()
+            }
+            if workspace.state?.feishu != nil && matchesFeishu { FeishuSection(workspace: workspace) }
+            if !filtered.isEmpty { list }
+            else if !needle.isEmpty && !matchesGmail && !matchesGithub && !matchesFeishu {
+                Text("没有匹配的连接器").font(.footnote).foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity).padding(.vertical, 24)
+            }
         }
         .sheet(item: $editor) { request in
             ConnectorEditor(workspace: workspace, request: request) { id in
@@ -59,43 +92,15 @@ struct ConnectorsView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("连接器").font(.title3.weight(.bold))
-            Button { editor = ConnectorEditorRequest() } label: {
-                Label("添加连接器", systemImage: "plus").font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.white).padding(.horizontal, 16).padding(.vertical, 10)
-                    .background(Theme.brand, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain).padding(.top, 8)
-        }
-    }
-
-    private var empty: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "powerplug").font(.system(size: 30)).foregroundStyle(Theme.muted)
-            Text("把常用工具带进对话").font(.title3.weight(.bold))
-            Text("添加 MCP 服务地址，测试连接后，为需要的 Agent 选择工具。").font(.subheadline).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
-            Button("添加第一个连接器") { editor = ConnectorEditorRequest() }.buttonStyle(PillButtonStyle(primary: true)).padding(.top, 4)
-            Text("支持 Streamable HTTP 与 SSE，可使用 Bearer Token 认证。").font(.caption).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
-        }
-        .padding(24).frame(maxWidth: .infinity).cardStyle()
-    }
-
     private var list: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
-                TextField("搜索连接器", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled()
-            }
-            .padding(.horizontal, 12).padding(.vertical, 11).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             ForEach(filtered, id: \.id) { connector in
                 Button { selection = ConnectorSelection(id: connector.id) } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "powerplug").foregroundStyle(Theme.muted).frame(width: 36, height: 36)
-                            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    HStack(spacing: 14) {
+                        Image(systemName: "powerplug").foregroundStyle(Theme.muted).frame(width: 44, height: 44)
+                            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(connector.name).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
+                            Text(connector.name).font(.system(size: 15.5, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
                             Text(connector.subtitle).font(.caption).foregroundStyle(connector.error != nil && connector.enabled ? Theme.danger : Theme.muted)
                         }
                         Spacer()

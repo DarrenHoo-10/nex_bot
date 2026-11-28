@@ -177,6 +177,14 @@ extension WorkspaceStore {
 
     /// Stops a background job for good (its running round is cancelled; it takes no more input).
     public func stopJob(_ jobID: String) async throws { try await act { try await client.stopJob(jobID: jobID) } }
+    /// Retries a failed background job by sending "再试一次" to it (matches Web `JobReportCard`).
+    public func retryJob(_ job: Job) async throws {
+        try await act { try await client.jobInput(jobID: job.id, text: "再试一次", clientID: UUID().uuidString) }
+    }
+    /// Sends direct user input to a background job from the interactive JobChat view.
+    public func sendJobInput(jobID: String, text: String, clientID: String = UUID().uuidString) async throws {
+        try await act { try await client.jobInput(jobID: jobID, text: text, clientID: clientID) }
+    }
     /// 停止全部: the main chat and every open background job of the assistant.
     public func stopAll(botID: String) async throws { try await act { try await client.stopAll(botID: botID) } }
     public func jobDetail(id: String) async throws -> JobDetail { try await act(refresh: false) { try await client.jobDetail(id: id) } }

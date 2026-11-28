@@ -22,14 +22,26 @@ public struct FinanceTopicList: Decodable, Sendable { public let topics: [Financ
 public struct FinanceAssistant: Decodable, Sendable { public let botId: String }
 public struct FinanceTopicTasks: Decodable, Sendable {public let tasks:[AgentTask]}
 public struct TopicInputResult: Decodable, Sendable { public let taskId: String?; public let conversationId: String; public let messageId: String; public let queued: Bool? }
+public struct TopicSourceContext: Encodable, Sendable, Equatable {
+    public let channel: String
+    public init(channel: String = "nexbot") { self.channel = channel }
+}
+
 /// Retain the whole input on an uncertain response; its identifier and destination must not change on retry.
 public struct TopicInput: Encodable, Sendable, Equatable {
     public let botId: String, clientId: String, text: String
     public let messageId: String?
     public let conversationId: String?
     public let newConversation: Bool?
-    public init(botID: String, text: String, conversationID: String?, clientID: String = UUID().uuidString, editingMessageID: String? = nil) {
-        messageId=editingMessageID; botId = botID; self.text = text; clientId = clientID; conversationId = conversationID; newConversation = conversationID == nil ? true : nil
+    public let sourceContext: TopicSourceContext?
+    public init(botID: String, text: String, conversationID: String?, clientID: String = UUID().uuidString, editingMessageID: String? = nil, sourceContext: TopicSourceContext? = nil) {
+        messageId = editingMessageID
+        botId = botID
+        self.text = text
+        clientId = clientID
+        conversationId = conversationID
+        newConversation = conversationID == nil ? true : nil
+        self.sourceContext = sourceContext ?? (conversationID == nil ? TopicSourceContext(channel: "nexbot") : nil)
     }
 }
 public struct ChatContextUsage: Decodable, Sendable {

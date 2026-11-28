@@ -22,12 +22,14 @@ struct AgentNoteDraft: Equatable {
     var quote: String
 }
 
-/// Collapsible right-hand inspector for a NexAgent session (Git status, notes/annotations, and side chats).
+/// Collapsible right-hand inspector for a NexAgent session (Git status & live activity, notes/annotations, and side chats).
 struct AgentWorkbenchInspector: View {
     let model: CliAgentsModel
     let session: CliSession
     @Binding var tab: AgentWorkbenchTab
     @Binding var noteDraft: AgentNoteDraft?
+    @Binding var notes: [CliNote]
+    var onOpenTerminal: (() -> Void)? = nil
     let onClose: () -> Void
 
     var body: some View {
@@ -38,9 +40,13 @@ struct AgentWorkbenchInspector: View {
                         HStack(spacing: 4) {
                             Image(systemName: item.icon).font(.system(size: 11))
                             Text(item.rawValue).font(.system(size: 12, weight: tab == item ? .semibold : .regular))
+                            if item == .notes && !notes.isEmpty {
+                                Text("\(notes.count)").font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Theme.nexAgentAccent)
+                            }
                         }
                         .padding(.horizontal, 8).padding(.vertical, 5)
-                        .foregroundStyle(tab == item ? Theme.nexAgentAccent : Theme.muted)
+                        .foregroundStyle(tab == item ? Theme.nexAgentAccent : Theme.nexAgentMuted)
                         .background(tab == item ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 7))
                         .contentShape(Rectangle())
                     }
@@ -48,42 +54,45 @@ struct AgentWorkbenchInspector: View {
                 }
                 Spacer()
                 Button(action: onClose) {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.nexAgentMuted)
                         .frame(width: 24, height: 24).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("关闭面板")
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
-            Divider()
+            .background(Theme.nexAgentSurface)
+            Divider().overlay(Theme.nexAgentBorder)
 
             Group {
                 switch tab {
                 case .git:
-                    AgentGitInfoPane(model: model, session: session)
+                    AgentGitInfoPane(model: model, session: session, onOpenTerminal: onOpenTerminal)
                 case .notes:
-                    AgentNotesPane(model: model, session: session, draft: $noteDraft)
+                    AgentNotesPane(model: model, session: session, draft: $noteDraft, notes: $notes)
                 case .sideChats:
                     AgentSideChatsPane(model: model, session: session)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.nexAgentNav)
         }
     }
 }
 
-// MARK: - Git Info Pane
+// MARK: - Git Info & Live Activity Pane
 
 private struct AgentGitInfoPane: View {
     let model: CliAgentsModel
     let session: CliSession
+    var onOpenTerminal: (() -> Void)? = nil
     @State private var git: CliGitInfo?
     @State private var loading = false
     @State private var error = ""
     @State private var filesExpanded = true
 
-    private var backgroundTasks: [String] {
-        model.transcript(session.key).items.compactMap { CliTranscript.backgroundTaskTitle($0) }
+    private var activity: CliSessionActivity {
+        CliSessionActivity.extract(items: model.transcript(session.key).items, state: session.state, online: session.online)
     }
 
     private var branchName: String {
@@ -92,36 +101,51 @@ private struct AgentGitInfoPane: View {
     }
 
     private func normalizedPath(_ path: String) -> String {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\", with: "/")
-        return trimmed.count > 1 && trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+        CliSessions.normalizePath(path)
     }
 
-    /// Compares the current checkout top-level/cwd against the device-reported main repository root (`session.repoRoot`).
-    /// Never assumes `git.project == git.worktree` means main worktree, since linked worktree roots also satisfy that equality.
+    /// Compares the actual working tree (`git.worktree ?? session.cwd`) against the main repo root (`session.repoRoot`).
     private var worktreeLabel: String {
-        let currentRoot = git?.project ?? git?.worktree ?? session.cwd
-        if let mainRoot = session.repoRoot, !mainRoot.isEmpty, !currentRoot.isEmpty {
-            if normalizedPath(mainRoot).caseInsensitiveCompare(normalizedPath(currentRoot)) == .orderedSame {
+        let currentTree = git?.worktree ?? session.cwd
+        if let mainRoot = session.repoRoot, !mainRoot.isEmpty, !currentTree.isEmpty {
+            if normalizedPath(mainRoot) == normalizedPath(currentTree) {
                 return "主工作树"
             }
-            return CliSessions.folderLabel(currentRoot)
+            return CliSessions.worktreeName(currentTree) ?? CliSessions.folderLabel(currentTree)
         }
-        if let wt = git?.worktree, !wt.isEmpty { return CliSessions.folderLabel(wt) }
-        return session.cwd.isEmpty ? "—" : CliSessions.folderLabel(session.cwd)
+        if let wtName = CliSessions.worktreeName(currentTree) { return wtName }
+        return currentTree.isEmpty ? "—" : CliSessions.folderLabel(currentTree)
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                if CliSessions.canAttach(session), let onOpenTerminal {
+                    Button(action: onOpenTerminal) {
+                        HStack(spacing: 7) {
+                            Image(systemName: "terminal").font(.system(size: 13, weight: .semibold))
+                            Text("打开远程终端").font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).opacity(0.7)
+                        }
+                        .foregroundStyle(Theme.nexAgentAccent)
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(Theme.nexAgentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.nexAgentAccent.opacity(0.32)))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 HStack {
                     Label("Git 工作区", systemImage: "arrow.triangle.branch")
                         .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.nexAgentInk)
                     Spacer()
                     Button { Task { await load() } } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 12))
-                            .foregroundStyle(Theme.muted)
+                            .foregroundStyle(Theme.nexAgentMuted)
                     }
                     .buttonStyle(.plain)
                     .disabled(loading)
@@ -129,38 +153,38 @@ private struct AgentGitInfoPane: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    infoRow(label: "运行工具", value: session.engine.label)
+                    infoRow(label: "运行工具", value: agentName(session.engine))
                     infoRow(label: "目录", value: CliSessions.folderLabel(session.cwd), help: session.cwd)
                     HStack(spacing: 6) {
-                        Text("分支").font(.caption).foregroundStyle(Theme.muted).frame(width: 56, alignment: .leading)
-                        Text(branchName).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                        Text("分支").font(.caption).foregroundStyle(Theme.nexAgentMuted).frame(width: 56, alignment: .leading)
+                        Text(branchName).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.nexAgentInk).lineLimit(1)
                         if let head = git?.head, !head.isEmpty {
                             Text(head).font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Theme.muted)
+                                .foregroundStyle(Theme.nexAgentMuted)
                                 .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 4))
+                                .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 4))
                         }
                     }
                     infoRow(label: "工作树", value: worktreeLabel, help: git?.worktree ?? session.cwd)
                 }
                 .padding(10)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+                .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.nexAgentBorder))
 
                 if loading {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("正在读取 Git 状态…").font(.caption).foregroundStyle(Theme.muted)
+                        Text("正在读取 Git 状态…").font(.caption).foregroundStyle(Theme.nexAgentMuted)
                     }
                 } else if !error.isEmpty {
-                    Text(error).font(.caption).foregroundStyle(Theme.muted)
+                    Text(error).font(.caption).foregroundStyle(Theme.nexAgentMuted)
                 } else if let git {
                     VStack(alignment: .leading, spacing: 6) {
                         Button { filesExpanded.toggle() } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: filesExpanded ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
-                                Text("更改").font(.system(size: 12.5, weight: .semibold))
-                                Text("\(git.files.count) 个文件").font(.caption).foregroundStyle(Theme.muted)
+                                Text("更改").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.nexAgentInk)
+                                Text("\(git.files.count) 个文件").font(.caption).foregroundStyle(Theme.nexAgentMuted)
                                 Spacer()
                                 if let added = git.added { Text("+\(added)").font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.success) }
                                 if let removed = git.removed { Text("−\(removed)").font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.danger) }
@@ -171,13 +195,13 @@ private struct AgentGitInfoPane: View {
 
                         if filesExpanded {
                             if git.files.isEmpty {
-                                Text("工作树干净").font(.caption).foregroundStyle(Theme.muted).padding(.top, 2)
+                                Text("工作树干净").font(.caption).foregroundStyle(Theme.nexAgentMuted).padding(.top, 2)
                             } else {
                                 VStack(alignment: .leading, spacing: 4) {
                                     ForEach(git.files, id: \.self) { file in
                                         Text(file)
                                             .font(.system(size: 11.5, design: .monospaced))
-                                            .foregroundStyle(Theme.foreground)
+                                            .foregroundStyle(Theme.nexAgentInk)
                                             .lineLimit(1)
                                             .truncationMode(.middle)
                                             .help(file)
@@ -188,24 +212,18 @@ private struct AgentGitInfoPane: View {
                         }
                     }
                     .padding(10)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+                    .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.nexAgentBorder))
                 }
 
-                if !backgroundTasks.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("后台任务 (\(backgroundTasks.count))", systemImage: "bolt.horizontal")
-                            .font(.system(size: 12.5, weight: .semibold))
-                        ForEach(Array(backgroundTasks.enumerated()), id: \.offset) { _, taskTitle in
-                            Text("• \(taskTitle)")
-                                .font(.caption)
-                                .foregroundStyle(Theme.foreground)
-                                .lineLimit(2)
-                        }
-                    }
-                    .padding(10)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+                if !activity.todos.isEmpty {
+                    activityCard(title: "待办", symbol: "checklist", entries: activity.todos)
+                }
+                if !activity.agents.isEmpty {
+                    activityCard(title: "子代理", symbol: "person.2", entries: activity.agents)
+                }
+                if !activity.jobs.isEmpty {
+                    activityCard(title: "后台任务", symbol: "bolt.horizontal", entries: activity.jobs)
                 }
             }
             .padding(12)
@@ -213,10 +231,36 @@ private struct AgentGitInfoPane: View {
         .task(id: session.key) { await load() }
     }
 
+    private func activityCard(title: String, symbol: String, entries: [CliSessionActivity.Entry]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("\(title) (\(entries.count))", systemImage: symbol)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Theme.nexAgentInk)
+            ForEach(entries) { entry in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(entry.title)
+                        .font(.caption)
+                        .foregroundStyle(entry.state == "已完成" ? Theme.nexAgentMuted : Theme.nexAgentInk)
+                        .strikethrough(entry.state == "已完成")
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Text(entry.state)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(entry.state == "失败" ? Theme.danger : entry.state == "已完成" ? Theme.nexAgentMuted : Theme.nexAgentAccent)
+                        .padding(.horizontal, 6).padding(.vertical, 1.5)
+                        .background((entry.state == "失败" ? Theme.danger : entry.state == "已完成" ? Theme.nexAgentMuted : Theme.nexAgentAccent).opacity(0.12), in: Capsule())
+                }
+            }
+        }
+        .padding(10)
+        .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.nexAgentBorder))
+    }
+
     private func infoRow(label: String, value: String, help: String? = nil) -> some View {
         HStack(spacing: 6) {
-            Text(label).font(.caption).foregroundStyle(Theme.muted).frame(width: 56, alignment: .leading)
-            Text(value).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            Text(label).font(.caption).foregroundStyle(Theme.nexAgentMuted).frame(width: 56, alignment: .leading)
+            Text(value).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.nexAgentInk).lineLimit(1).truncationMode(.middle)
                 .help(help ?? value)
             Spacer(minLength: 0)
         }
@@ -246,21 +290,19 @@ private struct AgentNotesPane: View {
     let model: CliAgentsModel
     let session: CliSession
     @Binding var draft: AgentNoteDraft?
+    @Binding var notes: [CliNote]
 
-    @State private var notes: [CliNote] = []
     @State private var loading = false
     @State private var error = ""
     @State private var newQuote = ""
     @State private var newBody = ""
     @State private var newMessageId = ""
-    /// Retry ID bound to exact `(messageId, quote, body)` so editing text after a timeout never silently drops edits.
     @State private var pendingNote: (id: String, messageId: String, quote: String, body: String)?
     @State private var saving = false
     @State private var editing: CliNote?
     @State private var editBody = ""
     @State private var conflictRemoteBody: String?
 
-    /// Fallback to the latest real user/assistant message in the transcript when creating a note manually.
     private var latestRealMessage: CliItem? {
         model.transcript(session.key).items.last { ($0.kind == .assistant || $0.kind == .user) && !$0.id.isEmpty }
     }
@@ -287,8 +329,8 @@ private struct AgentNotesPane: View {
                     if loading && notes.isEmpty {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 20)
                     } else if notes.isEmpty {
-                        Text("还没有会话笔记，请在回复下方点击「记笔记」或填写引用内容后保存。")
-                            .font(.caption).foregroundStyle(Theme.muted)
+                        Text("还没有会话笔记，请在回复下方点击「记笔记」或填写引用内容后保存；保存的笔记会自动附带在下次发送中。")
+                            .font(.caption).foregroundStyle(Theme.nexAgentMuted)
                             .padding(.top, 12)
                     } else {
                         ForEach(notes) { note in
@@ -299,7 +341,7 @@ private struct AgentNotesPane: View {
                 .padding(12)
             }
 
-            Divider()
+            Divider().overlay(Theme.nexAgentBorder)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
@@ -308,34 +350,35 @@ private struct AgentNotesPane: View {
                         .font(.caption)
                     if !newQuote.isEmpty {
                         Button { newQuote = ""; newMessageId = "" } label: {
-                            Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(Theme.muted)
+                            Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(Theme.nexAgentMuted)
                         }.buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 8).padding(.vertical, 5)
-                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 6))
+                .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 6))
 
                 TextField("添加批注或笔记…", text: $newBody, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
                     .lineLimit(2...5)
                     .padding(8)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border))
+                    .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.nexAgentBorder))
 
                 HStack {
                     if effectiveMessageId.isEmpty {
-                        Text("暂无可批注的对话消息").font(.caption2).foregroundStyle(Theme.muted)
+                        Text("暂无可批注的对话消息").font(.caption2).foregroundStyle(Theme.nexAgentMuted)
                     }
                     Spacer()
                     Button(saving ? "保存中…" : "保存笔记") { Task { await saveNew() } }
                         .buttonStyle(.borderedProminent)
-                        .tint(Theme.nexAgentAccent)
+                        .tint(Theme.nexAgentSolid)
                         .controlSize(.small)
                         .disabled(!canSaveNew)
                 }
             }
             .padding(12)
+            .background(Theme.nexAgentSurface)
         }
         .task(id: session.key) { await load() }
         .onChange(of: draft, initial: true) { _, next in
@@ -356,7 +399,7 @@ private struct AgentNotesPane: View {
                 Spacer()
                 Button {
                     editing = note; editBody = note.body
-                } label: { Image(systemName: "pencil").font(.system(size: 11)).foregroundStyle(Theme.muted) }
+                } label: { Image(systemName: "pencil").font(.system(size: 11)).foregroundStyle(Theme.nexAgentMuted) }
                 .buttonStyle(.plain)
                 Button {
                     Task { await remove(note) }
@@ -366,16 +409,16 @@ private struct AgentNotesPane: View {
             if !note.quote.isEmpty {
                 Text(note.quote)
                     .font(.caption)
-                    .foregroundStyle(Theme.muted)
+                    .foregroundStyle(Theme.nexAgentMuted)
                     .lineLimit(3)
                     .padding(.leading, 8)
-                    .overlay(alignment: .leading) { Rectangle().fill(Theme.nexAgentAccent.opacity(0.5)).frame(width: 2) }
+                    .overlay(alignment: .leading) { Rectangle().fill(Theme.nexAgentAccent.opacity(0.55)).frame(width: 2) }
             }
             if editing?.id == note.id {
                 if let remote = conflictRemoteBody {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("远端最新版本：").font(.caption2.weight(.semibold)).foregroundStyle(Theme.approval)
-                        Text(remote).font(.caption).foregroundStyle(Theme.muted)
+                        Text(remote).font(.caption).foregroundStyle(Theme.nexAgentMuted)
                     }
                     .padding(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -385,21 +428,21 @@ private struct AgentNotesPane: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
                     .padding(6)
-                    .background(Theme.wash, in: RoundedRectangle(cornerRadius: 6))
+                    .background(Theme.nexAgentInset, in: RoundedRectangle(cornerRadius: 6))
                 HStack {
                     Spacer()
-                    Button("取消") { editing = nil; conflictRemoteBody = nil }.buttonStyle(.plain).font(.caption).foregroundStyle(Theme.muted)
+                    Button("取消") { editing = nil; conflictRemoteBody = nil }.buttonStyle(.plain).font(.caption).foregroundStyle(Theme.nexAgentMuted)
                     Button("保存") { Task { await saveEdit(note) } }
-                        .buttonStyle(.borderedProminent).tint(Theme.nexAgentAccent).controlSize(.mini)
+                        .buttonStyle(.borderedProminent).tint(Theme.nexAgentSolid).controlSize(.mini)
                         .disabled(editBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             } else {
-                Text(note.body).font(.system(size: 12.5)).foregroundStyle(Theme.foreground)
+                Text(note.body).font(.system(size: 12.5)).foregroundStyle(Theme.nexAgentInk)
             }
         }
         .padding(10)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+        .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.nexAgentBorder))
     }
 
     private func load() async {
@@ -427,7 +470,6 @@ private struct AgentNotesPane: View {
         defer { saving = false }
         let nextNum = (notes.map(\.num).max() ?? 0) + 1
         do {
-            // Omit start/end when no character range selection exists (Core rejects start == end).
             let saved = try await model.createNote(key: session.key, id: noteId, message: msgId, quote: quote, body: body, num: nextNum)
             if let idx = notes.firstIndex(where: { $0.id == saved.id }) { notes[idx] = saved } else { notes.append(saved) }
             pendingNote = nil
@@ -493,27 +535,22 @@ private struct AgentSideChatsPane: View {
     let model: CliAgentsModel
     let session: CliSession
 
-    /// Explicitly pinned side-chat key so activity reordering never shifts the send target.
     @State private var selectedSideKey: CliSessionKey?
-    /// Key of a newly created side chat waiting for its first appearance in `sides`.
     @State private var awaitingNewSideKey: CliSessionKey?
     @State private var pendingCreateRequestId: String?
     @State private var creating = false
     @State private var drafts: [CliSessionKey: String] = [:]
-    /// Retry IDs bound to exact submitted text so edited retries never hit 409 content-fingerprint conflicts.
     @State private var pendingSendIds: [CliSessionKey: (text: String, clientMessageId: String, requestId: String)] = [:]
     @State private var sendingKey: CliSessionKey?
     @State private var error = ""
 
     private var sides: [CliSession] { model.sideSessions(of: session.key) }
 
-    /// Only returns the explicitly pinned side session; never silently falls back to another session when a key is pinned.
     private var activeSide: CliSession? {
         guard let selectedSideKey else { return nil }
         return sides.first { $0.key == selectedSideKey }
     }
 
-    /// Side chats use normal session launch capability (device online + engine available), not `forkEngines`.
     private var sideBlocker: String? {
         CliSessions.deviceBlocker(model.device(session.deviceId), engine: session.engine)
     }
@@ -528,7 +565,7 @@ private struct AgentSideChatsPane: View {
                     .labelsHidden()
                 } else {
                     Text(activeSide.map { model.displayTitle(for: $0) } ?? "侧边私聊")
-                        .font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.nexAgentInk).lineLimit(1)
                 }
                 Spacer()
                 Button { Task { await createSide() } } label: {
@@ -541,7 +578,8 @@ private struct AgentSideChatsPane: View {
                 .help(sideBlocker ?? "基于当前会话开启独立侧边私聊")
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
-            Divider()
+            .background(Theme.nexAgentSurface)
+            Divider().overlay(Theme.nexAgentBorder)
 
             if !error.isEmpty {
                 Text(error).font(.caption).foregroundStyle(Theme.danger).padding(.horizontal, 12).padding(.top, 6)
@@ -563,15 +601,15 @@ private struct AgentSideChatsPane: View {
             } else if selectedSideKey != nil {
                 VStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("正在启动侧聊…").font(.caption).foregroundStyle(Theme.muted)
+                    Text("正在启动侧聊…").font(.caption).foregroundStyle(Theme.nexAgentMuted)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(16)
             } else {
                 VStack(spacing: 8) {
-                    Text("还没有侧边私聊").font(.caption).foregroundStyle(Theme.muted)
+                    Text("还没有侧边私聊").font(.caption).foregroundStyle(Theme.nexAgentMuted)
                     if let blocker = sideBlocker {
-                        Text(blocker).font(.caption2).foregroundStyle(Theme.muted)
+                        Text(blocker).font(.caption2).foregroundStyle(Theme.nexAgentMuted)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -594,7 +632,6 @@ private struct AgentSideChatsPane: View {
             if selectedSideKey == nil {
                 selectedSideKey = keys.first
             } else if let current = selectedSideKey, current != awaitingNewSideKey, !keys.contains(current) {
-                // Previously visible side chat was removed: fall back to another available side chat.
                 selectedSideKey = keys.first
             }
         }
@@ -663,23 +700,35 @@ private struct AgentSideChatBody: View {
         let cards = model.shownCards(side.key)
         VStack(spacing: 0) {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
+                LazyVStack(alignment: .leading, spacing: 10) {
                     if items.isEmpty {
                         Text("侧聊已就绪，在这里提问不会干扰主会话。")
-                            .font(.caption).foregroundStyle(Theme.muted).padding(.top, 12)
+                            .font(.caption).foregroundStyle(Theme.nexAgentMuted).padding(.top, 12)
                     } else {
                         ForEach(items) { item in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.kind == .user ? "我" : side.engine.label)
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(item.kind == .user ? Theme.identityAccent : Theme.nexAgentAccent)
-                                Text(item.text)
-                                    .font(.system(size: 12.5))
-                                    .textSelection(.enabled)
+                            if item.kind == .user {
+                                HStack {
+                                    Spacer(minLength: 28)
+                                    Text(item.text)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.white)
+                                        .textSelection(.enabled)
+                                        .padding(.horizontal, 12).padding(.vertical, 8)
+                                        .background(
+                                            LinearGradient(colors: [Theme.nexAgentBubbleTop, Theme.nexAgentBubbleBottom], startPoint: .topLeading, endPoint: .bottomTrailing),
+                                            in: Bubble.user
+                                        )
+                                }
+                            } else {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    AgentByline(engine: side.engine, ts: item.ts)
+                                    MarkdownText(source: item.text, fontSize: 13)
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.nexAgentBorder))
                             }
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(item.kind == .user ? Theme.chatUser : Theme.card, in: RoundedRectangle(cornerRadius: 8))
                         }
                     }
                 }
@@ -687,7 +736,7 @@ private struct AgentSideChatBody: View {
             }
 
             if !cards.isEmpty {
-                Divider()
+                Divider().overlay(Theme.nexAgentBorder)
                 ScrollView {
                     VStack(spacing: 6) {
                         ForEach(cards) { record in
@@ -699,24 +748,26 @@ private struct AgentSideChatBody: View {
                 .frame(maxHeight: 220)
             }
 
-            Divider()
+            Divider().overlay(Theme.nexAgentBorder)
             HStack(spacing: 6) {
                 TextField("在侧聊中提问…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
                     .lineLimit(1...4)
-                    .padding(7)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border))
+                    .padding(8)
+                    .background(Theme.nexAgentSurface, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.nexAgentBorder))
+                    .onSubmit { if !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { onSend() } }
                 Button(action: onSend) {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(Theme.nexAgentAccent)
+                        .font(.system(size: 22))
+                        .foregroundStyle(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending ? Theme.offline : Theme.nexAgentSolid)
                 }
                 .buttonStyle(.plain)
                 .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(10)
+            .background(Theme.nexAgentSurface)
         }
         .onAppear { model.openSession(side.key) }
         .onDisappear { model.closeSession(side.key) }

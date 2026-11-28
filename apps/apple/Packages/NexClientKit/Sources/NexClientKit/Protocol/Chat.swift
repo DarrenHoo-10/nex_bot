@@ -54,10 +54,16 @@ public struct PendingAttachment: Sendable, Hashable, Identifiable {
     public var state: State
     /// The bytes of a picture, so the composer can show a thumbnail before sending.
     public var preview: Data? = nil
+    /// Retained original file bytes so a failed upload can be retried in one click; cleared once uploaded.
+    public var payload: Data? = nil
+    public init(id: String, name: String, size: Int, state: State, preview: Data? = nil, payload: Data? = nil) {
+        self.id = id; self.name = name; self.size = size; self.state = state; self.preview = preview; self.payload = payload
+    }
     /// The uploaded file once ``state`` is `.ready`.
     public var attachment: ChatAttachment? { if case .ready(let a) = state { a } else { nil } }
     public var isUploading: Bool { state == .uploading }
     public var errorMessage: String? { if case .failed(let m) = state { m } else { nil } }
+    public var canRetry: Bool { errorMessage != nil && payload != nil }
 }
 
 /// A file link inside a message body: Core appends `[name](/api/attachments/<id>)` lines to the text it was sent with.
@@ -132,6 +138,15 @@ public struct AttachmentLink: Sendable, Hashable, Identifiable {
         }
         let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return (found.reversed(), found.isEmpty ? content : body)
+    }
+
+    public static func inlineID(from destination: String) -> String? {
+        let prefix = "/api/attachments/"
+        guard destination.hasPrefix(prefix) else { return nil }
+        let rest = String(destination.dropFirst(prefix.count))
+        let id = rest.split(separator: "?", maxSplits: 1).first.map(String.init) ?? ""
+        guard !id.isEmpty, id.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" }) else { return nil }
+        return id
     }
 
     private static let prefix = "](/api/attachments/"

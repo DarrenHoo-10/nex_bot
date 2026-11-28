@@ -10,10 +10,14 @@ struct NexBotApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
-                .tint(Theme.foreground)
+                .tint(Theme.brand)
                 .preferredColorScheme(AppearanceMode(rawValue: appearance)?.scheme)
                 .task { await model.start() }
-                .onChange(of: scenePhase) { _, phase in model.setForeground(phase == .active) }
+                .onChange(of: scenePhase) { _, phase in
+                    // Brief `.inactive` transitions (Control Center, Face ID, system sheets) keep SSE alive.
+                    if phase == .active { model.setForeground(true) }
+                    else if phase == .background { model.setForeground(false) }
+                }
         }
     }
 }

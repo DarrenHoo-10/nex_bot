@@ -159,18 +159,22 @@ struct PreviewCard: View {
                 }
                 .buttonStyle(.plain).help("关闭预览").accessibilityLabel("关闭预览")
             }
-            if let arguments = item.arguments, !arguments.isEmpty {
-                Button { showArguments.toggle() } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).rotationEffect(.degrees(showArguments ? 90 : 0))
-                        Text("调用参数").font(.system(size: 11))
+            if item.isTool {
+                ToolStepDetailView(tool: item.title, item: item)
+            } else {
+                if let arguments = item.arguments, !arguments.isEmpty {
+                    Button { showArguments.toggle() } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).rotationEffect(.degrees(showArguments ? 90 : 0))
+                            Text("调用参数").font(.system(size: 11))
+                        }
+                        .foregroundStyle(Theme.muted).contentShape(Rectangle())
                     }
-                    .foregroundStyle(Theme.muted).contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    if showArguments { code(arguments) }
                 }
-                .buttonStyle(.plain)
-                if showArguments { code(arguments) }
+                code(item.content.isEmpty ? "暂无内容" : item.content)
             }
-            code(item.content.isEmpty ? "暂无内容" : item.content)
         }
         .fieldCard()
         .accessibilityElement(children: .contain).accessibilityLabel("内容预览")

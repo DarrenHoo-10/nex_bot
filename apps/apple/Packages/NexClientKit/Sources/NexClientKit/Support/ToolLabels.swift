@@ -19,6 +19,11 @@ public enum ToolLabels {
         "pending": "待执行",
     ]
     static let labels: [String: String] = [
+        "html.render": "展示交互内容",
+        "web.fetch": "读取网页",
+        "image.models": "查看生图模型",
+        "image.generate": "生成图片",
+        "attachment.read": "读取附件",
         "connector.list": "查看连接器",
         "connector.tools": "读取工具目录",
         "connector.call": "调用连接器工具",
@@ -50,9 +55,24 @@ public enum ToolLabels {
         "device.computer": "操作电脑窗口",
         "skill.list": "查看技能目录",
         "skill.read": "阅读技能说明",
-        "web.fetch": "读取网页",
+        "job.start": "交给后台任务",
+        "job.list": "查看后台任务",
+        "job.message": "转交给后台任务",
+        "job.stop": "停止后台任务",
+        "job.report": "提交回报",
+        "job.progress": "记录进度",
+        "cli.list": "查看 Agent 会话",
+        "cli.read": "读取 Agent 会话",
+        "cli.start": "启动 Agent 会话",
+        "cli.send": "发给 Agent 会话",
+        "cli.interrupt": "中断 Agent 会话",
     ]
     static let phrases: [String: String] = [
+        "html.render": "正在准备展示内容",
+        "web.fetch": "正在读取网页",
+        "image.models": "正在查看生图模型",
+        "image.generate": "正在生成图片",
+        "attachment.read": "正在读取附件",
         "connector.list": "正在查看连接器",
         "connector.tools": "正在读取工具目录",
         "connector.call": "正在调用连接器工具",
@@ -84,7 +104,17 @@ public enum ToolLabels {
         "device.computer": "正在操作电脑窗口",
         "skill.list": "正在查看技能目录",
         "skill.read": "正在阅读技能说明",
-        "web.fetch": "正在读取网页",
+        "job.start": "正在交给后台任务",
+        "job.list": "正在查看后台任务",
+        "job.message": "正在转交给后台任务",
+        "job.stop": "正在停止后台任务",
+        "job.report": "正在提交回报",
+        "job.progress": "正在记录进度",
+        "cli.list": "正在查看 Agent 会话",
+        "cli.read": "正在读取 Agent 会话",
+        "cli.start": "正在启动 Agent 会话",
+        "cli.send": "正在发给 Agent 会话",
+        "cli.interrupt": "正在中断 Agent 会话",
     ]
     static let approvalTitles: [String: String] = [
         "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明",
@@ -104,6 +134,7 @@ public enum ToolLabels {
     public static func taskPhrase(_ task: AgentTask?) -> String {
         guard let task else { return "" }
         switch task.status {
+        case "needs_reconciliation": return "等待核对执行结果"
         case "cancelling": return "正在停止…"
         case "awaiting_approval": return "等你批准"
         default:

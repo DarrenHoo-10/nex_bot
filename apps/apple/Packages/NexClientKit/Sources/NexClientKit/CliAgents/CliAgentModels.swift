@@ -195,6 +195,12 @@ public enum CliToolStatus: String, Sendable, Hashable, Codable { case running, o
 public enum CliNoticeLevel: String, Sendable, Hashable, Codable { case info, error }
 public enum CliTurnPhase: String, Sendable, Hashable, Codable { case started, ended, aborted }
 
+public struct CliTaskEnd: Sendable, Hashable, Codable {
+    public var id: String
+    public var state: String
+    public init(id: String, state: String) { self.id = id; self.state = state }
+}
+
 /// One conversation item. Which fields are set depends on `kind`: `text` for user, assistant, thinking and notice;
 /// `name`, `input`, `status` and `output` for a tool; `level` for a notice; `phase` for a turn marker.
 public struct CliItem: Sendable, Hashable, Identifiable, Codable {
@@ -212,22 +218,24 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
     public var level: CliNoticeLevel
     public var replyPhase: String?
     public var phase: CliTurnPhase
+    public var taskEnd: CliTaskEnd?
 
     public init(id: String, ts: Int, kind: CliItemKind, text: String = "", images: [String] = [], queued: Bool = false, name: String = "",
-                input: String = "", status: CliToolStatus = .running, output: String? = nil, level: CliNoticeLevel = .info, phase: CliTurnPhase = .started) {
+                input: String = "", status: CliToolStatus = .running, output: String? = nil, level: CliNoticeLevel = .info, phase: CliTurnPhase = .started,
+                taskEnd: CliTaskEnd? = nil) {
         self.id = id; self.ts = ts; self.kind = kind; self.text = text; self.images = images; self.queued = queued; self.name = name
         self.queuedByUser = nil
-        self.input = input; self.status = status; self.output = output; self.level = level; self.phase = phase
+        self.input = input; self.status = status; self.output = output; self.level = level; self.phase = phase; self.taskEnd = taskEnd
     }
 
-    enum CodingKeys: String, CodingKey { case id, ts, kind, text, images, queued, queuedByUser, name, input, status, output, level, phase, replyPhase }
+    enum CodingKeys: String, CodingKey { case id, ts, kind, text, images, queued, queuedByUser, name, input, status, output, level, phase, replyPhase, taskEnd }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         ts = try c.decode(Int.self, forKey: .ts)
         kind = try c.decode(CliItemKind.self, forKey: .kind)
-        text = ""; images = []; queued = false; queuedByUser = nil; name = ""; input = ""; status = .running; output = nil; level = .info; phase = .started
+        text = ""; images = []; queued = false; queuedByUser = nil; name = ""; input = ""; status = .running; output = nil; level = .info; phase = .started; taskEnd = nil
         switch kind {
         case .user:
             text = try c.decode(String.self, forKey: .text)
@@ -235,6 +243,7 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
             queued = try c.decodeIfPresent(Bool.self, forKey: .queued) ?? false
             queuedByUser = try c.decodeIfPresent(Bool.self, forKey: .queuedByUser)
             if queuedByUser != true, images.isEmpty, Self.isLegacyTaskNotification(text, queued: queued) {
+                taskEnd = Self.parseLegacyTaskEnd(text)
                 kind = .notice; text = ""; queued = false
             } else if images.isEmpty, let peer = Self.parseLegacyAgentMessage(text) {
                 kind = .tool; name = "AgentMessage"; input = peer.sender; status = .ok; output = peer.body
@@ -251,9 +260,34 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
         case .notice:
             level = try c.decode(CliNoticeLevel.self, forKey: .level)
             text = try c.decode(String.self, forKey: .text)
-            if level == .info, text.drop(while: \.isWhitespace).hasPrefix("<task-notification>") { text = "" }
+            taskEnd = try? c.decodeIfPresent(CliTaskEnd.self, forKey: .taskEnd)
+            if taskEnd != nil { text = "" }
+            else if level == .info, text.drop(while: \.isWhitespace).hasPrefix("<task-notification>") {
+                taskEnd = Self.parseLegacyTaskEnd(text)
+                text = ""
+            }
         case .turn:
             phase = try c.decode(CliTurnPhase.self, forKey: .phase)
+        }
+    }
+
+    private static func parseLegacyTaskEnd(_ text: String) -> CliTaskEnd? {
+        let header = String(text.prefix(2048))
+        let payload = header.range(of: #"<(summary|result|output)>"#, options: .regularExpression)?.lowerBound ?? header.endIndex
+        let fields = String(header[..<payload])
+        guard let idRegex = try? NSRegularExpression(pattern: #"^\s*<task-notification>\s*<task-id>\s*([A-Za-z0-9_./:-]{1,128})\s*</task-id>"#),
+              let idMatch = idRegex.firstMatch(in: fields, range: NSRange(fields.startIndex..., in: fields)),
+              let idRange = Range(idMatch.range(at: 1), in: fields),
+              let stRegex = try? NSRegularExpression(pattern: #"<status>\s*([\w-]+)\s*</status>"#),
+              let stMatch = stRegex.firstMatch(in: fields, range: NSRange(fields.startIndex..., in: fields)),
+              let stRange = Range(stMatch.range(at: 1), in: fields) else { return nil }
+        let id = String(fields[idRange])
+        let raw = fields[stRange].lowercased()
+        switch raw {
+        case "completed": return CliTaskEnd(id: id, state: "completed")
+        case "failed", "errored": return CliTaskEnd(id: id, state: "failed")
+        case "cancelled", "canceled", "stopped", "shutdown", "not_found": return CliTaskEnd(id: id, state: "cancelled")
+        default: return nil
         }
     }
 
@@ -393,7 +427,8 @@ public enum CliErrorText {
         "disabled": "Agent 会话已关闭", "paused": "本机控制已暂停", "hc_unavailable": "终端组件不可用", "hc_version": "终端组件版本不符",
         "cli_missing": "找不到所选运行工具", "cwd_missing": "工作目录不存在", "not_found": "会话不存在", "not_in_terminal": "会话不在 nex_bot 终端里",
         "stopped": "会话已停止", "open_elsewhere": "这个会话正在电脑上运行", "read_only": "只看，不能输入", "too_large": "内容太长",
-        "invalid": "参数不合法", "busy": "上一个操作还没完成", "device_offline": "电脑离线", "unknown": "结果未知",
+        "invalid": "参数不合法", "busy": "上一个操作还没完成", "turn_changed": "目标轮次已经结束", "conflict": "内容已被另一端修改，请刷新后重试",
+        "device_offline": "电脑离线", "unknown": "结果未知",
     ]
 
     /// The line to show for a failed call: Core's own wording when it sent some, else the code's standard text.
@@ -429,7 +464,7 @@ public struct CliSnapshot: Sendable, Decodable {
     }
 }
 
-public enum CliWorkbenchKind: String, Sendable, Hashable, Codable { case main, fork, side }
+public enum CliWorkbenchKind: String, Sendable, Hashable, Codable { case main, fork, side, worker }
 
 public struct CliWorkbenchSession: Sendable, Hashable, Identifiable, Decodable {
     public var id: String
@@ -565,9 +600,13 @@ public struct CliSupervisionSettings: Sendable, Hashable, Equatable {
     public var transientRetry: Bool
     public var usageLimit: Bool
     public var wakeup: Bool
-    public static let defaults = CliSupervisionSettings(transientRetry: true, usageLimit: false, wakeup: false)
-    public init(transientRetry: Bool, usageLimit: Bool, wakeup: Bool) {
+    public var triage: Bool
+    public var decide: Bool
+    public var wake: Bool
+    public static let defaults = CliSupervisionSettings(transientRetry: true, usageLimit: false, wakeup: false, triage: false, decide: false, wake: false)
+    public init(transientRetry: Bool, usageLimit: Bool, wakeup: Bool, triage: Bool = false, decide: Bool = false, wake: Bool = false) {
         self.transientRetry = transientRetry; self.usageLimit = usageLimit; self.wakeup = wakeup
+        self.triage = triage; self.decide = decide; self.wake = wake
     }
 }
 
@@ -592,7 +631,8 @@ public struct CliSupervision: Sendable, Hashable, Decodable {
         }
         let base = CliSupervisionSettings.defaults
         settings = CliSupervisionSettings(transientRetry: flag("transientRetry", base.transientRetry), usageLimit: flag("usageLimit", base.usageLimit),
-                                          wakeup: flag("wakeup", base.wakeup))
+                                          wakeup: flag("wakeup", base.wakeup), triage: flag("triage", base.triage),
+                                          decide: flag("decide", base.decide), wake: flag("wake", base.wake))
         overrides = root["workspaces"]?.arrayValue?.count ?? 0
         pending = root["actions"]?.arrayValue?.filter { $0["status"]?.stringValue == "pending" }.count ?? 0
     }
@@ -624,6 +664,7 @@ public struct CliQueuedEntry: Decodable, Identifiable, Sendable {
     public let version: Int
     public let text: String
     public let status: String
+    public var revisesMessageId: String? = nil
     public var errorCode: String? = nil
 }
 public struct CliSessionQueue: Decodable, Sendable {
@@ -638,6 +679,7 @@ public struct CliSessionQueue: Decodable, Sendable {
 public enum CliServerMessage: Sendable {
     case queue(CliSessionQueue)
     case workbench([CliWorkbenchSession])
+    case team(runs: [CliTeamRunView]?, run: CliTeamRunView?)
     case list(devices: [CliDevice], sessions: [CliSession])
     case listDelta(upserts: [CliSession], removes: [CliSessionKey], devices: [CliDevice]?)
     case items(key: CliSessionKey, items: [CliItem], reset: Bool, more: Bool?)
@@ -663,6 +705,7 @@ public enum CliServerMessage: Sendable {
     private struct SummaryBody: Decodable { let waiting: Int; let running: Int }
     private struct RequestsBody: Decodable { let key: String; let requests: LossyList<CliRequest> }
     private struct ResolvedBody: Decodable { let key: String; let id: String; let by: CliResolvedBy }
+    private struct TeamBody: Decodable { let runs: LossyList<CliTeamRunView>?; let run: CliTeamRunView? }
 
     /// Nil for anything that is not a known, well-formed message.
     public static func parse(_ data: Data) -> CliServerMessage? {
@@ -676,6 +719,9 @@ public enum CliServerMessage: Sendable {
         case "workbench":
             struct WorkbenchBody: Decodable { let sessions: LossyList<CliWorkbenchSession> }
             return body(WorkbenchBody.self).map { .workbench($0.sessions.values) }
+        case "cli.team":
+            guard let b = body(TeamBody.self), b.runs != nil || b.run != nil else { return nil }
+            return .team(runs: b.runs?.values, run: b.run)
         case "list": return body(ListBody.self).map { .list(devices: $0.devices.values, sessions: $0.sessions.values) }
         case "list.delta": return body(DeltaBody.self).map { .listDelta(upserts: $0.upserts.values, removes: $0.removes, devices: $0.devices?.values) }
         case "items": return body(ItemsBody.self).map {

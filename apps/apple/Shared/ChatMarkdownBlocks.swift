@@ -2,7 +2,47 @@ import SwiftUI
 import NexClientKit
 import NexMarkdown
 
-/// Separate recursive views keep quotes and list items as real block containers.
+/// URL schemes used by native Markdown blocks for previewable file paths and inline Core attachments.
+enum ChatLinks {
+    static let scheme = "nexbot-file"
+    static let attachmentScheme = "nexbot-attachment"
+
+    static func url(forPath path: String) -> URL? {
+        var c = URLComponents()
+        c.scheme = scheme
+        c.host = "preview"
+        c.queryItems = [URLQueryItem(name: "path", value: path)]
+        return c.url
+    }
+
+    /// The file path of a chip link, nil for ordinary links.
+    static func path(from url: URL) -> String? {
+        guard url.scheme == scheme else { return nil }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "path" }?.value
+    }
+
+    static func url(forAttachment id: String, name: String) -> URL? {
+        var c = URLComponents()
+        c.scheme = attachmentScheme
+        c.host = "download"
+        c.queryItems = [
+            URLQueryItem(name: "id", value: id),
+            URLQueryItem(name: "name", value: name),
+        ]
+        return c.url
+    }
+
+    /// The attachment id and display name of an inline `/api/attachments/<id>` link.
+    static func attachment(from url: URL) -> AttachmentLink? {
+        guard url.scheme == attachmentScheme else { return nil }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard let id = items.first(where: { $0.name == "id" })?.value, !id.isEmpty else { return nil }
+        let name = items.first(where: { $0.name == "name" })?.value ?? "附件"
+        return AttachmentLink(id: id, name: name.isEmpty ? "附件" : name)
+    }
+}
+
+/// Separate recursive views keep quotes and list items as real block containers across Mac and iOS.
 struct ChatMarkdownBlocks: View {
     let blocks: [ChatBlock]
     let fontSize: CGFloat
@@ -20,6 +60,7 @@ private struct ChatMarkdownBlock: View {
     let block: ChatBlock
     let fontSize: CGFloat
     @Environment(\.chatInk) private var ink
+    @Environment(\.chatOnAccent) private var onAccent
 
     @ViewBuilder var body: some View {
         switch block {
@@ -27,22 +68,26 @@ private struct ChatMarkdownBlock: View {
         case .heading(let level, let content):
             ChatMarkdownInline(content: content, fontSize: fontSize + CGFloat(max(0, 4 - level)) * 2, strong: true)
         case .code(_, let text):
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 Text(text).font(.system(size: fontSize - 1, design: .monospaced))
-                    .foregroundStyle(Theme.foreground).padding(10)
+                    .foregroundStyle(onAccent ? .white : Theme.foreground)
+                    .padding(10)
             }
-            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(onAccent ? Color.white.opacity(0.14) : Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         case .quote(let blocks):
             ChatMarkdownBlocks(blocks: blocks, fontSize: fontSize)
+                .foregroundStyle(onAccent ? ink.opacity(0.88) : Theme.muted)
                 .padding(.leading, 12)
-                .overlay(alignment: .leading) { Rectangle().fill(Theme.border).frame(width: 3) }
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(onAccent ? ink.opacity(0.55) : Theme.borderStrong).frame(width: 3)
+                }
         case .list(let start, let items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     HStack(alignment: .top, spacing: 8) {
                         if let checked = item.checked {
                             Image(systemName: checked ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(checked ? Theme.brand : Theme.muted)
+                                .foregroundStyle(onAccent ? .white : (checked ? Theme.brand : Theme.muted))
                                 .font(.system(size: fontSize)).frame(width: fontSize + 2, height: fontSize * 1.4)
                                 .accessibilityLabel(checked ? "已完成" : "未完成")
                         } else {
@@ -56,8 +101,8 @@ private struct ChatMarkdownBlock: View {
             }
             .padding(.leading, 4)
         case .table(let table): ChatMarkdownTable(table: table, fontSize: fontSize)
-        case .rule: Rectangle().fill(Theme.border).frame(height: 1)
-        case .literal(let text): Text(text).font(.system(size: fontSize)).textSelection(.enabled)
+        case .rule: Rectangle().fill(onAccent ? ink.opacity(0.35) : Theme.border).frame(height: 1)
+        case .literal(let text): Text(text).font(.system(size: fontSize)).foregroundStyle(ink).textSelection(.enabled)
         }
     }
 }
@@ -120,6 +165,16 @@ private struct ChatMarkdownInline: View {
             .textSelection(.enabled)
     }
 
+    private static func plainText(_ nodes: [ChatInline]) -> String {
+        nodes.map { node in
+            switch node {
+            case .text(let s), .code(let s): return s
+            case .emphasis(let c), .strong(let c), .strikethrough(let c), .link(_, let c): return plainText(c)
+            case .image(_, let alt): return alt
+            }
+        }.joined()
+    }
+
     /// Render the parser's inline tree directly: no second parser can lose GFM
     /// strikethrough, reference links, escaping or formatting inside table cells.
     private static func attributed(_ nodes: [ChatInline], size: CGFloat, bold: Bool = false, italic: Bool = false, onAccent: Bool = false) -> AttributedString {
@@ -143,10 +198,15 @@ private struct ChatMarkdownInline: View {
                 part.strikethroughStyle = .single
             case .link(let destination, let children):
                 part = attributed(children, size: size, bold: bold, italic: italic, onAccent: onAccent)
-                // Preserve the existing URL policy; generated links from model
-                // text cannot acquire the app's private file-preview scheme.
+                // Preserve the URL policy; generated links from model text cannot acquire
+                // the app's private file-preview scheme, except validated Core attachments.
                 part.link = nil
-                if let destination, let url = URL(string: destination), Markdown.isOpenable(url) {
+                if let destination, let attachmentID = AttachmentLink.inlineID(from: destination),
+                   let url = ChatLinks.url(forAttachment: attachmentID, name: plainText(children)) {
+                    part.link = url
+                    part.foregroundColor = onAccent ? .white : Theme.brand
+                    part.underlineStyle = .single
+                } else if let destination, let url = URL(string: destination), Markdown.isOpenable(url) {
                     part.link = url; part.foregroundColor = onAccent ? .white : Theme.brand
                     if onAccent { part.underlineStyle = .single }
                 }

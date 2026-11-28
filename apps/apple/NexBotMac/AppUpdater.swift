@@ -8,7 +8,7 @@ import NexClientKit
 @MainActor @Observable
 final class AppUpdater {
     static let shared = AppUpdater()
-    enum Status: Equatable { case idle, checking, current, downloading(String), ready(String), failed(String) }
+    enum Status: Equatable { case idle, checking, current, downloading(String, Double?), ready(String), failed(String) }
     private(set) var status = Status.idle
     private(set) var installing = false
     @ObservationIgnored private var file: URL?
@@ -25,7 +25,11 @@ final class AppUpdater {
             }
         }
     }
-    func stop() { loop?.cancel(); loop = nil }
+    func stop() {
+        loop?.cancel(); loop = nil
+        file = nil
+        if !installing { status = .idle }
+    }
 
     func check(_ client: CoreClient) async {
         guard !checking, !installing else { return }
@@ -35,13 +39,20 @@ final class AppUpdater {
         defer { checking = false }
         do {
             guard let offer = try await client.clientUpdate(platform: "mac", current: current) else { status = .current; return }
-            status = .downloading(offer.version)
+            status = .downloading(offer.version, 0)
             let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("NexBotUpdates", isDirectory: true)
             let name = "NexBot-\(offer.version).dmg"
             for old in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where old.lastPathComponent != name {
                 try? FileManager.default.removeItem(at: old)
             }
-            file = try await client.downloadUpdate(offer, to: dir.appendingPathComponent(name))
+            let version = offer.version
+            file = try await client.downloadUpdate(offer, to: dir.appendingPathComponent(name)) { fraction in
+                Task { @MainActor [weak self] in
+                    if case .downloading(let v, _) = self?.status, v == version {
+                        self?.status = .downloading(version, fraction)
+                    }
+                }
+            }
             status = .ready(offer.version)
         } catch {
             if Task.isCancelled { status = .idle; return }

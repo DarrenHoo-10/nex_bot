@@ -75,9 +75,11 @@ struct AttachmentCards: View {
             ForEach(links) { link in
                 if link.isImage {
                     ImageThumbnail(link: link, workspace: workspace, onOpen: { image in
-                        imagePreview = ImagePreview(image: image) {
+                        imagePreview = ImagePreview(image: image, prepareSave: {
+                            try await prepareShareURL(link)
+                        }, onDelete: {
                             try await conversation.deleteImage(link, messageID: messageID)
-                        }
+                        })
                     }, onSave: { Task { await save(link) } })
                 }
                 else { card(link) }
@@ -120,13 +122,17 @@ struct AttachmentCards: View {
         } catch { errorText = coreMessage(error) }
     }
 
+    private func prepareShareURL(_ link: AttachmentLink) async throws -> URL {
+        let file = try await workspace.downloadAttachment(id: link.id)
+        let name = file.filename == "attachment" ? (link.picture ? link.name + ".png" : link.name) : file.filename
+        return try TempFiles.write(file.data, name: name)
+    }
+
     private func save(_ link: AttachmentLink) async {
         loading = link.id; errorText = nil
         defer { loading = nil }
         do {
-            let file = try await workspace.downloadAttachment(id: link.id)
-            let name = file.filename == "attachment" ? (link.picture ? link.name + ".png" : link.name) : file.filename
-            shareFile = SharedFile(url: try TempFiles.write(file.data, name: name))
+            shareFile = SharedFile(url: try await prepareShareURL(link))
         } catch { errorText = coreMessage(error) }
     }
 }
@@ -171,6 +177,7 @@ struct ImageThumbnail: View {
 struct ImagePreview: Identifiable {
     let id = UUID()
     let image: UIImage
+    var prepareSave: (@MainActor () async throws -> URL)? = nil
     let onDelete: @MainActor () async throws -> Void
 }
 
@@ -178,6 +185,8 @@ struct NativeImageViewer: View {
     let preview: ImagePreview
     @Environment(\.dismiss) private var dismiss
     @State private var deleting = false
+    @State private var saving = false
+    @State private var shareFile: SharedFile?
     @State private var errorText = ""
 
     var body: some View {
@@ -188,6 +197,28 @@ struct NativeImageViewer: View {
                 .padding(16)
                 .overlay(alignment: .topTrailing) {
                     HStack(spacing: 8) {
+                        if let prepareSave = preview.prepareSave {
+                            Button {
+                                guard !saving else { return }
+                                saving = true; errorText = ""
+                                Task { @MainActor in
+                                    defer { saving = false }
+                                    do { shareFile = SharedFile(url: try await prepareSave()) }
+                                    catch { errorText = coreMessage(error) }
+                                }
+                            } label: {
+                                Group {
+                                    if saving { ProgressView() }
+                                    else { Image(systemName: "square.and.arrow.down").font(.system(size: 13, weight: .semibold)) }
+                                }
+                                .frame(width: 34, height: 34)
+                                .foregroundStyle(.white)
+                                .background(.black.opacity(0.55), in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(saving)
+                            .accessibilityLabel("存储图片")
+                        }
                         Button { remove() } label: {
                             Group {
                                 if deleting { ProgressView() }
@@ -219,6 +250,7 @@ struct NativeImageViewer: View {
             }
         }
         .statusBarHidden()
+        .sheet(item: $shareFile) { file in ShareSheet(url: file.url) }
     }
 
     private func remove() {

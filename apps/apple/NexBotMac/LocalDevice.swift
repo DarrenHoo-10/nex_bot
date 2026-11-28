@@ -180,10 +180,38 @@ final class LocalDeviceController {
 
     private func follow(_ model: AppModel) async {
         if model.phase == .connected, let credential = model.credential {
-            guard session?.sessionId != credential.sessionId || session?.token != credential.token else { return }
+            if let current = session,
+               current.sessionId == credential.sessionId,
+               current.origin == credential.origin,
+               current.coreId == credential.coreId {
+                guard current.token != credential.token || current.expiresAt != credential.expiresAt else { return }
+                await updateSession(credential: credential)
+                return
+            }
             await start(credential: credential)
         } else if session != nil {
             await stop(revoke: false)
+        }
+    }
+
+    /// Rotates the session token in place without restarting the runtime or dropping active commands/CLI sessions.
+    private func updateSession(credential: StoredCredential) async {
+        session = credential
+        guard let host, host.isRunning else {
+            await start(credential: credential)
+            return
+        }
+        do {
+            let reply = try await call([
+                "op": "updateSession",
+                "session": ["origin": credential.origin, "name": credential.name, "token": credential.token, "coreId": credential.coreId,
+                            "sessionId": credential.sessionId, "expiresAt": credential.expiresAt] as [String: Any],
+            ], timeout: 30)
+            guard session?.sessionId == credential.sessionId else { return }
+            apply(reply)
+        } catch {
+            guard session?.sessionId == credential.sessionId else { return }
+            await start(credential: credential)
         }
     }
 
