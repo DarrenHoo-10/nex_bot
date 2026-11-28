@@ -158,7 +158,7 @@ struct AgentSessionDetail: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(CliSessions.title(session)).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                    Text([session.engine.label, CliSessions.folderLabel(session.cwd), session.gitBranch ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                    Text([session.engine.label, CliSessions.projectLabel(session), session.gitBranch ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
                 }
                 Spacer(minLength: 4)

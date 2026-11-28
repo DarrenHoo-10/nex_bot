@@ -2397,6 +2397,17 @@
     max-width: 34%;
     margin-inline-start: 6px;
   }
+  .na-stage .cli-app .na-older {
+    min-height: 32px;
+    gap: 8px;
+    padding: 2px 8px 2px 25px;
+    border-radius: 9px;
+  }
+  @media (pointer: coarse) {
+    .na-stage .cli-app .na-older {
+      min-height: 36px;
+    }
+  }
   .na-stage .cli-app .cli-chip {
     height: 20px;
     padding: 0 8px;

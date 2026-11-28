@@ -120,7 +120,7 @@ describe("directory text selection", () => {
 });
 
 describe("project grouping", () => {
-  it("folds worktrees, long-path prefixes and Codex scratch chats into one project each", async () => {
+  it("folds worktrees, long-path prefixes and scratch chats into one project each", async () => {
     await mount([
       session({ nativeId: "m", title: "主线", cwd: String.raw`D:\ProgrammingProjects\nex_bot`, lastActivityAt: recent(5) }),
       session({ nativeId: "w1", title: "工作树一", cwd: String.raw`D:\ProgrammingProjects\nex_bot\.claude\worktrees\gallant-gagarin-443e9a`, lastActivityAt: recent(6) }),
@@ -130,12 +130,15 @@ describe("project grouping", () => {
       session({ nativeId: "c1", engine: "codex", title: "随手问一", cwd: String.raw`C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat`, lastActivityAt: recent(1) }),
       session({ nativeId: "c2", engine: "codex", title: "随手问二", cwd: String.raw`C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat-2`, lastActivityAt: recent(2) }),
       session({ nativeId: "c3", engine: "codex", title: "随手问三", cwd: String.raw`\\?\C:\Users\Administrator\Documents\Codex\2026-11-17\new-chat`, lastActivityAt: recent(3) }),
+      session({ nativeId: "a1", engine: "agy", title: "Casual Greeting", cwd: "", lastActivityAt: recent(4) }),
+      session({ nativeId: "z1", engine: "zcode", title: "添加节点", cwd: String.raw`C:\Users\Administrator\.zcode\workspace\1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1`, lastActivityAt: recent(4.5) }),
     ]);
     // real projects by latest activity, the scratch group last even though it is the newest
     expect(folders()).toEqual(["nex_bot", "nex_stock", "未关联项目"]);
     expect(titles(project("nex_bot"))).toEqual(["主线", "工作树一", "工作树二"]);
     expect(titles(project("nex_stock"))).toEqual(["行情", "选股"]);
-    expect(titles(project("未关联项目"))).toEqual(["随手问一", "随手问二", "随手问三"]);
+    expect(titles(project("未关联项目"))).toEqual(["随手问一", "随手问二", "随手问三", "Casual Greeting", "添加节点"]);
+    expect(project("未关联项目").querySelector(".na-folder-new")).toBeNull();
     expect(project("nex_bot").querySelector(".na-folder strong")?.getAttribute("title")).toBe(String.raw`D:\ProgrammingProjects\nex_bot`);
     expect(project("nex_stock").querySelector(".na-folder strong")?.getAttribute("title")).toBe(String.raw`D:\ProgrammingProjects\nex_stock`);
     expect(project("nex_bot").querySelector(".na-folder small")?.textContent).toBe("3");

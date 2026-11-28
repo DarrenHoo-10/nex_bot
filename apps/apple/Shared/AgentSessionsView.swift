@@ -255,7 +255,7 @@ struct AgentSessionList: View {
             .buttonStyle(.plain)
             .accessibilityLabel(activeFolded ? "展开进行中" : "收起进行中")
             if !activeFolded {
-                ForEach(active) { session in row(session, asked: pending[session.key] ?? 0, context: CliSessions.folderLabel(session.repoRoot ?? session.cwd)) }
+                ForEach(active) { session in row(session, asked: pending[session.key] ?? 0, context: CliSessions.projectLabel(session)) }
             }
             Divider().padding(.top, 4)
         }
@@ -278,17 +278,19 @@ struct AgentSessionList: View {
                 HStack(spacing: 6) {
                     Text(folder.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
                     Spacer()
-                    Button { onNew(group.device.id, folder.cwd) } label: {
-                        Image(systemName: "plus").font(.system(size: 12)).frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
+                    if !folder.scratch && !folder.cwd.isEmpty {
+                        Button { onNew(group.device.id, folder.cwd) } label: {
+                            Image(systemName: "plus").font(.system(size: 12)).frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).foregroundStyle(Theme.muted)
+                        .help("新建会话")
+                        .accessibilityLabel("在 \(folder.label) 中新建会话")
                     }
-                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
-                    .help("新建会话")
-                    .accessibilityLabel("在 \(folder.label) 中新建会话")
                     Text("\(folder.sessions.count)").font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }
                 .padding(.horizontal, 6).padding(.top, 8).padding(.bottom, 2)
-                .help(folder.roots.count > 1 ? folder.roots.joined(separator: "\n") : folder.cwd)
+                .help(folder.roots.count > 1 ? folder.roots.joined(separator: "\n") : (folder.cwd.isEmpty ? folder.label : folder.cwd))
                 ForEach(folder.sessions) { session in row(session, asked: pending[session.key] ?? 0, context: nil) }
             }
             if group.count == 0 { Text("暂无会话").font(.caption).foregroundStyle(Theme.muted) }

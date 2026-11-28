@@ -265,6 +265,32 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(office.folders[0].roots, ["/tmp/roundtrip/Workspace", "/tmp/check/workspace"])
     }
 
+    func testScratchChatsGroupLastUnderUnlinkedProject() {
+        XCTAssertTrue(CliSessions.isScratchCwd(""))
+        XCTAssertTrue(CliSessions.isScratchCwd("   "))
+        XCTAssertFalse(CliSessions.isScratchCwd("/"))
+        XCTAssertTrue(CliSessions.isScratchCwd(#"C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat"#))
+        XCTAssertTrue(CliSessions.isScratchCwd(#"C:\Users\Administrator\.zcode\workspace\1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1"#))
+        XCTAssertTrue(CliSessions.isScratchCwd(#"C:\Users\Administrator\.zcode\workspace\default"#))
+        XCTAssertFalse(CliSessions.isScratchCwd(#"C:\Users\Administrator\.zcode\worktrees\c4ae\nex_bot"#))
+        XCTAssertFalse(CliSessions.isScratchCwd(#"C:\Users\Administrator\.zcode\workspace\my-project"#))
+
+        let sessions = [
+            cliSession("d1:agy:empty", cwd: "", at: 90, engine: .agy),
+            cliSession("d1:zcode:tmp", cwd: #"C:\Users\Administrator\.zcode\workspace\1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1"#, at: 80, engine: .zcode),
+            cliSession("d1:codex:scratch", cwd: #"C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat"#, at: 70, engine: .codex),
+            cliSession("d1:claude:proj", cwd: "/work/nex_bot", at: 10),
+        ]
+        let office = CliSessions.group(devices: [CliDevice(id: "d1", name: "Office", online: true)], sessions: sessions)[0]
+        XCTAssertEqual(office.folders.map(\.label), ["nex_bot", "未关联项目"])
+        XCTAssertTrue(office.folders[1].scratch)
+        XCTAssertEqual(office.folders[1].cwd, "")
+        XCTAssertEqual(office.folders[1].sessions.map(\.key), ["d1:agy:empty", "d1:zcode:tmp", "d1:codex:scratch"])
+        XCTAssertEqual(CliSessions.projectLabel(sessions[0]), "未关联项目")
+        XCTAssertEqual(CliSessions.projectLabel(sessions[1]), "未关联项目")
+        XCTAssertEqual(CliSessions.recentCwds(sessions, deviceId: "d1"), ["/work/nex_bot"])
+    }
+
     func testWaitingAndAsked() {
         let a = cliSession("a", state: .running), b = cliSession("b", state: .waiting), c = cliSession("c", state: .waiting, online: false), d = cliSession("d", state: .waiting, hidden: true)
         XCTAssertEqual(CliSessions.waitingCount([a, b, c, d]), 1)

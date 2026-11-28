@@ -35,8 +35,16 @@ describe("grouping", () => {
     expect(hiddenCount(rows)).toBe(1);
   });
 
-  it("lists recent folders of one computer", () => {
-    const rows = [session({ nativeId: "1", cwd: "/a", lastActivityAt: 1 }), session({ nativeId: "2", cwd: "/b", lastActivityAt: 5 }), session({ nativeId: "3", cwd: "/a", lastActivityAt: 9 }), session({ deviceId: "x", key: "x:claude:s", cwd: "/z" })];
+  it("lists recent folders of one computer, skipping scratch folders", () => {
+    const rows = [
+      session({ nativeId: "1", cwd: "/a", lastActivityAt: 1 }),
+      session({ nativeId: "2", cwd: "/b", lastActivityAt: 5 }),
+      session({ nativeId: "3", cwd: "/a", lastActivityAt: 9 }),
+      session({ nativeId: "4", engine: "zcode", cwd: String.raw`C:\Users\Administrator\.zcode\workspace\1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1`, lastActivityAt: 12 }),
+      session({ nativeId: "5", engine: "codex", cwd: String.raw`C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat`, lastActivityAt: 11 }),
+      session({ nativeId: "6", engine: "agy", cwd: "", lastActivityAt: 10 }),
+      session({ deviceId: "x", key: "x:claude:s", cwd: "/z" }),
+    ];
     expect(recentCwds(rows, "dev1")).toEqual(["/a", "/b"]);
   });
 
@@ -188,10 +196,18 @@ describe("worktree paths", () => {
 
 
 describe("projects", () => {
-  it("recognises Codex scratch chats", () => {
+  it("recognises empty, Codex and ZCode scratch chats", () => {
+    expect(isScratchCwd("")).toBe(true);
+    expect(isScratchCwd("   ")).toBe(true);
+    expect(isScratchCwd("/")).toBe(false);
     expect(isScratchCwd(String.raw`C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat`)).toBe(true);
     expect(isScratchCwd(String.raw`\\?\C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat-2`)).toBe(true);
     expect(isScratchCwd("/Users/me/Documents/Codex/2026-11-18")).toBe(true);
+    expect(isScratchCwd(String.raw`C:\Users\Administrator\.zcode\workspace\1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1`)).toBe(true);
+    expect(isScratchCwd(String.raw`C:\Users\Administrator\.zcode\workspace\default`)).toBe(true);
+    expect(isScratchCwd("/Users/me/.zcode/workspace/1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1")).toBe(true);
+    expect(isScratchCwd(String.raw`C:\Users\Administrator\.zcode\worktrees\c4ae\nex_bot`)).toBe(false);
+    expect(isScratchCwd(String.raw`C:\Users\Administrator\.zcode\workspace\my-project`)).toBe(false);
     expect(isScratchCwd(String.raw`C:\Users\Administrator\Documents\Codex\notes`)).toBe(false);
     expect(isScratchCwd(String.raw`D:\ProgrammingProjects\nex_stock`)).toBe(false);
   });
@@ -209,7 +225,8 @@ describe("projects", () => {
     const row = session({ repoRoot: String.raw`D:\Repos\Main`, cwd: String.raw`D:\Elsewhere\feature-tree` });
     expect(projectOf(row)).toMatchObject({ label: "Main", root: String.raw`D:\Repos\Main` });
     expect(projectOf(row, String.raw`D:\Override`).label).toBe("Override");
-    expect(projectOf(session({ cwd: "" })).label).toBe("未知目录");
+    expect(projectOf(session({ cwd: "" }))).toMatchObject({ label: "未关联项目", root: "", scratch: true });
+    expect(projectOf(session({ engine: "zcode", cwd: String.raw`C:\Users\Administrator\.zcode\workspace\1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1` }))).toMatchObject({ label: "未关联项目", root: "", scratch: true });
   });
 
   it("groups real projects by latest activity and puts scratch chats last under one label", () => {
@@ -220,11 +237,13 @@ describe("projects", () => {
       session({ nativeId: "4", cwd: String.raw`D:\ProgrammingProjects\nex_bot`, lastActivityAt: 20 }),
       session({ nativeId: "5", cwd: String.raw`D:\ProgrammingProjects\nex_stock`, lastActivityAt: 5 }),
       session({ nativeId: "6", cwd: String.raw`\\?\D:\ProgrammingProjects\nex_stock`, lastActivityAt: 6 }),
+      session({ nativeId: "7", engine: "agy", cwd: "", lastActivityAt: 95 }),
+      session({ nativeId: "8", engine: "zcode", cwd: String.raw`C:\Users\Administrator\.zcode\workspace\1794703687702-7d578be1-ce0d-474e-8389-aea8934f52f1`, lastActivityAt: 85 }),
     ]);
     expect(groups.map((group) => [group.label, group.rows.map((row) => row.nativeId).sort()])).toEqual([
       ["nex_bot", ["3", "4"]],
       ["nex_stock", ["5", "6"]],
-      ["未关联项目", ["1", "2"]],
+      ["未关联项目", ["1", "2", "7", "8"]],
     ]);
     expect(groups[2].scratch).toBe(true);
   });

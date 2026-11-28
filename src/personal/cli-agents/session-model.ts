@@ -60,9 +60,15 @@ export function worktreeRoot(cwd: string): string {
   return clean || cwd;
 }
 
-/** A throwaway Codex chat folder: `…\Documents\Codex\<yyyy-mm-dd>\<anything>`. */
+/** A folder not tied to a user project: empty cwd (e.g. Antigravity desktop chats without a workspace),
+ * Codex's `…\Documents\Codex\<yyyy-mm-dd>\<anything>`, or ZCode's `…\.zcode\workspace\(default|<timestamp>-<uuid>)`. */
 export function isScratchCwd(cwd: string): boolean {
-  return /\/documents\/codex\/\d{4}-\d{2}-\d{2}(?:\/|$)/.test(normalizePath(cwd));
+  if (!cwd.trim()) return true;
+  const clean = normalizePath(cwd);
+  return (
+    /\/documents\/codex\/\d{4}-\d{2}-\d{2}(?:\/|$)/.test(clean) ||
+    /\/\.zcode\/workspace\/(?:default|\d{10,}-[0-9a-f]{6,}(?:-[0-9a-f]+)*)(?:\/|$)/.test(clean)
+  );
 }
 
 export const SCRATCH_LABEL = "未关联项目";
@@ -80,8 +86,9 @@ export interface ProjectRef {
 /** The project a session belongs to. `root` overrides the derived root (the review fixture names one). */
 export function projectOf(session: CliSessionView, root?: string): ProjectRef {
   // `repoRoot` is absent on devices that predate it
-  const explicit = root || session.repoRoot?.trim();
-  if (!explicit && isScratchCwd(session.cwd)) return { key: SCRATCH_KEY, root: "", label: SCRATCH_LABEL, scratch: true };
+  const explicit = root?.trim() || session.repoRoot?.trim();
+  const candidate = explicit || session.cwd;
+  if (isScratchCwd(candidate)) return { key: SCRATCH_KEY, root: "", label: SCRATCH_LABEL, scratch: true };
   const path = stripLongPath(explicit || worktreeRoot(session.cwd)).replace(/[\\/]+$/, "") || session.cwd;
   return { key: normalizePath(path), root: path, label: folderLabel(path), scratch: false };
 }
@@ -244,7 +251,7 @@ export function hiddenCount(sessions: readonly CliSessionView[]): number {
 export function recentCwds(sessions: readonly CliSessionView[], deviceId: string, limit = 8): string[] {
   const latest = new Map<string, number>();
   for (const session of sessions) {
-    if (session.deviceId !== deviceId || !session.cwd) continue;
+    if (session.deviceId !== deviceId || !session.cwd || isScratchCwd(session.cwd)) continue;
     latest.set(session.cwd, Math.max(latest.get(session.cwd) ?? 0, session.lastActivityAt));
   }
   return [...latest.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([cwd]) => cwd);

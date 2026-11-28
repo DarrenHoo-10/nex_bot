@@ -6,13 +6,14 @@ import Foundation
 // MARK: Sessions
 
 public struct CliFolderGroup: Sendable, Hashable, Identifiable {
-    /// where new sessions start: the folder used last
+    /// where new sessions start: the folder used last (empty for the scratch group)
     public var cwd: String
     public var label: String
     public var sessions: [CliSession]
-    /// every folder the project joins, first used last
+    /// every folder the project joins, first used last (empty for the scratch group)
     public var roots: [String] = []
-    public var id: String { label.lowercased() }
+    public var scratch: Bool = false
+    public var id: String { scratch ? "\u{0000}scratch" : label.lowercased() }
 }
 
 public struct CliDeviceGroup: Sendable, Hashable, Identifiable {
@@ -52,10 +53,42 @@ public enum CliSessions {
         }
     }
 
+    public static let scratchLabel = "未关联项目"
+    private static let scratchKey = "\u{0000}scratch"
+
     public static func folderLabel(_ cwd: String) -> String {
         let parts = cwd.split(whereSeparator: { $0 == "/" || $0 == "\\" })
         if let last = parts.last { return String(last) }
         return cwd.isEmpty ? "未知目录" : cwd
+    }
+
+    /// The form paths are compared in: no Windows long-path prefix, one separator, no trailing slash, lower case.
+    public static func normalizePath(_ path: String) -> String {
+        var value = path
+        if value.lowercased().hasPrefix("\\\\?\\unc\\") {
+            value = "\\\\" + value.dropFirst(8)
+        } else if value.hasPrefix("\\\\?\\") {
+            value = String(value.dropFirst(4))
+        }
+        value = value.replacingOccurrences(of: #"[\\/]+"#, with: "/", options: .regularExpression)
+        if value.hasSuffix("/") { value.removeLast() }
+        return value.lowercased()
+    }
+
+    /// A folder not tied to a user project: empty cwd (e.g. Antigravity desktop chats without a workspace),
+    /// Codex's `…/Documents/Codex/<yyyy-mm-dd>/…`, or ZCode's `…/.zcode/workspace/(default|<timestamp>-<uuid>)`.
+    public static func isScratchCwd(_ cwd: String) -> Bool {
+        if cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        let clean = normalizePath(cwd)
+        if clean.range(of: #"/documents/codex/\d{4}-\d{2}-\d{2}(?:/|$)"#, options: .regularExpression) != nil { return true }
+        if clean.range(of: #"/\.zcode/workspace/(?:default|\d{10,}-[0-9a-f]{6,}(?:-[0-9a-f]+)*)(?:/|$)"#, options: .regularExpression) != nil { return true }
+        return false
+    }
+
+    public static func projectLabel(_ s: CliSession) -> String {
+        let explicit = s.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let candidate = explicit.isEmpty ? s.cwd : explicit
+        return isScratchCwd(candidate) ? scratchLabel : folderLabel(candidate)
     }
 
     public static func title(_ s: CliSession) -> String {
@@ -83,14 +116,22 @@ public enum CliSessions {
             // a worktree sits under the repository it was made from; folders that show the same name are one project,
             // wherever they are (two `workspace` folders list once), and it starts new sessions in the one used last
             for s in mine {
-                let root = s.repoRoot?.isEmpty == false ? s.repoRoot! : s.cwd
-                let label = folderLabel(root)
-                let name = label.lowercased()
-                if folders[name] == nil { folders[name] = CliFolderGroup(cwd: root, label: label, sessions: []); folderOrder.append(name) }
-                if folders[name]?.roots.contains(root) == false { folders[name]?.roots.append(root) }
+                let explicit = s.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let root = explicit.isEmpty ? s.cwd : explicit
+                let scratch = isScratchCwd(root)
+                let label = scratch ? scratchLabel : folderLabel(root)
+                let name = scratch ? scratchKey : label.lowercased()
+                if folders[name] == nil {
+                    folders[name] = CliFolderGroup(cwd: scratch ? "" : root, label: label, sessions: [], scratch: scratch)
+                    folderOrder.append(name)
+                }
+                if !scratch, folders[name]?.roots.contains(root) == false { folders[name]?.roots.append(root) }
                 folders[name]?.sessions.append(s)
             }
-            let sortedFolders = folderOrder.compactMap { folders[$0] }.sorted { ($0.sessions.first?.lastActivityAt ?? 0) > ($1.sessions.first?.lastActivityAt ?? 0) }
+            let sortedFolders = folderOrder.compactMap { folders[$0] }.sorted {
+                if $0.scratch != $1.scratch { return !$0.scratch }
+                return ($0.sessions.first?.lastActivityAt ?? 0) > ($1.sessions.first?.lastActivityAt ?? 0)
+            }
             groups.append(CliDeviceGroup(device: device, folders: sortedFolders, count: mine.count))
         }
         return groups.sorted {
@@ -113,7 +154,7 @@ public enum CliSessions {
     /// Most recently used folders on a computer, for the new-session sheet.
     public static func recentCwds(_ sessions: [CliSession], deviceId: String, limit: Int = 8) -> [String] {
         var latest: [String: Int] = [:]
-        for s in sessions where s.deviceId == deviceId && !s.cwd.isEmpty { latest[s.cwd] = max(latest[s.cwd] ?? 0, s.lastActivityAt) }
+        for s in sessions where s.deviceId == deviceId && !s.cwd.isEmpty && !isScratchCwd(s.cwd) { latest[s.cwd] = max(latest[s.cwd] ?? 0, s.lastActivityAt) }
         return latest.sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }.prefix(limit).map(\.key)
     }
 

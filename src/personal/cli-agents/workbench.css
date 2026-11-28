@@ -244,7 +244,7 @@
 .na-message-box .na-model-label{font-size:13px;color:var(--na-ink);padding:0 6px;max-width:16ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* --- tree (batch 2) --- */
-.na-stage .cli-app .na-older{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;min-height:28px;padding:0 6px 0 2px;border:0;border-radius:6px;background:transparent;color:var(--na-muted);font-size:12px;cursor:pointer;text-align:left}
+.na-stage .cli-app .na-older{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;min-height:28px;padding:0 6px 0 19px;border:0;border-radius:6px;background:transparent;color:var(--na-muted);font-size:12px;cursor:pointer;text-align:left}
 .na-stage .cli-app .na-older:hover,.na-stage .cli-app .na-older:focus-visible{background:var(--na-hover);color:var(--na-ink)}
 /* --- end tree --- */
 
