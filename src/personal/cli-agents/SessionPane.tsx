@@ -352,12 +352,18 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
             data-muted={activeTeamRun ? undefined : "1"}
             aria-controls={teamPanelId}
             aria-expanded={teamOpen}
-            aria-label={activeTeamRun ? `协作 ${activeTeamRun.workers.length}` : "协作记录"}
+            aria-label={activeTeamRun ? (() => {
+              const count = activeTeamRun.workers.filter((w) => !(w.status === "failed" && !w.sessionKey)).length;
+              return count > 0 ? `协作 ${count}` : "协作";
+            })() : "协作记录"}
             title={activeTeamRun ? "协作详情" : "历史协作"}
             onClick={() => { setWorkspaceOpen(false); setTeamOpen((open) => !open); }}
           >
             <Network size={14} aria-hidden="true" />
-            <span>{activeTeamRun ? `协作 ${activeTeamRun.workers.length}` : "协作"}</span>
+            <span>{activeTeamRun ? (() => {
+              const count = activeTeamRun.workers.filter((w) => !(w.status === "failed" && !w.sessionKey)).length;
+              return count > 0 ? `协作 ${count}` : "协作";
+            })() : "协作"}</span>
             {teamDotTone ? <i className="na-team-trigger-dot" data-tone={teamDotTone} aria-hidden="true" /> : null}
           </button>
         ) : null}

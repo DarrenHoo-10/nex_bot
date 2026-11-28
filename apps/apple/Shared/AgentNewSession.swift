@@ -546,6 +546,9 @@ struct AgentNewSessionPage: View {
                 .focused($focused)
                 .disabled(blocker != nil)
                 .onSubmit(start)
+                #if os(macOS)
+                .agentImagePaste(active: focused && blocker == nil, images: $images, error: $imageError)
+                #endif
             AgentImageDrafts(images: $images)
             if !imageError.isEmpty { Text(imageError).font(.caption).foregroundStyle(Theme.danger) }
             #if os(macOS)

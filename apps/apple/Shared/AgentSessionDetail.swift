@@ -1568,6 +1568,7 @@ private struct AgentComposer: View {
     @State private var showingSkills = false
     @State private var showingModels = false
     @State private var catalog = CliModelCatalog(models: [])
+    @FocusState private var composerFocused: Bool
 
     private var canSetOnResume: Bool { model.device(session.deviceId)?.cliAgents?.features.contains("launchOptions") == true }
     private var claudeInbox: Bool {
@@ -1760,9 +1761,13 @@ private struct AgentComposer: View {
                 .lineLimit(2...6)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
+                .focused($composerFocused)
                 .frame(minHeight: 34, alignment: .topLeading)
                 .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 2)
                 .onSubmit { if canSend { Task { await send() } } }
+                #if os(macOS)
+                .agentImagePaste(active: composerFocused, images: $images, error: $error)
+                #endif
 
             HStack(spacing: 8) {
                 AgentComposerAdd(

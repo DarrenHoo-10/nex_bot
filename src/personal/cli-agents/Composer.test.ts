@@ -207,6 +207,36 @@ describe("images", () => {
     await submit();
     expect(onSend.mock.calls[0][0]).toBe("![shot.png](/api/cli-agents/images/12345678-0000-4000-8000-000000000000)");
   });
+
+  it("attaches screenshots pasted via Electron desktop onClipboardImage and skips when focus is in another input or terminal", async () => {
+    let listener: ((image: { name: string; type: string; bytes: Uint8Array }) => void) | undefined;
+    const unsubscribe = vi.fn();
+    (window as unknown as { nex?: { onClipboardImage?: (cb: (image: { name: string; type: string; bytes: Uint8Array }) => void) => () => void } }).nex = {
+      onClipboardImage: (cb) => { listener = cb; return unsubscribe; },
+    };
+    try {
+      const onSend = vi.fn(async (_text: string) => ({ turn: 1 }));
+      await act(async () => { root.render(createElement(Composer, { session: session({ nativeId: "s-ipc" }), onSend, onInterrupt: async () => ({}), features: ["attach"] })); });
+      expect(listener).toBeTypeOf("function");
+
+      // Focus inside another textarea or terminal must NOT attach to this composer.
+      const other = document.createElement("textarea");
+      document.body.append(other);
+      other.focus();
+      await act(async () => { listener!({ name: "skip.png", type: "image/png", bytes: new Uint8Array([137, 80, 78, 71]) }); });
+      expect(container.querySelector(".na-file-chip")).toBeNull();
+      other.remove();
+
+      // Focus inside the composer attaches the screenshot cleanly.
+      area().focus();
+      await act(async () => { listener!({ name: "clip.png", type: "image/png", bytes: new Uint8Array([137, 80, 78, 71]) }); });
+      expect(container.querySelector(".na-file-chip[data-image]")).toBeTruthy();
+      await submit();
+      expect(onSend.mock.calls[0][0]).toBe("![clip.png](/api/cli-agents/images/12345678-0000-4000-8000-000000000000)");
+    } finally {
+      delete (window as unknown as { nex?: unknown }).nex;
+    }
+  });
 });
 
 describe("the toolbar under the message", () => {

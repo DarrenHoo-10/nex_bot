@@ -47,6 +47,15 @@ describe("transcript session", () => {
       files: [new File(["hello"], "note.txt", { type: "text/plain" })],
     });
     expect(text).toEqual([]);
+    const untypedPng = new File([Uint8Array.from([137, 80, 78, 71])], "diagram.png", { type: "" });
+    const untypedJpg = new File([Uint8Array.from([255, 216, 255])], "photo.jpg", { type: "" });
+    const inferred = imageFilesFromClipboard({
+      items: [{ kind: "file", type: "", getAsFile: () => untypedPng }],
+      files: [untypedPng, untypedJpg],
+    });
+    expect(inferred.map((file) => [file.name, file.type, file.size])).toEqual([["diagram.png", "image/png", 4]]);
+    const fromFiles = imageFilesFromClipboard({ items: [], files: [untypedJpg] });
+    expect(fromFiles.map((file) => [file.name, file.type, file.size])).toEqual([["photo.jpg", "image/jpeg", 3]]);
   });
 
   it("finds the earliest unread main message or unread topic card in timeline order", () => {

@@ -114,7 +114,7 @@ interface FakeDevice {
   msgs: Array<Record<string, any>>;
   seq: number;
   sentTexts: Array<{ ref: string; text: string }>;
-  started: Array<{ engine: string; cwd: string; ref: string; team?: Record<string, unknown>; permissions?: string; worktree?: Record<string, unknown> }>;
+  started: Array<{ engine: string; cwd: string; ref: string; team?: Record<string, unknown>; permissions?: string; model?: string; effort?: string; worktree?: Record<string, unknown> }>;
   archivedOps: Array<{ ref: string; archived: boolean }>;
   interruptedRefs: string[];
   onOp: (message: Record<string, any>) => Record<string, any> | Promise<Record<string, any> | undefined> | undefined;
@@ -143,6 +143,41 @@ async function connectDevice(f: Awaited<ReturnType<typeof fixture>>, name = "win
     interruptedRefs: [],
     onOp: (message) => {
       if (message.op === "git") return { ok: true, result: { source: "folder", head: "abc1234", branch: "main" } };
+      if (message.op === "models") {
+        const engine = String(message.args.engine);
+        if (engine === "agy") {
+          return {
+            ok: true,
+            result: {
+              current: "MODEL_PLACEHOLDER_M525",
+              currentEffort: "high",
+              models: [
+                { id: "MODEL_PLACEHOLDER_M525", label: "Gemini 4 Hydrogen", efforts: ["low", "medium", "high"] },
+                { id: "MODEL_PLACEHOLDER_M500", label: "Claude Sonnet 4.6", efforts: ["low", "high"] },
+              ],
+            },
+          };
+        }
+        if (engine === "codex") {
+          return {
+            ok: true,
+            result: {
+              current: "gpt-6.2-sol",
+              models: [
+                { id: "gpt-6.2-sol", label: "gpt-6.2-sol", efforts: ["low", "medium", "high"] },
+                { id: "gpt-5.4", label: "gpt-5.4", efforts: ["medium", "high"] },
+              ],
+            },
+          };
+        }
+        return {
+          ok: true,
+          result: {
+            current: "claude-opus-4-6",
+            models: [{ id: "claude-opus-4-6", label: "Claude Opus 4.6", efforts: ["low", "medium", "high"] }],
+          },
+        };
+      }
       if (message.op === "start") {
         // Mirror real DeviceGit.worktree validation so invalid requestId formats fail tests immediately.
         if (message.args.worktree && !/^[A-Za-z0-9-]{8,64}$/.test(String(message.args.worktree.requestId ?? ""))) {
@@ -158,6 +193,8 @@ async function connectDevice(f: Awaited<ReturnType<typeof fixture>>, name = "win
           ref,
           team: message.args.team,
           permissions: message.args.permissions,
+          model: message.args.model,
+          effort: message.args.effort,
           worktree: message.args.worktree,
         });
         // Announce the newly launched worker session as idle right away
@@ -317,7 +354,8 @@ describe("pure nex command validator & worktree trust fixes", () => {
   it("builds single-launch Codex MCP flags and lead instructions", () => {
     expect(leadInstruction("off")).toBe("");
     expect(leadInstruction("prompt")).toContain("nex guide");
-    expect(leadInstruction("auto")).toContain("按需派活");
+    expect(leadInstruction("prompt")).toContain("仅在用户要求");
+    expect(leadInstruction("auto")).toContain("并行/独立审查");
 
     const args = codexMcpArgs({
       node: "C:\\node\\node.exe",
@@ -326,6 +364,7 @@ describe("pure nex command validator & worktree trust fixes", () => {
       sessionToken: "abc.codex:1",
       allowInAsk: true,
     });
+    expect(args).toContain('mcp_servers.nex.tools.nex_models.approval_mode="approve"');
     expect(args).toContain('mcp_servers.nex.tools.nex_start.approval_mode="approve"');
     expect(args).toContain('mcp_servers.nex.tools.nex_report.approval_mode="approve"');
   });
@@ -575,7 +614,7 @@ describe("Core TeamScheduler end-to-end (Phase 1 acceptance)", () => {
     expect(startCodex.ok).toBe(true);
     expect(startCodex.data?.worker).toBe("codex-1");
     expect(dev.started[1]?.cwd).toBe(dev.started[0]?.cwd);
-    expect(dev.started[1]?.permissions).toBe("readonly");
+    expect(dev.started[1]?.permissions).toBe("full");
 
     const codexRef = dev.started[1]!.ref as CliSessionRef;
     // Codex terminal worker gets constant 1-line pointer, NOT pasted spec
@@ -816,7 +855,7 @@ describe("Core TeamScheduler end-to-end (Phase 1 acceptance)", () => {
     expect(dev.sentTexts.filter((s) => s.ref === downstreamRef).length).toBe(sentBefore);
   });
 
-  it("omits permissions for AGY engine-default mode, falls back to pointers above 32 KiB, and propagates multi-level --after failures", async () => {
+  it("enforces full-access permissions for collaboration workers, falls back to pointers above 32 KiB, and propagates multi-level --after failures", async () => {
     const f = await fixture();
     const dev = await connectDevice(f);
     const leadRef: CliSessionRef = "agy:lead-r2";
@@ -827,13 +866,13 @@ describe("Core TeamScheduler end-to-end (Phase 1 acceptance)", () => {
     }], { full: true });
     await until(() => f.app.cliHub.session(leadKey)?.online, "lead online");
 
-    // 1. AGY "跟随引擎默认" omits `permissions` in start args so agyDriver keeps "ask", and workerView shows "ask".
+    // 1. Collaboration workers always launch with permissions="full" (even if omitted or `ask` is passed).
     const bigSpec = "X".repeat(40 * 1024);
-    const s1 = await dev.teamCall(leadRef, "start", { agent: "agy", title: "大任务", body: bigSpec });
+    const s1 = await dev.teamCall(leadRef, "start", { agent: "agy", title: "大任务", body: bigSpec, permissions: "ask" });
     expect(s1.ok).toBe(true);
-    expect(dev.started[0]?.permissions).toBeUndefined();
+    expect(dev.started[0]?.permissions).toBe("full");
     const run1 = (await f.get(`cli-agents/teams?lead=${encodeURIComponent(leadKey)}`)).data.runs[0];
-    expect(run1.workers[0].permissions).toBe("ask");
+    expect(run1.workers[0].permissions).toBe("full");
 
     // 8a. AGY task > 32 KiB falls back to 1-line `nex task` pointer; `nex task` returns full 40 KiB spec.
     const w1Ref = dev.started[0]!.ref as CliSessionRef;
@@ -1023,5 +1062,87 @@ describe("Core TeamScheduler end-to-end (Phase 1 acceptance)", () => {
       return m?.status === "delivered";
     }, "mail retried and delivered after confirmed busy failure");
     expect(dev.sentTexts.filter((entry) => entry.ref === leadRef && entry.text.includes("汇报测试"))).toHaveLength(1);
+  });
+
+  it("exposes live harness models, resolves/validates --model upfront, enforces full permissions, and excludes launch failures from maxWorkers", async () => {
+    const f = await fixture();
+    const dev = await connectDevice(f);
+    const leadRef: CliSessionRef = "claude:lead-models";
+    const leadKey = `${dev.id}:${leadRef}`;
+    dev.sessions([{
+      engine: "claude", nativeId: "lead-models", configDir: "C:/cfg", cwd: "C:/repo",
+      title: "模型与名额测试", state: "idle", liveIn: "nexbot", sendVia: "inbox", terminal: "hc://lead-models", lastActivityAt: Date.now(),
+    }], { full: true });
+    await until(() => f.app.cliHub.session(leadKey)?.online, "lead-models online");
+
+    // 1. `nex models` & `nex agents` expose live model catalogs from `hub.models`.
+    const modelsAll = await dev.teamCall(leadRef, "models");
+    expect(modelsAll.ok).toBe(true);
+    expect(modelsAll.text).toContain("MODEL_PLACEHOLDER_M525");
+    expect(modelsAll.text).toContain("Gemini 4 Hydrogen");
+    expect(modelsAll.text).toContain("gpt-6.2-sol");
+
+    const modelsAgy = await dev.teamCall(leadRef, "models", { agent: "agy" });
+    expect(modelsAgy.ok).toBe(true);
+    expect(modelsAgy.text).toContain("MODEL_PLACEHOLDER_M525");
+    expect(modelsAgy.text).not.toContain("gpt-6.2-sol");
+
+    const agentsRes = await dev.teamCall(leadRef, "agents");
+    expect(agentsRes.ok).toBe(true);
+    expect(agentsRes.text).toContain("MODEL_PLACEHOLDER_M525");
+    expect(agentsRes.text).toContain("full（固定最高权限）");
+
+    // 2. Invalid `--model` is rejected upfront with the live available model list and creates NO worker or run row.
+    const badModel = await dev.teamCall(leadRef, "start", { agent: "agy", title: "无效模型", body: "测模型校验", model: "nonexistent-99" });
+    expect(badModel.ok).toBe(false);
+    expect(badModel.error).toContain("MODEL_PLACEHOLDER_M525");
+    expect(dev.started).toHaveLength(0);
+    expect((await f.get(`cli-agents/teams?lead=${encodeURIComponent(leadKey)}`)).data.runs).toHaveLength(0);
+
+    // 3. Nicknames / display labels resolve cleanly to exact harness model IDs, and permissions stay forced to "full".
+    const byHydrogen = await dev.teamCall(leadRef, "start", {
+      agent: "agy", title: "写贪吃蛇", body: "实现贪吃蛇", model: "hydrogen", effort: "high", permissions: "edits",
+    });
+    expect(byHydrogen.ok).toBe(true);
+    expect(dev.started[0]?.model).toBe("MODEL_PLACEHOLDER_M525");
+    expect(dev.started[0]?.effort).toBe("high");
+    expect(dev.started[0]?.permissions).toBe("full");
+
+    const byCodexLabel = await dev.teamCall(leadRef, "start", {
+      agent: "codex", title: "审查", body: "只读审查", model: "6.2 sol", permissions: "readonly",
+    });
+    expect(byCodexLabel.ok).toBe(true);
+    expect(dev.started[1]?.model).toBe("gpt-6.2-sol");
+    expect(dev.started[1]?.permissions).toBe("full");
+
+    // 4. Launch-failed workers (`status='failed'`, `session_key=NULL`) MUST NOT consume `maxWorkers` (default 5).
+    const baseOnOp = dev.onOp;
+    let failStarts = 2;
+    dev.onOp = (message) => {
+      if (message.op === "start" && failStarts > 0) {
+        failStarts--;
+        return { ok: false, error: { code: "unknown", message: "simulated launch failure" } };
+      }
+      return baseOnOp(message);
+    };
+    const f1 = await dev.teamCall(leadRef, "start", { agent: "agy", title: "失败启动1", body: "模拟失败" });
+    const f2 = await dev.teamCall(leadRef, "start", { agent: "agy", title: "失败启动2", body: "模拟失败" });
+    expect(f1.ok).toBe(false);
+    expect(f2.ok).toBe(false);
+    dev.onOp = baseOnOp;
+
+    // Already have 2 live workers + 2 launch-failed workers -> 3 more live workers must STILL succeed (total 5 live)!
+    for (let i = 1; i <= 3; i++) {
+      const ok = await dev.teamCall(leadRef, "start", { agent: "agy", title: `有效工人${i}`, body: `任务${i}` });
+      expect(ok.ok).toBe(true);
+    }
+    // Now 5 live workers exist -> 6th live worker must hit the cap.
+    const overCap = await dev.teamCall(leadRef, "start", { agent: "agy", title: "超限工人", body: "应被拒绝" });
+    expect(overCap.ok).toBe(false);
+    expect(overCap.error).toContain("上限");
+
+    const statusRes = await dev.teamCall(leadRef, "status");
+    expect(statusRes.ok).toBe(true);
+    expect(statusRes.text).toContain("有效工人 5/5");
   });
 });

@@ -152,7 +152,6 @@ export function TeamPanel({
             <header className="na-team-panel-head">
               <div className="na-team-panel-title">
                 <strong title={activeRun.title}>{activeRun.title}</strong>
-                <small>工人 {activeRun.workers.length}/{activeRun.limit}</small>
               </div>
               <span className="na-team-status" data-tone={activeRun.status === "paused" ? "paused" : "running"}>
                 {TEAM_RUN_STATUS_LABEL[activeRun.status]}

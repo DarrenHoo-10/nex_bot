@@ -130,12 +130,26 @@ export function imageFilesFromClipboard(clipboardData: { items?: ArrayLike<Clipb
   return images;
 }
 
+const IMAGE_EXT_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+function inferImageMime(name: string): string {
+  const match = /\.([a-z0-9]+)$/i.exec(name.trim());
+  return match ? (IMAGE_EXT_MIME[match[1]!.toLowerCase()] ?? "") : "";
+}
+
 function imageFilesFromItems(items: ArrayLike<ClipboardFileItem> | null | undefined): File[] {
   if (!items?.length) return [];
   const images: File[] = [];
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
-    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    if (item.kind !== "file") continue;
+    if (item.type && !item.type.startsWith("image/")) continue;
     const file = item.getAsFile();
     if (!file) continue;
     const named = namedImageFile(file, item.type);
@@ -145,7 +159,7 @@ function imageFilesFromItems(items: ArrayLike<ClipboardFileItem> | null | undefi
 }
 
 function namedImageFile(file: File, itemType: string): File | null {
-  const mime = file.type || itemType;
+  const mime = file.type || itemType || inferImageMime(file.name);
   if (!mime.startsWith("image/")) return null;
   const extension = mime === "image/jpeg" || mime === "image/jpg" ? "jpg" : (mime.slice("image/".length).replace(/[^a-z0-9]+/gi, "") || "png");
   const name = file.name.trim() || `截图.${extension}`;

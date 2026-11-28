@@ -1,12 +1,7 @@
 // Collaboration ("协作") preferences inside SettingsPage (design section 9.6).
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
-import {
-  cliPermissionLabel,
-  cliPermissionModes,
-  type CliEngine,
-  type CliPermissionMode,
-} from "../../../shared/cli-agents";
+import type { CliEngine } from "../../../shared/cli-agents";
 import { userErrorText } from "../../lib/http-errors";
 import { fetchTeamSettings, saveTeamSettings } from "./api";
 import { AGENT_LABEL } from "./session-model";
@@ -124,14 +119,12 @@ export function TeamSettings({ active }: { active: boolean }) {
 
       <section className="preferences-section">
         <div className="preferences-section-heading">
-          <h3>可用 Agent 与默认权限</h3>
+          <h3>可用 Agent</h3>
         </div>
         <div className="team-engine-list">
           {SUPPORTED_TEAM_ENGINES.map((engine) => {
             const installed = settings.installedEngines.includes(engine);
             const enabled = settings.enabledEngines.includes(engine);
-            const modes = cliPermissionModes(engine);
-            const perm = settings.defaultPermissions[engine] ?? "default";
             return (
               <div key={engine} className="team-engine-row">
                 <div className="team-engine-info">
@@ -139,22 +132,6 @@ export function TeamSettings({ active }: { active: boolean }) {
                   <strong>{AGENT_LABEL[engine]}</strong>
                   <span className="team-engine-installed">{installed ? "已安装" : "未检测到"}</span>
                 </div>
-                <select
-                  aria-label={`${AGENT_LABEL[engine]} 默认权限`}
-                  value={perm}
-                  disabled={saving || !enabled}
-                  onChange={(event) => void update({
-                    defaultPermissions: {
-                      ...settings.defaultPermissions,
-                      [engine]: event.target.value as CliPermissionMode | "default",
-                    },
-                  })}
-                >
-                  <option value="default">跟随引擎默认</option>
-                  {modes.map((mode) => (
-                    <option key={mode} value={mode}>{cliPermissionLabel(engine, mode)}</option>
-                  ))}
-                </select>
                 <label className="device-switch">
                   <input
                     type="checkbox"

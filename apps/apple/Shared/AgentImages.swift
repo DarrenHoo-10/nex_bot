@@ -73,17 +73,54 @@ struct AgentComposerAdd: View {
     }
 
     private func paste() {
-        #if os(iOS)
-        let bytes = UIPasteboard.general.image?.pngData()
-        #else
-        let clipboard = NSPasteboard.general
-        let bytes = clipboard.data(forType: .png) ?? clipboard.data(forType: .tiff)
-        #endif
-        guard let bytes else { error = "剪贴板里没有可用的图片"; return }
-        add("粘贴的图片.png", bytes: bytes)
+        if !Self.pasteImageFromClipboard(to: &images, error: &error, requireImageOnly: false) {
+            error = "剪贴板里没有可用的图片"
+        }
     }
 
     private func add(_ name: String, bytes: Data) {
+        Self.append(name: name, bytes: bytes, to: &images, error: &error)
+    }
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"]
+
+    /// Reads an image (or copied image files on macOS) from the system clipboard and appends it to `images`.
+    /// When `requireImageOnly` is true (direct Cmd+V inside the text box), plain-text clipboards return false
+    /// so text paste continues normally.
+    @discardableResult
+    static func pasteImageFromClipboard(to images: inout [CliImageUpload], error: inout String, requireImageOnly: Bool = false) -> Bool {
+        #if os(iOS)
+        guard let bytes = UIPasteboard.general.image?.pngData() else { return false }
+        append(name: "粘贴的图片.png", bytes: bytes, to: &images, error: &error)
+        return true
+        #else
+        let clipboard = NSPasteboard.general
+        let files = (clipboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        let pictures = files.filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+        if !pictures.isEmpty {
+            for url in pictures {
+                if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 32 * 1024 * 1024 {
+                    error = "图片不能超过 32 MB"
+                    continue
+                }
+                guard let bytes = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+                    error = "无法读取所选图片"
+                    continue
+                }
+                append(name: url.lastPathComponent, bytes: bytes, to: &images, error: &error)
+            }
+            return true
+        }
+        if requireImageOnly, let text = clipboard.string(forType: .string), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        guard files.isEmpty, let bytes = clipboard.data(forType: .png) ?? clipboard.data(forType: .tiff) else { return false }
+        append(name: "粘贴的图片.png", bytes: bytes, to: &images, error: &error)
+        return true
+        #endif
+    }
+
+    static func append(name: String, bytes: Data, to images: inout [CliImageUpload], error: inout String) {
         guard images.count < ChatAttachment.maxCount else { error = "最多添加 5 张图片"; return }
         guard !bytes.isEmpty, bytes.count <= 32 * 1024 * 1024 else { error = "图片不能超过 32 MB"; return }
         guard let source = CGImageSourceCreateWithData(bytes as CFData, nil) else { error = "无法读取所选图片"; return }
@@ -105,6 +142,66 @@ struct AgentComposerAdd: View {
         error = "图片压缩失败"
     }
 }
+
+#if os(macOS)
+@MainActor
+private final class AgentPasteMonitorBox {
+    var active = false
+    var paste: @MainActor () -> Bool = { false }
+    private var token: Any?
+
+    func install() {
+        guard token == nil else { return }
+        token = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags == .command, !event.isARepeat,
+                  event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let self, self.active else { return false }
+                return self.paste()
+            }
+            return handled ? nil : event
+        }
+    }
+
+    func uninstall() {
+        if let token { NSEvent.removeMonitor(token) }
+        token = nil
+    }
+}
+
+private struct AgentMacImagePasteModifier: ViewModifier {
+    let active: Bool
+    @Binding var images: [CliImageUpload]
+    @Binding var error: String
+    @State private var box = AgentPasteMonitorBox()
+
+    func body(content: Content) -> some View {
+        let imagesBinding = $images
+        let errorBinding = $error
+        content
+            .onAppear {
+                box.active = active
+                box.paste = {
+                    AgentComposerAdd.pasteImageFromClipboard(to: &imagesBinding.wrappedValue, error: &errorBinding.wrappedValue, requireImageOnly: true)
+                }
+                box.install()
+            }
+            .onChange(of: active) { _, next in
+                box.active = next
+            }
+            .onDisappear {
+                box.uninstall()
+            }
+    }
+}
+
+extension View {
+    func agentImagePaste(active: Bool, images: Binding<[CliImageUpload]>, error: Binding<String>) -> some View {
+        modifier(AgentMacImagePasteModifier(active: active, images: images, error: error))
+    }
+}
+#endif
 
 /// Images about to be sent: only their thumbnails, which open the picture, each with a remove button on its corner.
 struct AgentImageDrafts: View {

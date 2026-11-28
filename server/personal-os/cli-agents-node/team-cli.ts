@@ -58,6 +58,7 @@ export interface TeamBinPaths {
 
 export const NEX_MCP_TOOL_NAMES = [
   "nex_agents",
+  "nex_models",
   "nex_start",
   "nex_status",
   "nex_inbox",
@@ -74,14 +75,16 @@ export const NEX_MCP_TOOL_NAMES = [
   "nex_note",
 ] as const;
 
-/** Concise lead-session instruction injected via AGY `systemPrompt.append` and
- * Codex `-c developer_instructions=...` (design §7.4). Empty when dispatch is off. */
+/** Restrained, static lead-session trigger injected ONLY on new sessions
+ * (AGY `systemPrompt.append` and Codex `-c developer_instructions=...`; never
+ * mutated on resume to preserve KV prefix cache). Detailed rules live in
+ * `nex guide` on demand. Empty when dispatch is off. */
 export function leadInstruction(mode: CliTeamDispatchMode): string {
   if (mode === "off") return "";
   if (mode === "auto") {
-    return "本会话支持 NexAgent 多 Agent 协作（命令行 `nex` 或 MCP 工具 `nex_*`）。当用户要求协作，或你判断需要拆开并行、交给其他 Agent 实现或审查时，先运行 `nex guide`（或调用 `nex_guide`）了解命令与规则，再按需派活。派活后立即结束本轮等待回报，不要轮询。";
+    return "支持 NexAgent 协作模式（`nex` / `nex_*`）：用户要求协作或适合并行/独立审查时，先执行 `nex guide`。";
   }
-  return "本会话支持 NexAgent 多 Agent 协作（命令行 `nex` 或 MCP 工具 `nex_*`）。当用户在对话中明确要求协作、让其他 Agent 实现/审查、或拆开并行分工时，先运行 `nex guide`（或调用 `nex_guide`）了解命令与规则，再按需派活。未获用户提出时不要自行派活；派活后立即结束本轮等待回报，不要轮询。";
+  return "支持 NexAgent 协作模式（`nex` / `nex_*`）：仅在用户要求多 Agent 协作或独立审查时，先执行 `nex guide`。";
 }
 
 /** Single-launch Codex `-c` overrides to mount the out-of-sandbox MCP bridge
@@ -204,7 +207,7 @@ const REPLY_LIMIT = 2 * 1024 * 1024;
 function usage() {
   return [
     "用法: nex <命令> [选项] [--json]",
-    "主会话命令: agents | start | status | inbox | send | reply | read | stop | done | guide",
+    "主会话命令: agents | models | start | status | inbox | send | reply | read | stop | done | guide",
     "工人命令:   task | ask | report | escalate | inbox | note",
     "运行 \`nex guide\` 查看完整协作说明。",
   ].join("\\n");
@@ -256,7 +259,7 @@ function parseCliArgs(argv) {
 
 function buildPayload(command, positional, flags) {
   const args = {};
-  if (command === "start") {
+  if (command === "start" || command === "models") {
     if (positional[0]) args.agent = positional[0];
   } else if (command === "send" || command === "read" || command === "stop") {
     if (positional[0]) args.worker = positional[0];
@@ -454,9 +457,16 @@ const REPLY_LIMIT = 2 * 1024 * 1024;
 
 const TOOLS = [
   { name: "nex_guide", command: "guide", description: "打印当前版本的多 Agent 协作完整指南与规则。", inputSchema: { type: "object", properties: {} } },
-  { name: "nex_agents", command: "agents", description: "查看本机可派活的 Agent、权限模式及默认权限。", inputSchema: { type: "object", properties: {} } },
+  { name: "nex_agents", command: "agents", description: "查看本机可派活的 Agent 及各引擎当前可用模型 ID（所有工人固定以最高权限启动）。", inputSchema: { type: "object", properties: {} } },
   {
-    name: "nex_start", command: "start", description: "派出一个协作工人（仅主会话可用）。",
+    name: "nex_models", command: "models", description: "查看指定（或全部）Agent 当前可用模型 ID、名称与推理强度，启动协作前用于选择准确 model。",
+    inputSchema: {
+      type: "object",
+      properties: { agent: { type: "string", enum: ["claude", "codex", "agy"] } },
+    },
+  },
+  {
+    name: "nex_start", command: "start", description: "以最高权限模式派出一个协作工人（仅主会话可用）；指定 model 时请先从 nex_agents / nex_models 获取准确模型 ID。",
     inputSchema: {
       type: "object",
       properties: {
@@ -466,8 +476,7 @@ const TOOLS = [
         role: { type: "string" },
         in: { type: "string", description: "here | worktree | <工人名>" },
         after: { type: "string", description: "逗号分隔的依赖工人名" },
-        permissions: { type: "string" },
-        model: { type: "string" },
+        model: { type: "string", description: "来自 nex_agents / nex_models 的精确模型 ID" },
         effort: { type: "string" },
       },
       required: ["agent", "title", "body"],

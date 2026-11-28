@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, BookOpen, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2, Shield, ChevronRight } from "lucide-react";
 import { MAX_SEND_TEXT, cliPermissionLabel, utf8ByteLength, type CliContextUsage, type CliPermissionMode, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, fetchSkills, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
+import { desktop } from "../api";
 import { imageFilesFromClipboard } from "../transcript-session";
 import {attachmentPreview,attachmentReferences,getExtras,isPickedImage,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
 import { composerMode } from "./session-model";
@@ -177,6 +178,33 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
+  }, []);
+
+  // In the Windows Electron client, image-only Ctrl+V is intercepted in main (`nex-client-clipboard.mjs`)
+  // and forwarded via `onClipboardImage` so screenshots paste directly into the NexAgent composer.
+  const addFilesRef = useRef(addFiles);
+  addFilesRef.current = addFiles;
+  const pasteBlockedRef = useRef(false);
+  pasteBlockedRef.current = busy || !!draft?.busy;
+  const isSideDraftRef = useRef(false);
+  isSideDraftRef.current = !!draft;
+  useEffect(() => {
+    const bridge = (window as unknown as { nex?: typeof desktop }).nex ?? desktop;
+    return bridge?.onClipboardImage?.((image) => {
+      const form = formRef.current;
+      if (!form || !form.isConnected || pasteBlockedRef.current) return;
+      if (form.closest("[hidden], [inert], [aria-hidden='true']")) return;
+      const activeEl = document.activeElement;
+      if (isSideDraftRef.current && (!activeEl || !form.contains(activeEl))) return;
+      if (activeEl && activeEl !== document.body && !form.contains(activeEl)) {
+        if (activeEl.closest(".cli-term, input, textarea, [contenteditable='true']")) return;
+      }
+      const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
+      if (!bytes.byteLength || !image.type.startsWith("image/")) return;
+      const blob = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(blob).set(bytes);
+      addFilesRef.current([new File([blob], image.name.trim() || "截图.png", { type: image.type })]);
+    });
   }, []);
 
   useEffect(() => {

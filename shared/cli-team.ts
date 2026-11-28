@@ -13,6 +13,7 @@ export const CLI_TEAM_DISPATCH_MODES: readonly CliTeamDispatchMode[] = ["prompt"
 
 export const CLI_TEAM_COMMANDS = [
   "agents",
+  "models",
   "start",
   "status",
   "inbox",
