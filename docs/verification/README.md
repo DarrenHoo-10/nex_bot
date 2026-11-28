@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [并行工具回放、只读飞书调用与群报错通道通知修复 · Core 与 Web UI 部署（2026-11-28）](runtime-replay-feishu-core-20261128.md)
+
 - [Mac / iOS 原生 NexAgent 工作台补齐与 Mac 应用内更新修复 · 0.2.56 与 Core 发布记录（2026-11-28）](apple-nexagent-workbench-release-0256-20261128.md)
 
 - [NexAgent 无时间限制与真实原生归档/删除、全端终端升级与分支选择 · 0.9.63 四端发布记录（2026-11-28）](nexagent-native-manage-release-0963-20261128.md)
