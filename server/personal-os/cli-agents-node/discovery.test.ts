@@ -345,7 +345,7 @@ describe("SessionDiscovery project and fork fields", () => {
     expect("repoRoot" in discovery.snapshot()[0]).toBe(false);
   });
 
-  it("hides sessions of the SDK and the ones archived in the desktop app", async () => {
+  it("hides sessions of the SDK and marks desktop-archived sessions as archived", async () => {
     claudeTranscript(CID(1), "kept");
     claudeTranscript(CID(2), "archived");
     const sdk = claudeTranscript(CID(3), "automation");
@@ -357,7 +357,11 @@ describe("SessionDiscovery project and fork fields", () => {
       writeFileSync(path.join(store, `local_${CID(2)}.json`), JSON.stringify({ sessionId: `local_${CID(2)}`, cliSessionId: CID(2), isArchived: true }));
       const { discovery } = make({ claudeDesktopRoots: [desktopRoot] });
       await discovery.start();
-      expect(discovery.snapshot().map((r) => r.nativeId)).toEqual([CID(1)]);
+      const rows = [...discovery.snapshot()].sort((a, b) => a.nativeId.localeCompare(b.nativeId));
+      expect(rows.map((r) => [r.nativeId, r.archived])).toEqual([
+        [CID(1), undefined],
+        [CID(2), true],
+      ]);
     } finally {
       rmSync(desktopRoot, { recursive: true, force: true });
     }
