@@ -14,6 +14,7 @@ struct FinanceTopicsView: View {
         self.conversationID = conversationID
         self.onClose = onClose
         _selected = State(initialValue: conversationID)
+        _pendingTopicScroll = State(initialValue: conversationID != nil)
     }
 
     @Environment(\.scenePhase) private var scenePhase
@@ -36,7 +37,8 @@ struct FinanceTopicsView: View {
     @State private var didAutoScrollTopics = false
     @State private var pendingTopicReadSeq: Int?
     @State private var unreadMessageAnchor: String?
-    @State private var scrolledUnreadMessageKey = ""
+    @State private var pendingTopicScroll = false
+    @State private var topicScrollRevision = 0
     @State private var atBottom = true
     private var current: FinanceTopic? { topics.first { $0.id == selected } }
     private var draft: Binding<String> { Binding(get: { drafts[selected ?? "new"] ?? "" },set: { drafts[selected ?? "new"] = $0 }) }
@@ -49,7 +51,7 @@ struct FinanceTopicsView: View {
                 if let onClose {
                     Button("关闭", action: onClose)
                 } else {
-                    Button("新对话",systemImage:"plus") { selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; pendingTopicReadSeq = nil; unreadMessageAnchor = nil; scrolledUnreadMessageKey = ""; atBottom = true; generation += 1 }
+                    Button("新对话",systemImage:"plus") { selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; pendingTopicReadSeq = nil; unreadMessageAnchor = nil; pendingTopicScroll = false; atBottom = true; generation += 1 }
                         .disabled(sending || pending != nil)
                 }
             }
@@ -59,7 +61,7 @@ struct FinanceTopicsView: View {
                     HStack(alignment: .top) {
                         if conversationID == nil {
                             Button("返回聊天") {
-                                selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; pendingTopicReadSeq = nil; unreadMessageAnchor = nil; scrolledUnreadMessageKey = ""; atBottom = true; generation += 1
+                                selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; pendingTopicReadSeq = nil; unreadMessageAnchor = nil; pendingTopicScroll = false; atBottom = true; generation += 1
                             }
                         }
                         VStack(alignment: .leading, spacing: 2) {
@@ -106,13 +108,23 @@ struct FinanceTopicsView: View {
                         guard selected == nil, let target else { return }
                         DispatchQueue.main.async { proxy.scrollTo(target, anchor: .top) }
                     }
-                    .onChange(of: unreadMessageAnchor) { _, target in
-                        guard let topicID = selected, let target else { return }
-                        let key = "\(topicID):\(target)"
-                        guard scrolledUnreadMessageKey != key else { return }
-                        scrolledUnreadMessageKey = key
-                        atBottom = false
-                        DispatchQueue.main.async { proxy.scrollTo(target, anchor: .top) }
+                    .task(id: "\(selected ?? "")|\(topicScrollRevision)") {
+                        guard selected != nil, topicScrollRevision > 0 else { return }
+                        if let target = unreadMessageAnchor, messages.contains(where: { $0.id == target }) {
+                            atBottom = false
+                            for delay in [0, 80, 260] {
+                                if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                                guard !Task.isCancelled else { return }
+                                proxy.scrollTo(target, anchor: .top)
+                            }
+                        } else if !messages.isEmpty {
+                            atBottom = true
+                            for delay in [0, 80, 260] {
+                                if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                                guard !Task.isCancelled else { return }
+                                proxy.scrollTo("topic-bottom", anchor: .bottom)
+                            }
+                        }
                     }
                 }
                 if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
@@ -208,7 +220,7 @@ struct FinanceTopicsView: View {
         let chosen = topics.first { $0.id == id }
         pendingTopicReadSeq = (chosen?.unread ?? 0) > 0 ? (chosen?.readSeq ?? 0) : nil
         unreadMessageAnchor = nil
-        scrolledUnreadMessageKey = ""
+        pendingTopicScroll = true
         selected = id; editingMessageID = nil; taskRows = []; hasOlder = false
         messages = workspace.cachedTopicMessages(botID: botID, topicID: id)
         generation += 1
@@ -249,6 +261,10 @@ struct FinanceTopicsView: View {
                 }?.id
             }
             messages=history;taskRows=tasks;hasOlder=feed.hasOlder ?? false
+            if pendingTopicScroll {
+                pendingTopicScroll = false
+                topicScrollRevision += 1
+            }
             workspace.updateTopicLiveReplies(feed.streaming, botID: botID, conversationID: id)
             workspace.rememberTopicMessages(history, botID: botID, topicID: id, generation: feed.sync)
             if scenePhase == .active, let seq = messages.last?.seq, seq > (readSeq[id] ?? 0) {

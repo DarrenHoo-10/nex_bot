@@ -617,4 +617,36 @@ describe("feishu connector in disposable Core", () => {
     expect(f.app.store.all("SELECT conversation_id FROM agent_topics WHERE bot_id=?", f.bot.id)).toHaveLength(1);
     expect(f.app.store.all("SELECT id FROM feishu_delivery_parts WHERE chat_id='oc_err' AND content LIKE '%出错了%'")).toHaveLength(0);
   }, 60_000);
+
+  it("includes Feishu respond-first plan guidance and patches interim plan text onto the placeholder before final reply", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    let releaseFinal!: () => void;
+    const holdFinal = new Promise<void>((resolve) => { releaseFinal = resolve; });
+    f.model.scripts.push(
+      {
+        kind: "openai-tool",
+        text: "收到，初步方案：1. 更新助手名称；2. 回报确认结果。",
+        calls: [{ id: "rename-with-plan", name: "broker", args: JSON.stringify({ action: "agent.update", botId: f.bot.id, name: "响应助手" }) }],
+      },
+      { kind: "openai-text", text: "已完成改名，当前名字为响应助手。", waitFor: holdFinal },
+    );
+    f.fake.deliver("cli_fake", messageEvent({
+      messageId: "om_plan_1",
+      chatId: "oc_plan",
+      senderOpenId: "ou_owner",
+      content: JSON.stringify({ text: "帮我设计方案并把名字改成响应助手" }),
+    }));
+    await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_plan_1'")?.task_id);
+    const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_plan_1'")!.task_id);
+    expect(f.app.runtime.systemPrompt(taskId)).toContain("飞书交互规范");
+    expect(f.app.runtime.systemPrompt(taskId)).toContain("初步方案");
+
+    await until(() => f.fake.sent.some((entry) => entry.path === "patch" && JSON.stringify(entry.body).includes("初步方案")));
+    releaseFinal();
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    await until(() => f.fake.sent.some((entry) => entry.path === "patch" && JSON.stringify(entry.body).includes("已完成改名")));
+    const patches = f.fake.sent.filter((entry) => entry.path === "patch");
+    expect(JSON.stringify(patches.at(-1)?.body)).toContain("已完成改名");
+  }, 60_000);
 });

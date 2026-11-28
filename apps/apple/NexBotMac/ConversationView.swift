@@ -263,6 +263,7 @@ private struct MessageList: View {
                     proxy.scrollTo(seq, anchor: .top)
                 }
             } else {
+                atBottom = true
                 for delay in [0, 60, 300] {
                     try? await Task.sleep(for: .milliseconds(delay))
                     guard !Task.isCancelled else { return }

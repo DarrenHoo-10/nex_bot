@@ -151,7 +151,7 @@ final class JobRenderingTests: XCTestCase {
         return store
     }
 
-    /// Report cards follow the job's current stage: 回复 on a question, 验收 / 修改 on a todo delivery, 停止 while open.
+    /// Report cards follow the job's current stage: 回复 on a question, 验收 / 修改 on a todo delivery.
     @MainActor func testReportCards() async throws {
         let store = try await workspace()
         XCTAssertEqual(store.state?.openJobs(botID: "b1").count, 3)

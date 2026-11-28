@@ -7,13 +7,10 @@ import { ConversationActionButton } from "./ConversationActionButton";
 export interface JobCardActions {
   open(jobId: string): void;
   reply(job: Job): void;
-  stop(job: Job): void;
   retry(job: Job): void;
   accept(job: Job): void;
   revise(job: Job): void;
 }
-/** Stages in which a job can still be stopped from its card. A failed job is retried or opened instead. */
-const stoppable = new Set(["running", "queued", "approval", "question", "blocked"]);
 /** A failure reads as its first sentence; the technical rest (addresses, codes, counts) folds into 详细信息. */
 export function splitFailure(text: string) {
   // A raw provider error (status code, JSON, a URL) has no readable sentence to lead with.
@@ -48,9 +45,8 @@ export function JobReportCard({ message, job, hasReply, busy, renderContent, act
         {stage === "failed" ? <><ConversationActionButton disabled={busy} onClick={() => actions.retry(job)}>重试</ConversationActionButton><ConversationActionButton tone="dark" onClick={() => actions.open(job.id)}>查看</ConversationActionButton></> : null}
       </div> : null}
     </article>
-    {activeReport && job && stage && stoppable.has(stage) ? <div className="job-response-actions" role="group" aria-label="任务操作">
-      {stage === "question" ? <ConversationActionButton size="compact" disabled={busy} onClick={() => actions.reply(job)}>回复</ConversationActionButton> : null}
-      <ConversationActionButton size="compact" tone="dark" disabled={busy} onClick={() => actions.stop(job)}>停止</ConversationActionButton>
+    {activeReport && job && stage === "question" ? <div className="job-response-actions" role="group" aria-label="任务操作">
+      <ConversationActionButton size="compact" disabled={busy} onClick={() => actions.reply(job)}>回复</ConversationActionButton>
     </div> : null}
   </>;
 }

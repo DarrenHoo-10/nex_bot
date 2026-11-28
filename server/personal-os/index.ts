@@ -177,6 +177,7 @@ export async function createPersonalApp(options: AppOptions) {
     ownershipAllowed: options.feishu?.ownershipAllowed ?? ((appId: string) => finance.mayUseChannel(appId)),
   });
   agents.onProfileChanged = botId => feishu.queueProfile(botId);
+  runtime.onTaskProgress = ({ taskId, text }) => { if (!closing) feishu.onTaskProgress(taskId, text); };
   finance.startReports(report => feishu.ingestReport(report));
   if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
   agents.onPublished = (botId, publication) => {

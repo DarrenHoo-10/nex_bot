@@ -172,6 +172,15 @@ public final class WorkspaceStore {
         let c = ConversationStore(botID: botID, workspace: self); conversations[botID] = c; return c
     }
 
+    private func armConversationEntry(_ botID: String) {
+        let conv = conversation(for: botID)
+        if let bot = self.bot(botID), bot.unreadCount > bot.topicUnreadCount {
+            conv.prepareUnreadJump(readSeq: bot.readSeq)
+        } else {
+            conv.prepareBottomEntry()
+        }
+    }
+
     /// Chooses the open conversation and loads it.
     public func select(_ botID: String?) {
         // Choosing another contact (or none) leaves a search-result view; the open conversation keeps it. Use ``showLatest(botID:)``
@@ -179,12 +188,7 @@ public final class WorkspaceStore {
         for (id, c) in conversations where id != botID && c.focusedMessageID != nil { leaveHistory(id, reload: false) }
         guard botID != selectedBotID else { return }
         if let botID {
-            let conv = conversation(for: botID)
-            if let bot = self.bot(botID), bot.unreadCount > bot.topicUnreadCount {
-                conv.prepareUnreadJump(readSeq: bot.readSeq)
-            } else {
-                conv.clearUnreadAnchor()
-            }
+            armConversationEntry(botID)
         }
         selectedBotID = botID
         if started { openStream(); scheduleRefresh(after: 0) }
@@ -193,6 +197,9 @@ public final class WorkspaceStore {
     public func setChatVisible(_ visible: Bool) {
         guard chatVisible != visible else { return }
         chatVisible = visible
+        if visible, let botID = selectedBotID, conversation(for: botID).pendingUnreadReadSeq == nil {
+            armConversationEntry(botID)
+        }
         serial += 1
         if started { openStream(); scheduleRefresh(after: 0) }
     }
@@ -547,7 +554,7 @@ public final class WorkspaceStore {
                 feed = try await client.feed(bot: current, after: lastRow.seq, at: lastRow.row.int("created_at") ?? 0)
             }
             guard request == serial, selectedBotID == current else { return }
-            if target == nil, !conv.isLoaded, conv.pendingUnreadReadSeq == nil,
+            if target == nil, (!conv.isLoaded || conv.awaitingFreshUnread), conv.pendingUnreadReadSeq == nil,
                let nextBot = next.bots.first(where: { $0.id == current }),
                nextBot.unreadCount > nextBot.topicUnreadCount {
                 conv.prepareUnreadJump(readSeq: nextBot.readSeq)

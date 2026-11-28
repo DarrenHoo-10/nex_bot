@@ -80,15 +80,42 @@ export async function agyTranscript(dir: string, id: string): Promise<string> {
   return "";
 }
 
-function nativeRows(dir: string): AgyRecord[] {
+function nativeSummaries(dir: string): { rows: AgyRecord[]; hiddenIds: Set<string> } {
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(path.join(dir, "conversation_summaries.db"), { readOnly: true });
     db.exec("PRAGMA query_only = 1; PRAGMA busy_timeout = 50");
-    return db.prepare(`SELECT conversation_id, status, not_fully_idle, killed, title, workspace_uris, last_modified_time
-      FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT ?`).all(RECENT);
+    const columns = new Set(
+      (db.prepare("PRAGMA table_info(conversation_summaries)").all() as Array<{ name?: unknown }>)
+        .map((column) => agyString(column.name)),
+    );
+    const hasParentCol = columns.has("parent_conversation_id");
+    const hasDepthCol = columns.has("nesting_depth");
+    const hasParentsTable = Boolean(
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_parents'").get(),
+    );
+    const childConditions: string[] = [];
+    if (hasParentCol) childConditions.push("COALESCE(parent_conversation_id, '') != ''");
+    if (hasDepthCol) childConditions.push("COALESCE(nesting_depth, 0) > 0");
+    const hiddenIds = new Set<string>();
+    if (childConditions.length) {
+      const hidden = db.prepare(`SELECT conversation_id FROM conversation_summaries WHERE ${childConditions.join(" OR ")}`).all() as Array<{ conversation_id?: unknown }>;
+      for (const row of hidden) if (isAgyId(row.conversation_id)) hiddenIds.add(row.conversation_id);
+    }
+    if (hasParentsTable) {
+      const linked = db.prepare("SELECT conversation_id FROM conversation_parents").all() as Array<{ conversation_id?: unknown }>;
+      for (const row of linked) if (isAgyId(row.conversation_id)) hiddenIds.add(row.conversation_id);
+    }
+    const topConditions: string[] = [];
+    if (hasParentCol) topConditions.push("COALESCE(parent_conversation_id, '') = ''");
+    if (hasDepthCol) topConditions.push("COALESCE(nesting_depth, 0) = 0");
+    if (hasParentsTable) topConditions.push("conversation_id NOT IN (SELECT conversation_id FROM conversation_parents)");
+    const where = topConditions.length ? `WHERE ${topConditions.join(" AND ")}` : "";
+    const rows = db.prepare(`SELECT conversation_id, status, not_fully_idle, killed, title, workspace_uris, last_modified_time
+      FROM conversation_summaries ${where} ORDER BY last_modified_time DESC LIMIT ?`).all(RECENT);
+    return { rows, hiddenIds };
   } catch {
-    return [];
+    return { rows: [], hiddenIds: new Set() };
   } finally {
     db?.close();
   }
@@ -131,17 +158,26 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform, des
   ]);
   const metadata = agyRecord(cached.conversations);
   const cwdById = new Map(Object.entries(last).filter((pair): pair is [string, string] => isAgyId(pair[1])).map(([cwd, id]) => [id, cwd]));
-  const summaries = new Map(nativeRows(dir).filter((row) => isAgyId(row.conversation_id)).map((row) => [row.conversation_id as string, row]));
+  const { rows: summaryRows, hiddenIds } = nativeSummaries(dir);
+  const summaries = new Map(summaryRows.filter((row) => isAgyId(row.conversation_id)).map((row) => [row.conversation_id as string, row]));
+  const isInternalOrSubagent = (id: string) => {
+    if (hiddenIds.has(id)) return true;
+    const cachedRow = agyRecord(metadata[id]);
+    const fallback = agyRecord(cachedRow.summary);
+    return Boolean(cachedRow.is_internal || fallback.Internal || agyString(fallback.ParentConversationID));
+  };
   const timestamp = (id: string) => {
     const summary = summaries.get(id);
     const cachedSummary = agyRecord(agyRecord(metadata[id]).summary);
     return parseAgyTimestamp(summary?.last_modified_time ?? cachedSummary.UpdatedAt);
   };
-  const ids = [...new Set([...summaries.keys(), ...Object.keys(metadata).filter(isAgyId)])].sort((a, b) => timestamp(b) - timestamp(a)).slice(0, RECENT);
+  const ids = [...new Set([...summaries.keys(), ...Object.keys(metadata).filter(isAgyId)])]
+    .filter((id) => !isInternalOrSubagent(id))
+    .sort((a, b) => timestamp(b) - timestamp(a))
+    .slice(0, RECENT);
   const rows = await Promise.all(ids.map(async (id): Promise<AgyNativeSession | null> => {
     const cachedRow = agyRecord(metadata[id]);
     const summary = summaries.get(id);
-    if (cachedRow.is_internal && !summary) return null;
     const fallback = agyRecord(cachedRow.summary);
     const cwd = [...workspaces(summary?.workspace_uris), ...agyArray(fallback.WorkspaceURIs), cwdById.get(id)]
       .map((value) => workspacePath(value, platform)).find(Boolean);

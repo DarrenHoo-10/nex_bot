@@ -116,4 +116,43 @@ describe("AGY user input", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("skips AGY subagent and internal conversations even when present in conversation_summaries", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "agy-native-subagent-"));
+    try {
+      const parentId = "542b0fe7-ac25-4ebd-9e23-155216f21111";
+      const subagentByParent = "d643fc0c-1fff-4f1f-9498-bd2b186666b1";
+      const subagentByDepth = "2ee7db63-0ace-456c-80ef-be56d1d076aa";
+      const subagentByMeta = "19c8d64a-035c-4f44-b0a6-2b18987a5e15";
+      const subagentByLinkTable = "4e4e7ae6-a943-4455-b40e-5d27d81bfeaa";
+      const db = new DatabaseSync(path.join(dir, "conversation_summaries.db"));
+      db.exec(`CREATE TABLE conversation_summaries (
+        conversation_id TEXT PRIMARY KEY, status TEXT, not_fully_idle INTEGER, killed INTEGER,
+        title TEXT, workspace_uris TEXT, last_modified_time TEXT,
+        agent_name TEXT NOT NULL DEFAULT '', parent_conversation_id TEXT NOT NULL DEFAULT '', nesting_depth INTEGER NOT NULL DEFAULT 0
+      )`);
+      db.exec("CREATE TABLE conversation_parents (conversation_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL) WITHOUT ROWID");
+      const stmt = db.prepare("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      const ws = JSON.stringify(["/work/mac_ios_sync_review"]);
+      stmt.run(parentId, "CASCADE_RUN_STATUS_IDLE", 0, 0, "Mac And iOS Sync", ws, "2026-11-28 15:13:26+00:00", "", "", 0);
+      stmt.run(subagentByParent, "CASCADE_RUN_STATUS_IDLE", 0, 0, "", ws, "2026-11-28 14:05:30+00:00", "research", parentId, 1);
+      stmt.run(subagentByDepth, "CASCADE_RUN_STATUS_IDLE", 0, 0, "", ws, "2026-11-28 14:04:00+00:00", "browser", "", 1);
+      stmt.run(subagentByMeta, "CASCADE_RUN_STATUS_IDLE", 0, 0, "", ws, "2026-11-28 14:03:00+00:00", "", "", 0);
+      stmt.run(subagentByLinkTable, "CASCADE_RUN_STATUS_IDLE", 0, 0, "", ws, "2026-11-28 14:02:00+00:00", "", "", 0);
+      db.prepare("INSERT INTO conversation_parents VALUES (?, ?)").run(subagentByLinkTable, parentId);
+      db.close();
+      mkdirSync(path.join(dir, "cache"), { recursive: true });
+      writeFileSync(path.join(dir, "cache", "conversation_metadata.json"), JSON.stringify({
+        conversations: {
+          [parentId]: { summary: { ID: parentId, Title: "Mac And iOS Sync", Internal: false } },
+          [subagentByParent]: { is_internal: true },
+          [subagentByMeta]: { is_internal: true },
+        },
+      }));
+      const rows = await scanAgyHistory(dir, "linux", true);
+      expect(rows.map((entry) => entry.row.nativeId)).toEqual([parentId]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

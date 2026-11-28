@@ -51,6 +51,7 @@ public final class ConversationStore {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var readPosition = 0
     @ObservationIgnored var pendingUnreadReadSeq: Int?
+    @ObservationIgnored var awaitingFreshUnread = false
     /// Same text keeps the same clientId, so a retry after a network error is never a duplicate.
     @ObservationIgnored private(set) var pending: (text: String, attachmentIDs: [String], clientID: String)?
     @ObservationIgnored private var uploads: [String: Task<ChatAttachment, Error>] = [:]
@@ -63,24 +64,37 @@ public final class ConversationStore {
 
     func prepareUnreadJump(readSeq: Int) {
         guard focusedMessageID == nil else { return }
+        awaitingFreshUnread = false
         pendingUnreadReadSeq = readSeq
         unreadAnchorID = nil
+    }
+
+    func prepareBottomEntry() {
+        guard focusedMessageID == nil else { return }
+        pendingUnreadReadSeq = nil
+        unreadAnchorID = nil
+        awaitingFreshUnread = true
+        unreadJumpRevision += 1
     }
 
     public func clearUnreadAnchor() {
         pendingUnreadReadSeq = nil
         unreadAnchorID = nil
+        awaitingFreshUnread = false
     }
 
     func commit(_ history: [AgentMessage], sync: SyncIdentity, streaming: [StreamingText], hasOlder: Bool?) {
         messages = history; loadedSync = sync; isLoaded = true
         if let readSeq = pendingUnreadReadSeq, focusedMessageID == nil {
             pendingUnreadReadSeq = nil
+            awaitingFreshUnread = false
             let earliest = history.first {
                 $0.seq > readSeq && $0.role != "user" && !($0.row.string("source_key")?.hasPrefix("stock-history:") ?? false)
             }
             unreadAnchorID = earliest?.id
-            if earliest != nil { unreadJumpRevision += 1 }
+            unreadJumpRevision += 1
+        } else {
+            awaitingFreshUnread = false
         }
         let committed = Set(history.filter { $0.role == "assistant" }.map { "\($0.taskID ?? "")\u{1}\($0.content)" })
         self.streaming = streaming.filter { !$0.text.isEmpty && !committed.contains("\($0.taskId)\u{1}\($0.text)") }
@@ -112,7 +126,7 @@ public final class ConversationStore {
     func reset() {
         generation += 1
         messages = []; streaming = []; hasOlder = false; isLoadingOlder = false; isLoaded = false
-        loadedSync = nil; readPosition = 0; pendingUnreadReadSeq = nil; unreadAnchorID = nil
+        loadedSync = nil; readPosition = 0; pendingUnreadReadSeq = nil; unreadAnchorID = nil; awaitingFreshUnread = false
     }
 
     func discardDraft() {

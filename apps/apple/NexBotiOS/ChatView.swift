@@ -179,7 +179,11 @@ struct ChatView: View {
                     }
                 } else {
                     atBottom = true
-                    proxy.scrollTo(bottomID, anchor: .bottom)
+                    for delay in [0, 80, 260] {
+                        if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                        guard !Task.isCancelled else { return }
+                        proxy.scrollTo(bottomID, anchor: .bottom)
+                    }
                 }
             }
             .task(id: focusKey) { await scrollToFocused(proxy) }

@@ -582,7 +582,7 @@ export class TaskRuntime {
     const financeEvidence = topic && this.store.get("SELECT 1 AS ok FROM agent_roles WHERE bot_id=? AND role='finance_assistant'", bot.id)
       ? "\n可以跨标的查询。引用价格、涨跌幅或分钟行情时，核对证券或指数身份、市场、交易日、当地时区、单位和数据源观测时点。抓取时间仅表明何时取数；缺少目标分钟时给出实际可用粒度和日期。"
       : "";
-    const topicNote = topic ? `\n当前位于话题会话（受众：${topic.audience}），已放开全部工具、联网、设备、连接器与记忆能力。${this.feishuGroupContext(topic)}` : "";
+    const topicNote = topic ? `\n当前位于话题会话（受众：${topic.audience}），已放开全部工具、联网、设备、连接器与记忆能力。${this.feishuTopicContext(topic, origin)}` : "";
     const systemPrompt = `当前权限模式：${fullAccess ? "完全权限。所有可用操作均已放开，无需请求审批，直接调用工具执行即可。" : ""}
 你运行在 NexBot Personal AI OS。遵守用户指示，通过 Broker 调用工具；仅在工具成功后确认结果；失败或未知如实说明。${financeEvidence}${topicNote}
 需要网页、GitHub Releases/API 或公开资料时可直接调用 web.fetch；需要本机文件、终端或屏幕操作时可直接调用 device.*；需要操作电脑上的 Claude/Codex 会话时可直接调用 cli.*。
@@ -638,6 +638,7 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
     });
   }
   onStreamDelta?: (message: { botId: string; conversationId: string; taskId: string; offset: number; text: string }) => void;
+  onTaskProgress?: (message: { botId: string; conversationId: string; taskId: string; text: string }) => void;
 
   async event(worker: Running, event: WorkerEvent) {
     const running = this.assert(worker);
@@ -685,6 +686,10 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
     }
     if (event.type === "tool" && event.requestId) {
       const call = this.propose(worker, event);
+      const interim = worker.streaming.trim();
+      if (interim && this.onTaskProgress && this.taskOrigin(worker.taskId) === "owner") {
+        this.onTaskProgress({ botId: String(running.bot_id), conversationId: String(running.conversation_id), taskId: worker.taskId, text: interim });
+      }
       if (terminal.includes(String(call.status))) { this.reply(worker, event.requestId, this.replayToolResult(call)); return; }
       if (call.status === "unknown") throw new Error("执行结果未知，请先人工核对");
       this.pendingReplies.set(String(call.id), { worker, requestId: event.requestId });
@@ -720,14 +725,18 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
       this.changed();
     }
   }
-  /** The owner's per-group instructions for a topic that came from a Feishu group; read live so edits apply to ongoing topics. */
-  private feishuGroupContext(topic: Row) {
+  /** Feishu interaction rules and per-group owner context for Feishu-backed topics; read live so edits apply to ongoing topics. */
+  private feishuTopicContext(topic: Row, origin: TaskOrigin) {
     let source: Record<string, unknown> = {};
     try { source = JSON.parse(String(topic.source_context)) as Record<string, unknown>; } catch { return ""; }
-    if (source.channel !== "feishu" || typeof source.appId !== "string" || typeof source.chatId !== "string") return "";
-    if (!this.store.get("SELECT name FROM sqlite_master WHERE type='table' AND name='feishu_group_settings'")) return "";
+    if (source.channel !== "feishu") return "";
+    const interaction = origin === "owner"
+      ? " 飞书交互规范：先及时回应，不要在无反馈状态下闷头连续执行耗时操作。简单问题或一两步轻量查询直接给出简洁答复；复杂、多步骤或耗时任务（如排查定位、开发改造、批量处理、多源调研）不要在当前轮闷头做完：若目标、边界或做法有多种选择或风险，先回复简明的初步方案（目标、主要步骤、涉及范围）请用户确认；若用户已明确要求立即执行，先用 job.start 交给后台任务，并在当前轮立即回复初步方案和推进计划，后续结果或需确认事项会自动同步到本对话。若当前轮确实需要先做少量前置查询，调用工具前先用一两句话说明正在核查的方向。"
+      : "";
+    if (typeof source.appId !== "string" || typeof source.chatId !== "string") return interaction;
+    if (!this.store.get("SELECT name FROM sqlite_master WHERE type='table' AND name='feishu_group_settings'")) return interaction;
     const context = String(this.store.get("SELECT context FROM feishu_group_settings WHERE app_id=? AND chat_id=?", source.appId, source.chatId)?.context ?? "").trim();
-    return context ? ` 主人为本飞书群设置的上下文：${context}` : "";
+    return `${interaction}${context ? ` 主人为本飞书群设置的上下文：${context}` : ""}`;
   }
   isTopicTask(taskId: string) { return this.store.get('SELECT p.* FROM agent_topics p JOIN tasks t ON p.conversation_id=COALESCE((SELECT root_conversation_id FROM agent_topic_children ch WHERE ch.conversation_id=t.conversation_id),t.conversation_id) WHERE t.id=?',taskId); }
   publicConnectorDirectory(_botId:string){

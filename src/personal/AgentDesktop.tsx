@@ -153,7 +153,11 @@ export function AgentDesktop() {
     return "account";
   });
   const [settingsDetailOpen, setSettingsDetailOpen] = useState(() => page === "settings");
+  const [settingsReturnPage, setSettingsReturnPage] = useState<"agent" | "cli" | "todo">("agent");
   const openSettings = (category?: SettingsCategory) => {
+    if (page !== "settings") {
+      setSettingsReturnPage(page === "cli" && agentSection ? "cli" : page === "todo" ? "todo" : "agent");
+    }
     if (category) {
       setSettingsCategory(category);
       setSettingsDetailOpen(true);
@@ -163,6 +167,10 @@ export function AgentDesktop() {
     setPage("settings");
     setSidebarOpen(false);
   };
+  const closeSettings = useCallback(() => {
+    setPage(settingsReturnPage === "cli" && !agentSection ? "agent" : settingsReturnPage);
+    setSidebarOpen(false);
+  }, [settingsReturnPage]);
   const selectSettingsCategory = (category: SettingsCategory) => {
     setSettingsCategory(category);
     setSettingsDetailOpen(true);
@@ -281,6 +289,12 @@ export function AgentDesktop() {
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
   const chatVisible = page === "agent" && !jobView;
+  const chatInView = chatVisible && (wide || !sidebarOpen);
+  const chatInViewRef = useRef(chatInView);
+  chatInViewRef.current = chatInView;
+  const prevChatInView = useRef(false);
+  const prevChatVisible = useRef(false);
+  const [chatEntrySeq, setChatEntrySeq] = useState(0);
   const section = page === "settings" ? "settings" : page === "cli" ? "sessions" : page === "todo" || jobView ? "tasks"
     : (detail && tab === "settings") || modelChooserOpen ? "chat-settings" : detail ? "work" : "chat";
   const publishedSync = useRef<State["sync"] | undefined>(undefined);
@@ -304,6 +318,7 @@ export function AgentDesktop() {
   type UnreadEntryState = { key: string; state: "await-fresh" | "pending" | "ready" | "done"; readSeq: number; mainUnread: number; topicUnread: number; target?: UnreadJumpTarget };
   const unreadEntry = useRef<UnreadEntryState | undefined>(undefined);
   const scrolledUnreadKey = useRef("");
+  const scrolledBottomKey = useRef("");
   const lastSeenTailSeq = useRef<{ key: string; seq: number }>({ key: "", seq: 0 });
   // Set once Core has accepted the send. Cleared only when a later reload publishes
   // its snapshot, so a superseded reload cannot drop the in-progress row first.
@@ -319,6 +334,7 @@ export function AgentDesktop() {
       if (dialog) { setDialog(null); return; }
       if (detail) { setDetail(false); return; }
       if (page === "settings" && !wide && settingsDetailOpen) { setSettingsDetailOpen(false); return; }
+      if (page === "settings") { closeSettings(); return; }
       if (page !== "agent") { setPage("agent"); return; }
       if (!sidebarOpen) { setSidebarOpen(true); return; }
       void desktop?.minimize?.();
@@ -333,7 +349,7 @@ export function AgentDesktop() {
       window.removeEventListener("nex-android-agent", select);
       window.removeEventListener("nex-download-error", downloadError);
     };
-  }, [dialog, detail, page, sidebarOpen, wide, settingsDetailOpen]);
+  }, [dialog, detail, page, sidebarOpen, wide, settingsDetailOpen, closeSettings]);
   const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>()), messagesRef = useRef(messages);
   messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
@@ -373,7 +389,7 @@ export function AgentDesktop() {
   const markRead = useCallback((currentBot: string, key: string, topicConversation: string | undefined, history: RecordRow[]) => {
     const through = Number(history.at(-1)?.seq ?? 0);
     if (!currentBot || !through) return;
-    if (historyTarget.current?.botId === currentBot || pageRef.current !== "agent" || !document.hasFocus()) return;
+    if (historyTarget.current?.botId === currentBot || !chatInViewRef.current || !document.hasFocus()) return;
     if (through <= (readPositions.current.get(key) ?? 0)) return;
     readPositions.current.set(key, through);
     void api("agents/read", { botId: currentBot, seq: through, conversationId: topicConversation }).catch(() => {
@@ -543,6 +559,8 @@ export function AgentDesktop() {
           } else {
             unreadEntry.current = { ...entry, state: "done" };
             stickToBottom.current = true;
+            scrolledBottomKey.current = "";
+            setChatEntrySeq((value) => value + 1);
           }
         }
       }
@@ -646,7 +664,7 @@ export function AgentDesktop() {
     };
     const expired = () => { scope.abort(); offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
     const focused = () => {
-      if (chatVisible && botId && loaded.current?.key === draftKey) markRead(botId, draftKey, conversation, loaded.current.messages);
+      if (chatInViewRef.current && botId && loaded.current?.key === draftKey) markRead(botId, draftKey, conversation, loaded.current.messages);
       if (stale) refresh();
       if (Date.now() - lastFrame > 20_000 || events.readyState !== 1) refresh(true);
     };
@@ -672,6 +690,34 @@ export function AgentDesktop() {
     };
   }, [reload, offline, chatVisible, botId, conversation, draftKey, markRead]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
+  const armChatEntry = useCallback((targetBotId: string, targetConversation: string | undefined, targetKey: string) => {
+    scrolledUnreadKey.current = "";
+    scrolledBottomKey.current = "";
+    setUnreadAnchor(undefined);
+    setNewBelowCount(0);
+    setShowScrollPill(false);
+    if (historyTarget.current) {
+      unreadEntry.current = { key: targetKey, state: "done", readSeq: 0, mainUnread: 0, topicUnread: 0 };
+      stickToBottom.current = false;
+    } else if (targetConversation) {
+      const knownTopic = topicsRef.current.find((item) => item.conversationId === targetConversation);
+      const topicUnread = Number(knownTopic?.unread_count ?? 0);
+      unreadEntry.current = topicUnread > 0
+        ? { key: targetKey, state: "pending", readSeq: Number(knownTopic?.read_seq ?? 0), mainUnread: topicUnread, topicUnread: 0 }
+        : { key: targetKey, state: "await-fresh", readSeq: 0, mainUnread: 0, topicUnread: 0 };
+      stickToBottom.current = topicUnread <= 0;
+    } else {
+      const knownBot = botsRef.current.find((item) => item.id === targetBotId);
+      const totalUnread = Number(knownBot?.unread_count ?? 0);
+      const topicUnread = Number(knownBot?.topic_unread_count ?? 0);
+      const mainUnread = Math.max(0, totalUnread - topicUnread);
+      unreadEntry.current = totalUnread > 0
+        ? { key: targetKey, state: "pending", readSeq: Number(knownBot?.read_seq ?? 0), mainUnread, topicUnread }
+        : { key: targetKey, state: "await-fresh", readSeq: 0, mainUnread: 0, topicUnread: 0 };
+      stickToBottom.current = totalUnread <= 0;
+    }
+    setChatEntrySeq((value) => value + 1);
+  }, []);
   useEffect(() => {
     const switched = loadedBot.current !== draftKey;
     loadedBot.current = draftKey;
@@ -679,31 +725,8 @@ export function AgentDesktop() {
       const entry = historyTarget.current ? undefined : localHistory.current.get(draftKey);
       const cached = entry && historySync.current && sameHistory(entry.sync, historySync.current) ? entry : undefined;
       loaded.current = cached; setEditInput(undefined); setOlderEnd(!!cached?.olderEnd);
-      scrolledUnreadKey.current = "";
-      setUnreadAnchor(undefined);
-      setNewBelowCount(0);
       lastSeenTailSeq.current = { key: draftKey, seq: Number(cached?.messages.at(-1)?.seq ?? 0) };
-      if (historyTarget.current) {
-        unreadEntry.current = { key: draftKey, state: "done", readSeq: 0, mainUnread: 0, topicUnread: 0 };
-        stickToBottom.current = false;
-      } else if (conversation) {
-        const knownTopic = topicsRef.current.find((item) => item.conversationId === conversation);
-        const topicUnread = Number(knownTopic?.unread_count ?? 0);
-        unreadEntry.current = topicUnread > 0
-          ? { key: draftKey, state: "pending", readSeq: Number(knownTopic?.read_seq ?? 0), mainUnread: topicUnread, topicUnread: 0 }
-          : { key: draftKey, state: "await-fresh", readSeq: 0, mainUnread: 0, topicUnread: 0 };
-        stickToBottom.current = topicUnread <= 0;
-      } else {
-        const knownBot = botsRef.current.find((item) => item.id === botId);
-        const totalUnread = Number(knownBot?.unread_count ?? 0);
-        const topicUnread = Number(knownBot?.topic_unread_count ?? 0);
-        const mainUnread = Math.max(0, totalUnread - topicUnread);
-        unreadEntry.current = totalUnread > 0
-          ? { key: draftKey, state: "pending", readSeq: Number(knownBot?.read_seq ?? 0), mainUnread, topicUnread }
-          : { key: draftKey, state: "await-fresh", readSeq: 0, mainUnread: 0, topicUnread: 0 };
-        stickToBottom.current = totalUnread <= 0;
-      }
-      setShowScrollPill(false);
+      armChatEntry(botId, conversation, draftKey);
       setQuote(undefined);
       setReplyJob(undefined);
       setJobView(undefined);
@@ -720,7 +743,22 @@ export function AgentDesktop() {
       if (switched) setHistoryLoading(!loaded.current);
       localStorage.setItem("nexbot.selectedAgent", botId);
     }
-  }, [botId, draftKey]);
+  }, [botId, conversation, draftKey, armChatEntry]);
+  useEffect(() => {
+    const entered = chatInView && !prevChatInView.current;
+    const visibilityChanged = chatVisible && !prevChatVisible.current;
+    prevChatInView.current = chatInView;
+    prevChatVisible.current = chatVisible;
+    if (!entered || !botId) return;
+    const currentEntry = unreadEntry.current;
+    if (loadedBot.current === draftKey && currentEntry?.key === draftKey && currentEntry.state !== "await-fresh" && currentEntry.state !== "pending") {
+      armChatEntry(botId, conversation, draftKey);
+      // Returning from mobile sidebar leaves chatVisible unchanged, so reload once to check unread and mark read.
+      if (!visibilityChanged && loaded.current?.key === draftKey) void reload(false).catch(() => {});
+    } else if (!visibilityChanged && loaded.current?.key === draftKey && currentEntry?.key === draftKey) {
+      void reload(false).catch(() => {});
+    }
+  }, [chatInView, chatVisible, botId, conversation, draftKey, armChatEntry, reload]);
   const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(userErrorText(e))); }, []);
   const run = useCallback(async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(userErrorText(e, "操作失败")); } finally { setBusy(false); } }, [reload]);
   const loadSkills = useCallback(async (signal: AbortSignal) => (await api<SkillCatalog>("agents/skills", undefined, signal)).skills, []);
@@ -859,7 +897,7 @@ export function AgentDesktop() {
   // Content growth used to unpin follow via the distance check, so streaming
   // stopped at the send-time jump and the "回到底部" pill appeared. Follow now
   // breaks only on an upward gesture and tracks height while it stays armed.
-  useBottomFollowResize(scroll, transcriptInner, stickToBottom, state ? `${botId}:${page}` : null);
+  useBottomFollowResize(scroll, transcriptInner, stickToBottom, state && chatInView ? `${draftKey}:${chatEntrySeq}` : null);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const typing = event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement;
@@ -878,8 +916,8 @@ export function AgentDesktop() {
   }, [rawMessages, draftKey]);
   useEffect(() => { syncScrollPill(); }, [messages, focusedMessage, syncScrollPill]);
   useLayoutEffect(() => {
-    if (!unreadAnchor || unreadAnchor.key !== draftKey || focusedMessage || page !== "agent") return;
-    const anchorKey = `${unreadAnchor.key}:${unreadAnchor.kind}:${unreadAnchor.id}`;
+    if (!unreadAnchor || unreadAnchor.key !== draftKey || focusedMessage || !chatInView) return;
+    const anchorKey = `${chatEntrySeq}:${unreadAnchor.key}:${unreadAnchor.kind}:${unreadAnchor.id}`;
     if (scrolledUnreadKey.current === anchorKey) return;
     const container = scroll.current;
     const targetEl = container?.querySelector<HTMLElement>('[data-unread-target="true"]');
@@ -910,7 +948,29 @@ export function AgentDesktop() {
       if (placedTop !== null && scroll.current && Math.abs(scroll.current.scrollTop - placedTop) <= 1) positionTarget();
     });
     return () => cancelAnimationFrame(raf);
-  }, [unreadAnchor, messages, page, draftKey, focusedMessage, syncScrollPill]);
+  }, [unreadAnchor, messages, chatInView, chatEntrySeq, draftKey, focusedMessage, syncScrollPill]);
+  // Opening or returning to a chat with no unread messages jumps directly to the latest message.
+  useLayoutEffect(() => {
+    if (!chatInView || focusedMessage || unreadAnchor || !messages.length) return;
+    const entry = unreadEntry.current;
+    if (entry?.key === draftKey && entry.state === "pending") return;
+    const bottomKey = `${chatEntrySeq}:${draftKey}`;
+    if (scrolledBottomKey.current === bottomKey) return;
+    const container = scroll.current;
+    if (!container) return;
+    scrolledBottomKey.current = bottomKey;
+    stickToBottom.current = true;
+    const scrollToEnd = () => {
+      const scroller = scroll.current;
+      if (!scroller || !stickToBottom.current) return;
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
+      previousScrollTop.current = scroller.scrollTop;
+      syncScrollPill(true);
+    };
+    scrollToEnd();
+    const raf = requestAnimationFrame(scrollToEnd);
+    return () => cancelAnimationFrame(raf);
+  }, [chatInView, chatEntrySeq, draftKey, focusedMessage, unreadAnchor, messages, syncScrollPill]);
   useEffect(() => {
     const field = composerRef.current;
     if (!field) return;
@@ -936,7 +996,7 @@ export function AgentDesktop() {
     const message=scroll.current?.querySelector<HTMLElement>('[data-search-match="true"]');
     if(message){message.scrollIntoView({block:'center'});scrolledTarget.current=focusedMessage;}
   },[focusedMessage,messages,page]);
-  const latestMessages=useCallback(()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');setUnreadAnchor(undefined);setNewBelowCount(0);loaded.current=undefined;stickToBottom.current=true;setShowScrollPill(false);setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(userErrorText(e));setHistoryLoading(false);});}, [reload]);
+  const latestMessages=useCallback(()=>{historyTarget.current=undefined;scrolledTarget.current='';scrolledBottomKey.current='';setFocusedMessage('');setUnreadAnchor(undefined);setNewBelowCount(0);loaded.current=undefined;stickToBottom.current=true;setShowScrollPill(false);setMessages([]);setHistoryLoading(true);setChatEntrySeq((value) => value + 1);void reload().catch((e:Error)=>{setError(userErrorText(e));setHistoryLoading(false);});}, [reload]);
   const openSearchResult=(match:ConversationMatch)=>{
     setTopicId(undefined);
     ++serial.current;
@@ -946,7 +1006,22 @@ export function AgentDesktop() {
     else setBotId(match.botId);
   };
   const closeDialog = useCallback(() => setDialog(null), []);
-  const select = useCallback((target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); }, [latestMessages]);
+  const select = useCallback((target: string) => {
+    const hadHistoryTarget = !!historyTarget.current;
+    setTopicId(undefined);
+    if (hadHistoryTarget && target === selected.current) latestMessages();
+    historyTarget.current = undefined;
+    scrolledTarget.current = "";
+    setFocusedMessage("");
+    if (target === selected.current && !hadHistoryTarget && !conversation && pageRef.current === "agent" && !jobView) {
+      armChatEntry(target, undefined, target);
+    }
+    setJobView(undefined);
+    setBotId(target);
+    setPage("agent");
+    setSidebarOpen(false);
+    setError("");
+  }, [latestMessages, conversation, jobView, armChatEntry]);
   const assistantAction=(id:string,action:"reset_memory"|"delete")=>setDialog(<AssistantActionDialog botId={id} action={action} updated={reload} close={closeDialog}/>);
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => existing ? setDialog(<Editor title="Agent 身份" onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { await api("bots/update", { ...data, id: existing.id, version: existing.version }); closeDialog(); })}/>)
@@ -956,17 +1031,15 @@ export function AgentDesktop() {
   const openOccurrence = (id: string) => setDialog(<RoutineOccurrenceDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>);
   // A job opens as its own conversation in place of the main chat; on a narrow window the profile drawer closes for it.
   const openJobDetail = useCallback((id: string) => { setJobView(id); if (!wide) setDetail(false); }, [wide]);
-  const stopJob = useCallback((job: Job) => void run(() => api("jobs/stop", { jobId: job.id })), [run]);
   // The card's acceptance and revision are the todo panel's own versioned actions.
   const jobActions = useMemo<JobCardActions>(() => ({
     open: openJobDetail,
     reply: (job) => { setQuote(undefined); setReplyJob({ id: job.id, title: job.title }); composerRef.current?.focus(); },
-    stop: stopJob,
     // A failed job runs a new round in its own conversation when it gets input.
     retry: (job) => void run(() => api("jobs/input", { jobId: job.id, text: "再试一次", clientId: crypto.randomUUID() })),
     accept: (job) => void run(() => api("todos/action", { id: job.todoId, version: job.todoVersion, action: "complete" })),
     revise: (job) => setDialog(<Editor title="继续修改" onClose={closeDialog} fields={[{ name: "feedback", label: "告诉 AI 要调整什么", multiline: true, required: true }]} onSubmit={(data) => run(async () => { await api("todos/action", { id: job.todoId, version: job.todoVersion, action: "start", clientId: crypto.randomUUID(), feedback: data.feedback }); closeDialog(); })}/>),
-  }), [openJobDetail, stopJob, run, closeDialog]);
+  }), [openJobDetail, run, closeDialog]);
   const bots = state?.bots;
   const showingChat = page === "agent" && !!bot && !jobView;
   // Composer-only changes, including a model choice, can reuse the history subtree.
@@ -1093,8 +1166,10 @@ export function AgentDesktop() {
 
     <main>
       <header>
-        <div className="header-side">{page === "settings" && !wide && settingsDetailOpen
-          ? <button type="button" className="icon-button mobile-menu settings-back-button" aria-label="返回设置" onClick={() => setSettingsDetailOpen(false)}><ChevronLeft size={20}/></button>
+        <div className="header-side">{page === "settings"
+          ? (!wide && settingsDetailOpen
+            ? <button type="button" className="icon-button mobile-menu settings-back-button" aria-label="返回设置" onClick={() => setSettingsDetailOpen(false)}><ChevronLeft size={20}/></button>
+            : <button type="button" className="settings-exit-button" aria-label={settingsReturnPage === "cli" ? "返回 NexAgent" : settingsReturnPage === "todo" ? "返回待办" : "返回"} onClick={closeSettings}><ChevronLeft size={18}/><span>{settingsReturnPage === "cli" ? "返回 NexAgent" : settingsReturnPage === "todo" ? "返回待办" : "返回"}</span></button>)
           : <button className="icon-button mobile-menu" aria-label="展开联系人列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={19}/></button>}</div>
         {page === "agent" && bot
           ? <AssistantSwitcher key={botId} assistants={state.bots} activeId={botId} onSelect={select}>

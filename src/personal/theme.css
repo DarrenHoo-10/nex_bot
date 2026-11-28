@@ -1025,14 +1025,47 @@
     background: var(--card);
     box-shadow: none;
   }
+  .rk-workspace .settings-exit-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 30px;
+    padding: 0 10px 0 6px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted-foreground);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .rk-workspace .settings-exit-button:hover {
+    background: var(--wash);
+    color: var(--foreground);
+  }
+  @media (max-width: 720px) {
+    .rk-workspace .settings-exit-button {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--glass);
+      border: 1px solid var(--glass-edge);
+      color: var(--foreground);
+    }
+    .rk-workspace .settings-exit-button span {
+      display: none;
+    }
+  }
   @media (min-width: 721px) {
     .rk-workspace[data-page="settings"] > main {
       margin: 0;
       padding-bottom: 0;
     }
     .rk-workspace[data-page="settings"] > main > header {
-      height: 36px;
-      min-height: 36px;
+      height: 44px;
+      min-height: 44px;
       padding: 0 16px;
     }
     .rk-workspace[data-page="settings"] > main > header .contact-heading.who {

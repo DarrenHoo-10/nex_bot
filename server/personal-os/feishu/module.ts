@@ -925,6 +925,8 @@ export class FeishuModule {
   private readonly groupLists = new Map<string, { expiresAt: number; error: string | null }>();
   private readonly pendingGroupLists = new Map<string, Promise<string | null>>();
   private readonly groupAvatars = new Map<string, { expiresAt: number; value: Promise<GroupAvatar | undefined> }>();
+  private readonly progressPatches = new Map<string, Promise<void>>();
+  private readonly lastProgressText = new Map<string, string>();
 
   private async refreshGroup(appId: string, chatId: string, name?: string, listAvatar?: string) {
     const result = await this.requestForApp(appId, "GET", `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`);
@@ -1094,6 +1096,37 @@ export class FeishuModule {
     return result;
   }
 
+  /** Best-effort interim update on the placeholder card when an owner task speaks before calling tools; serialized ahead of the durable final patch. */
+  onTaskProgress(taskId: string, rawText: string) {
+    if (this.closed) return;
+    const bodyText = rawText.trim();
+    if (!bodyText) return;
+    const mapping = this.mappingFor(taskId);
+    if (!mapping) return;
+    const appId = String(mapping.app_id), chatId = String(mapping.chat_id);
+    const placeholder = this.store.get("SELECT * FROM feishu_delivery_parts WHERE source_key=? AND state='sent' AND message_id IS NOT NULL", `placeholder:${appId}:${chatId}:${mapping.message_id}`);
+    if (!placeholder?.message_id) return;
+    const targetId = String(placeholder.message_id);
+    if (this.store.get("SELECT 1 FROM feishu_delivery_parts WHERE target_id=? AND operation='patch'", targetId)) return;
+    const content = `${bodyText.length > 3200 ? `${bodyText.slice(0, 3200).trimEnd()}…` : bodyText}\n\n*正在继续处理…*`;
+    if (this.lastProgressText.get(targetId) === content) return;
+    this.lastProgressText.set(targetId, content);
+    const prev = this.progressPatches.get(targetId) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(async () => {
+      if (this.closed || this.quiesced.has(appId)) return;
+      if (this.store.get("SELECT 1 FROM feishu_delivery_parts WHERE target_id=? AND operation='patch'", targetId)) return;
+      if (!this.deliveryAllowed(placeholder)) return;
+      if (this.options.authorizeActor && !await this.options.authorizeActor(appId, String(placeholder.actor_open_id), chatId, placeholder.audience === "private" ? "p2p" : "group").catch(() => false)) return;
+      await this.requestForApp(appId, "PATCH", `/open-apis/im/v1/messages/${encodeURIComponent(targetId)}`, { content: markdownCard(content) }, () => {
+        if (!this.deliveryAllowed(placeholder)) throw new DeliveryCancelled("delivery_rules_changed");
+        if (this.store.get("SELECT 1 FROM feishu_delivery_parts WHERE target_id=? AND operation='patch'", targetId)) throw new DeliveryCancelled("final_reply_queued");
+      });
+    }).catch(() => {}).finally(() => {
+      if (this.progressPatches.get(targetId) === next) this.progressPatches.delete(targetId);
+    });
+    this.progressPatches.set(targetId, next);
+  }
+
   /** Explicit publication ids avoid racing simultaneous topic completions. Recovery enumerates all unsent publications. */
   onPublished(botId?: string, publication?: { messageId: string }) {
     if (this.closed) return;
@@ -1173,6 +1206,7 @@ export class FeishuModule {
     if(app)await this.disconnect(String(app.connector_id),"idle");
     for(const task of this.store.all("SELECT DISTINCT t.id FROM tasks t JOIN personal_feishu_messages m ON m.task_id=t.id WHERE m.app_id=? AND t.ended_at IS NULL",appId))this.runtime.cancel(String(task.id),"飞书通道正在移交，私人步骤已暂停");
     if(this.draining)await new Promise<void>(resolve=>this.drainWaiters.add(resolve));
+    await Promise.allSettled(this.progressPatches.values());
   }
   async resumeApp(appId:string) {
     this.quiesced.delete(appId);
@@ -1243,6 +1277,11 @@ export class FeishuModule {
           }
         }
         if (Number(this.store.run("UPDATE feishu_delivery_parts SET state='sending',root_id=?,attempts=attempts+1 WHERE id=? AND state='pending'", part.root_id??null, part.id).changes) !== 1) continue;
+        if (part.operation === "patch" && part.target_id) {
+          this.lastProgressText.delete(String(part.target_id));
+          await this.progressPatches.get(String(part.target_id))?.catch(() => {});
+          if (this.closed) break;
+        }
         try {
           const path = part.operation === "patch" ? `/open-apis/im/v1/messages/${encodeURIComponent(String(part.target_id))}` : part.root_id ? `/open-apis/im/v1/messages/${encodeURIComponent(String(part.root_id))}/reply` : "/open-apis/im/v1/messages?receive_id_type=chat_id";
           const result = await this.requestForApp(String(part.app_id), part.operation === "patch" ? "PATCH" : "POST", path, part.operation === "patch" ? { content: part.content } : { receive_id: part.chat_id, msg_type: "interactive", content: part.content, uuid: part.uuid, ...(part.root_id && part.inline !== 1 ? { reply_in_thread: true } : {}) },()=>{
@@ -1357,7 +1396,7 @@ export class FeishuModule {
   async close() {
     this.closed = true;
     clearInterval(this.recovery);
-    await Promise.all([this.draining?new Promise<void>(r=>this.drainWaiters.add(r)):Promise.resolve(),this.recovering?new Promise<void>(r=>this.recoverWaiters.add(r)):Promise.resolve()]);
+    await Promise.all([this.draining?new Promise<void>(r=>this.drainWaiters.add(r)):Promise.resolve(),this.recovering?new Promise<void>(r=>this.recoverWaiters.add(r)):Promise.resolve(),Promise.allSettled(this.progressPatches.values())]);
     this.job?.controller.abort();
     this.job = undefined;
     this.userAuth?.controller.abort();

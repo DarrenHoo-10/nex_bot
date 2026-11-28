@@ -571,14 +571,12 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(container.querySelector(".job-card header")?.textContent).toBe("整理下载文件夹等待你回答");
     expect(container.querySelector(".job-card-body")?.textContent).toContain("要保留截图吗？");
     expect(container.querySelector(".job-card-body")?.textContent).not.toContain("后台任务「");
-    expect(cardButtons()).toEqual(["回复", "停止"]);
+    expect(cardButtons()).toEqual(["回复"]);
     expect(cardButton("回复").childElementCount).toBe(0);
-    expect(cardButton("停止").childElementCount).toBe(0);
     expect(cardButton("回复").dataset.size).toBe("compact");
-    expect(cardButton("停止").dataset.size).toBe("compact");
-    expect(cardButton("停止").dataset.tone).toBe("dark");
-    await act(async () => cardButton("停止").click());
-    expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-1" });
+    // Blocked and running report cards do not render a stop button.
+    await show([job({ stage: "blocked", latestReport: { ...latest, state: "blocked", question: null } })], [report("blocked")]);
+    expect(cardButtons()).toEqual([]);
     await show([job({ stage: "running", taskId: "next-round", latestReport: latest })], [report("question")]);
     expect(cardButtons()).toEqual([]);
     await show([job({ stage: "done", endedAt: 3, latestReport: { ...latest, state: "ready", question: null } })], [report("ready")]);
@@ -633,7 +631,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(cardButtons()).toEqual([]);
     const nextReport = report("question", { id: "next-report", task_id: "next-round", created_at: 4, seq: 4 });
     await show([job({ stage: "question", taskId: "next-round", latestReport: { ...latest, messageId: nextReport.id } })], [report("question"), savedReply, nextReport]);
-    expect(cardButtons()).toEqual(["回复", "停止"]);
+    expect(cardButtons()).toEqual(["回复"]);
     // A refused reply (a stopped job) restores the draft and the reply target.
     fixture.api.mockImplementation(async (route: string) => {
       if (route === "jobs/input") throw new Error("后台任务已停止，不能再补充");
@@ -646,7 +644,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
     expect(composer().value).toBe("再补充");
     expect(container.querySelector(".reply-job-bar")).not.toBeNull();
-    expect(cardButtons()).toEqual(["回复", "停止"]);
+    expect(cardButtons()).toEqual(["回复"]);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("已停止");
     // Cancelling the reply returns to the main chat.
     await act(async () => container.querySelector<HTMLButtonElement>('.reply-job-bar button[aria-label="取消回复"]')!.click());
@@ -900,5 +898,99 @@ it("jumps to the earliest unread message or unread topic card on open, and offer
     expect(container.querySelector(".scroll-pill")).toBeNull();
   } finally {
     Element.prototype.scrollIntoView = origScrollIntoView;
+  }
+});
+
+it("scrolls to the latest message by default when there are no unread messages, including when returning from settings", async () => {
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  const transcriptScrolls: Array<ScrollToOptions | undefined> = [];
+  const origScrollTo = HTMLElement.prototype.scrollTo;
+  HTMLElement.prototype.scrollTo = function (options?: ScrollToOptions | number) {
+    if (this.classList?.contains("transcript")) {
+      transcriptScrolls.push(typeof options === "object" ? options : undefined);
+    }
+  };
+  try {
+    const readMessages = [
+      { id: "r-1", seq: 1, role: "user", kind: "message", content: "早前的提问", created_at: 100 },
+      { id: "r-2", seq: 2, role: "assistant", kind: "message", content: "早前的回复", created_at: 200 },
+      { id: "r-3", seq: 3, role: "assistant", kind: "message", content: "最后一条消息", created_at: 300 },
+    ];
+    const readState: State = {
+      ...state,
+      bots: [{ id: "agent", name: "Fixture", instructions: "", read_seq: 3, unread_count: 0, topic_unread_count: 0 }],
+    };
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route.startsWith("state?view=workspace")) return readState;
+      if (route.startsWith("agents/messages")) return { messages: /[?&]after=[1-9]/.test(route) ? [] : readMessages, sync, streaming: [], hasMore: false };
+      if (route === "clients") return { sessions: [] };
+      return {};
+    });
+    await act(async () => { root.render(createElement(AgentDesktop, { key: "read-default-bottom" })); });
+
+    expect(container.querySelector('[data-unread-target="true"]')).toBeNull();
+    expect(transcriptScrolls.length).toBeGreaterThan(0);
+    expect(transcriptScrolls.at(-1)?.behavior).toBe("instant");
+
+    // Open Settings and return to the same assistant: the newly mounted transcript must jump to bottom again.
+    await act(async () => { container.querySelector<HTMLButtonElement>(".workspace-account-name")!.click(); });
+    const settingsBtn = [...container.querySelectorAll<HTMLButtonElement>('.account-menu [role="menuitem"]')].find((el) => el.textContent === "设置")!;
+    await act(async () => { settingsBtn.click(); });
+    expect(container.querySelector('[data-page="settings"]')).toBeTruthy();
+
+    transcriptScrolls.length = 0;
+    await act(async () => { container.querySelector<HTMLButtonElement>(".settings-exit-button")!.click(); });
+    expect(container.querySelector('[data-page="agent"]')).toBeTruthy();
+    expect(transcriptScrolls.length).toBeGreaterThan(0);
+    expect(transcriptScrolls.at(-1)?.behavior).toBe("instant");
+  } finally {
+    HTMLElement.prototype.scrollTo = origScrollTo;
+  }
+});
+
+it("returns to NexAgent when closing settings opened from NexAgent", async () => {
+  class FakeWebSocket {
+    static OPEN = 1;
+    readyState = 1;
+    addEventListener() {}
+    removeEventListener() {}
+    send() {}
+    close() {}
+  }
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(JSON.stringify({ devices: [], sessions: [], requests: [], runs: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  try {
+    await import("./cli-agents/CliAgentsWorkspace");
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route.startsWith("state?view=workspace")) return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
+      if (route === "clients") return { sessions: [] };
+      return {};
+    });
+    await act(async () => { root.render(createElement(AgentDesktop, { key: "nexagent-settings-return" })); });
+
+    // Switch into NexAgent mode.
+    await act(async () => { container.querySelector<HTMLButtonElement>(".mode-switcher-button")!.click(); });
+    expect(container.querySelector('[data-page="cli"]')).toBeTruthy();
+
+    // Open Settings from NexAgent's account menu.
+    await act(async () => { container.querySelector<HTMLButtonElement>(".workspace-account-name")!.click(); });
+    const openSettingsBtn = [...container.querySelectorAll<HTMLButtonElement>('.account-menu [role="menuitem"]')].find((el) => el.textContent === "设置")!;
+    await act(async () => { openSettingsBtn.click(); });
+    expect(container.querySelector('[data-page="settings"]')).toBeTruthy();
+    const exitBtn = container.querySelector<HTMLButtonElement>(".settings-exit-button")!;
+    expect(exitBtn.getAttribute("aria-label")).toBe("返回 NexAgent");
+
+    // Returning from Settings restores NexAgent instead of falling back to NexBot.
+    await act(async () => { exitBtn.click(); });
+    expect(container.querySelector('[data-page="cli"]')).toBeTruthy();
+    expect(container.querySelector('[data-page="agent"]')).toBeNull();
+  } finally {
+    fetchSpy.mockRestore();
   }
 });

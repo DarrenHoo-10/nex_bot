@@ -386,6 +386,52 @@ final class SyncTests: XCTestCase {
         store.stop()
     }
 
+    func testChatVisibilityRearmsUnreadAndBottomEntry() async throws {
+        let core = StubCore()
+        nonisolated(unsafe) var phase = 0
+        core.handle { request in
+            if request.path == "/api/state" {
+                let bot: [String: Any] = phase == 1
+                    ? ["id": "b1", "name": "助手", "unread_count": 2, "topic_unread_count": 0, "read_seq": 2]
+                    : ["id": "b1", "name": "助手", "unread_count": 0, "topic_unread_count": 0, "read_seq": phase == 0 ? 2 : 4]
+                var s = stateJSON(sync: syncJSON(cursor: phase + 1), bots: ["b1"])
+                s["bots"] = [bot]
+                s["historySeq"] = phase == 0 ? 2 : 4
+                return .json(s)
+            }
+            if request.path == "/api/agents/messages" {
+                let seqs = phase == 0 ? [1, 2] : [1, 2, 3, 4]
+                let rows = seqs.map { message($0, role: "assistant", content: "m-\($0)") }
+                return .json(["sync": syncJSON(cursor: phase + 1), "messages": rows, "hasMore": false, "streaming": []])
+            }
+            return .json(["ok": true])
+        }
+        let store = makeStore(core)
+        store.select("b1")
+        await store.refresh()
+        let conv = store.conversation(for: "b1")
+        let revAfterInitial = conv.unreadJumpRevision
+        XCTAssertNil(conv.unreadAnchorID)
+        XCTAssertGreaterThan(revAfterInitial, 0)
+
+        // Leaving chat and coming back when new unread messages arrived re-arms earliest unread on the cached conversation.
+        store.setChatVisible(false)
+        phase = 1
+        store.setChatVisible(true)
+        await store.refresh()
+        XCTAssertEqual(conv.unreadAnchorID, "m3")
+        let revAfterUnread = conv.unreadJumpRevision
+        XCTAssertGreaterThan(revAfterUnread, revAfterInitial)
+
+        // Leaving and returning with no unread clears the anchor and bumps revision so views jump to the last message.
+        store.setChatVisible(false)
+        phase = 2
+        store.setChatVisible(true)
+        await store.refresh()
+        XCTAssertNil(conv.unreadAnchorID)
+        XCTAssertGreaterThan(conv.unreadJumpRevision, revAfterUnread)
+    }
+
     func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
         for _ in 0..<200 { if condition() { return }; try await Task.sleep(for: .milliseconds(10)) }
         XCTFail("timeout")

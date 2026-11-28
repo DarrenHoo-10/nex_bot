@@ -79,7 +79,7 @@ struct JobReportCard<Media: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             report
-            if isCurrentReport, let job, job.isStoppable { actions(job) }
+            if isCurrentReport, let job, job.stage == "question" { actions(job) }
         }
         .alert("继续修改", isPresented: $revising) {
             TextField("告诉 AI 要调整什么", text: $feedback)
@@ -108,10 +108,6 @@ struct JobReportCard<Media: View>: View {
             if job.stage == "review", job.todoID != nil {
                 Button("验收") { run { try await workspace.acceptJob(job) } }.buttonStyle(ConversationActionButtonStyle())
                 Button("修改") { revising = true }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
-            }
-            if job.isStoppable {
-                Button("停止") { run { try await workspace.stopJob(job.id) } }
-                    .buttonStyle(ConversationActionButtonStyle(tone: .dark, size: .compact))
             }
             if busy { ProgressView().controlSize(.small) }
         }
