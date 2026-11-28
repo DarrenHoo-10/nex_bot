@@ -25,6 +25,7 @@ struct ConversationView: View {
     @State private var memoryBaseline: [String: String]?
     @State private var memoryNotice = ""
     @State private var imagePreview: ChatImagePreview?
+    @State private var topicsOpen = false
 
     private var dropHighlight: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.brand, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
@@ -70,6 +71,10 @@ struct ConversationView: View {
         .onChange(of: memorySignatures, initial: true) { _, new in trackMemory(new) }
         .onDisappear { conv.isActive = false }
         .sheet(item: Bindable(AgentUI.shared).job) { JobDetailView(workspace: workspace, jobID: $0.id) }
+        .sheet(isPresented: $topicsOpen) {
+            FinanceTopicsView(workspace: workspace, botID: botID, onClose: { topicsOpen = false })
+                .frame(minWidth: 520, minHeight: 460)
+        }
     }
 
     private func trackMemory(_ new: [String: String]) {
@@ -114,6 +119,23 @@ struct ConversationView: View {
                     }
                     .foregroundStyle(Theme.identityAccent).padding(.horizontal, 12).frame(height: 28)
                     .glass(Capsule(), strong: true, lift: .card).frame(maxWidth: 240)
+                }
+                if workspace.hasTopics(for: botID) {
+                    let topicUnread = bot?.topicUnreadCount ?? 0
+                    RoundGlassButton(symbol: "bubble.left.and.text.bubble.right", label: topicUnread > 0 ? "话题（\(topicUnread) 条未读）" : "话题", selected: topicsOpen) {
+                        topicsOpen = true
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if topicUnread > 0 {
+                            Text(topicUnread > 99 ? "99+" : "\(topicUnread)")
+                                .font(.system(size: 9, weight: .bold)).monospacedDigit()
+                                .foregroundStyle(Theme.primaryForeground)
+                                .padding(.horizontal, 4).frame(minWidth: 16, height: 16)
+                                .background(Theme.primary, in: Capsule())
+                                .offset(x: 4, y: -4)
+                                .allowsHitTesting(false)
+                        }
+                    }
                 }
                 RoundGlassButton(symbol: "sidebar.right", label: ui.inspectorVisible ? "收起助手详情" : "助手详情", selected: ui.inspectorVisible) { ui.inspectorVisible.toggle() }
             }

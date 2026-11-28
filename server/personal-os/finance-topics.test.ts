@@ -127,3 +127,36 @@ it('recovers durable FIFO after restart and refuses to replay a task with unknow
   expect(app.store.get('SELECT position FROM agent_topic_inputs WHERE client_id=?','unsafe-retry')).toBeUndefined();
  }finally{release();await app.close();await fake.close();rmSync(dir,{recursive:true,force:true});}
 },50000);
+
+it('counts main and topic unreads against their own read cursors so reading topics clears contact unread_count',async()=>{
+ const dir=mkdtempSync(path.join(tmpdir(),'nex-topic-unread-')),key=randomBytes(32),fake=await startFakeModel();
+ const app=await createPersonalApp({dir,key,token:'fixture',identity:false,hostDevice:false,memoryRuntime:false,modelCatalog:{fetchDisabled:true}});
+ try {
+  app.runtime.kick=()=>{};
+  app.store.saveConfig({provider:'openai',endpoint:fake.origin+'/v1',model:'fake',apiKey:'synthetic'});
+  const botId=app.store.createBot('开发专家');
+  const main=app.agents.send(botId,'主对话问题','main-1');
+  app.agents.publish(botId,'assistant','message','主对话回答','main-answer-1',main.taskId);
+  const topicA=app.agents.send(botId,'话题 A','topic-a-1',undefined,{newConversation:true});
+  app.agents.publish(botId,'assistant','message','话题 A 回答 1','topic-a-answer-1',topicA.taskId);
+  app.agents.publish(botId,'assistant','message','话题 A 回答 2','topic-a-answer-2',topicA.taskId);
+  const topicB=app.agents.send(botId,'话题 B','topic-b-1',undefined,{newConversation:true});
+  app.agents.publish(botId,'assistant','message','话题 B 回答','topic-b-answer-1',topicB.taskId);
+  const contact=()=>app.agents.contacts().find(b=>b.id===botId)!;
+  expect(contact()).toMatchObject({unread_count:4,topic_count:2,topic_unread_count:3});
+  const mainLastSeq=Number(app.agents.messages(botId,undefined,100,undefined,true).at(-1)!.seq);
+  app.agents.read(botId,mainLastSeq);
+  expect(contact()).toMatchObject({unread_count:3,topic_count:2,topic_unread_count:3});
+  const topicALastSeq=Number(app.agents.topicMessages(botId,topicA.conversationId).at(-1)!.seq);
+  app.agents.read(botId,topicALastSeq,topicA.conversationId);
+  expect(contact()).toMatchObject({unread_count:1,topic_count:2,topic_unread_count:1});
+  const topicBLastSeq=Number(app.agents.topicMessages(botId,topicB.conversationId).at(-1)!.seq);
+  app.agents.read(botId,topicBLastSeq,topicB.conversationId);
+  expect(contact()).toMatchObject({unread_count:0,topic_count:2,topic_unread_count:0});
+  const topicC=app.agents.send(botId,'话题 C','topic-c-1',undefined,{newConversation:true});
+  app.agents.publish(botId,'assistant','message','话题 C 回答','topic-c-answer-1',topicC.taskId);
+  expect(contact()).toMatchObject({unread_count:1,topic_count:3,topic_unread_count:1});
+  app.store.run("UPDATE conversations SET status='deleted' WHERE id=?",topicC.conversationId);
+  expect(contact()).toMatchObject({unread_count:0,topic_count:2,topic_unread_count:0});
+ }finally{await app.close();await fake.close();rmSync(dir,{recursive:true,force:true});}
+},30000);

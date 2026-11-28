@@ -45,4 +45,31 @@ final class FinanceTopicsTests:XCTestCase {
         store.stop()
     }
 
+    @MainActor func testHasTopicsRecognisesTopicCountAndFeishuApps() async throws {
+        let core = StubCore()
+        core.handle { _ in
+            .json([
+                "sync": syncJSON(),
+                "bots": [
+                    ["id": "plain", "name": "普通助手", "unread_count": 0, "read_seq": 0, "topic_count": 0, "topic_unread_count": 0],
+                    ["id": "forked", "name": "开发专家", "unread_count": 2, "read_seq": 1, "topic_count": 1, "topic_unread_count": 2],
+                    ["id": "feishu-bot", "name": "飞书助手", "unread_count": 0, "read_seq": 0, "topic_count": 0, "topic_unread_count": 0],
+                ],
+                "feishu": [
+                    "apps": [
+                        ["id": "f1", "appId": "cli_1", "brand": "feishu", "status": "connected", "ownerBound": true, "botId": "feishu-bot", "botName": "飞书助手", "enabled": true, "version": 1],
+                    ],
+                ],
+                "approvals": [], "tasks": [], "routines": [], "devices": [], "conversations": [], "onlineDevices": [], "memories": [],
+            ])
+        }
+        let store = WorkspaceStore(client: core.client())
+        await store.refresh()
+        XCTAssertFalse(store.hasTopics(for: "plain"))
+        XCTAssertTrue(store.hasTopics(for: "forked"))
+        XCTAssertEqual(store.bot("forked")?.topicUnreadCount, 2)
+        XCTAssertTrue(store.hasTopics(for: "feishu-bot"))
+        store.stop()
+    }
+
 }

@@ -17,6 +17,7 @@ struct ChatView: View {
     @State private var knownMemories: [String: String]?
     @State private var memoryNotice: String?
     @State private var jobSheet: JobSheetItem?
+    @State private var showTopics = false
     private let bottomID = "bottom"
 
     /// The search hit being viewed; the window around it replaces the latest messages.
@@ -169,6 +170,23 @@ struct ChatView: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if workspace.hasTopics(for: botID) {
+                    let topicUnread = bot?.topicUnreadCount ?? 0
+                    RoundGlassButton(symbol: "bubble.left.and.text.bubble.right", label: topicUnread > 0 ? "话题（\(topicUnread) 条未读）" : "话题", size: 32) {
+                        showTopics = true
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if topicUnread > 0 {
+                            Text(topicUnread > 99 ? "99+" : "\(topicUnread)")
+                                .font(.system(size: 9, weight: .bold)).monospacedDigit()
+                                .foregroundStyle(Theme.primaryForeground)
+                                .padding(.horizontal, 4).frame(minWidth: 16, height: 16)
+                                .background(Theme.primary, in: Capsule())
+                                .offset(x: 4, y: -4)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
                 RoundGlassButton(symbol: "sidebar.right", label: "助手详情", size: 32) { nav.openAgentDetail(botID) }
             }
             ToolbarItem(placement: .principal) { titleView }
@@ -176,6 +194,7 @@ struct ChatView: View {
         .errorAlert($errorText)
         .sheet(isPresented: $showMemory) { MemoryEditorSheet(workspace: workspace, botID: botID) }
         .sheet(item: $jobSheet) { JobDetailView(workspace: workspace, jobID: $0.id) }
+        .sheet(isPresented: $showTopics) { FinanceTopicsView(workspace: workspace, botID: botID, onClose: { showTopics = false }) }
         .onAppear {
             workspace.select(botID)
             conv.isActive = scenePhase == .active

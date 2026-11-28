@@ -45,7 +45,7 @@ final class ProtocolTests: XCTestCase {
     func testWorkspaceStateDecoding() throws {
         let json = """
         {"sync":{"cursor":12,"privacyEpoch":1.0,"coreId":"c1","bootId":"b"},"extra":{"a":1},
-         "bots":[{"id":"b1","name":"小助手","instructions":"hi","version":3,"read_seq":4,"unread_count":2,"last_message":"你好","last_message_at":1760000000000,"policy_version":1}],
+         "bots":[{"id":"b1","name":"小助手","instructions":"hi","version":3,"read_seq":4,"unread_count":2,"topic_count":3,"topic_unread_count":1,"last_message":"你好","last_message_at":1760000000000,"policy_version":1}],
          "approvals":[{"id":"a1","argument_hash":"\(String(repeating: "f", count: 64))","expires_at":1760000099000,"tool_name":"device.exec","arguments_json":"{\\"command\\":\\"ls\\"}","bot_id":"b1","task_id":"t1","call_id":"c"}],
          "tasks":[{"id":"t1","bot_id":"b1","origin":"owner","status":"running","active_tool":"memory.search","ended_at":null,"created_at":1760000000000},{"id":"t0","bot_id":"b1","status":"succeeded","ended_at":1760000001000,"active_tool":null}],
          "routines":[{"id":"r","enabled":1}],"devices":[],"onlineDevices":["d1"],"memories":[{"id":"m"}],"usage":[]}
@@ -53,6 +53,7 @@ final class ProtocolTests: XCTestCase {
         let s = try decode(WorkspaceState.self, json)
         XCTAssertEqual(s.sync.privacyEpoch, 1)
         XCTAssertEqual(s.bots[0].unreadCount, 2); XCTAssertEqual(s.bots[0].readSeq, 4); XCTAssertEqual(s.bots[0].initials, "小")
+        XCTAssertEqual(s.bots[0].topicCount, 3); XCTAssertEqual(s.bots[0].topicUnreadCount, 1)
         XCTAssertEqual(s.bots[0].lastMessageAt, Date(timeIntervalSince1970: 1_760_000_000))
         XCTAssertEqual(s.approvals[0].title, "执行终端命令"); XCTAssertEqual(s.approvals[0].argumentHash.count, 64)
         XCTAssertTrue(s.approvals[0].argumentsText.contains("\"command\""))

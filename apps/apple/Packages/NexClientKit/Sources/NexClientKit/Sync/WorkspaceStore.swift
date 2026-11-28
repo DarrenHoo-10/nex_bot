@@ -109,6 +109,10 @@ public final class WorkspaceStore {
     public func approvalRules(botID: String) -> [ApprovalRule] { state?.approvalRules.filter { $0.botID == botID } ?? [] }
     public var pendingApprovalCount: Int { approvals.count }
     public func bot(_ id: String) -> Bot? { state?.bots.first { $0.id == id } }
+    public func hasTopics(for botID: String) -> Bool {
+        if let bot = bot(botID), bot.topicCount > 0 { return true }
+        return state?.feishu?.apps.contains(where: { $0.botID == botID }) == true
+    }
 
     @ObservationIgnored private let timing: SyncTiming
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]

@@ -17,10 +17,14 @@ public struct Bot: RowBacked {
     public init(row: Row) { self.row = row }
     public var name: String { row.string("name") ?? id }
     public var instructions: String { row.string("instructions") ?? "" }
-    /// Highest message seq the owner has read.
+    /// Highest message seq the owner has read in the main conversation.
     public var readSeq: Int { row.int("read_seq") ?? 0 }
-    /// Non-user messages after `readSeq`.
+    /// Non-user unread messages across the main conversation and non-deleted topics.
     public var unreadCount: Int { row.int("unread_count") ?? 0 }
+    /// Number of non-deleted topic conversations belonging to this agent.
+    public var topicCount: Int { row.int("topic_count") ?? 0 }
+    /// Unread non-user messages inside this agent's non-deleted topics.
+    public var topicUnreadCount: Int { row.int("topic_unread_count") ?? 0 }
     public var lastMessage: String? { row.string("last_message") }
     public var lastMessageAt: Date? { dateFromMilliseconds(row.double("last_message_at")) }
     /// Optimistic-concurrency version of the name and instructions (`bots/update`, `bots/archive`).

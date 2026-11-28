@@ -74,16 +74,18 @@ struct FinanceTopicsView: View {
                     }
                 }
                 if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-                VStack(alignment:.leading,spacing:8) {
-                    Text(current?.destinationLabel ?? "新的私人话题").font(.caption).foregroundStyle(.secondary)
-                    TextField("发送消息",text:draft,axis:.vertical).lineLimit(2...6).textFieldStyle(.roundedBorder).disabled(sending || pending != nil)
-                    HStack {
-                        if let current, current.activeTask != nil {
-                            Button("停止本题",systemImage:"stop.fill") { Task { await stop(current.id) } }
+                if onClose == nil || current != nil {
+                    VStack(alignment:.leading,spacing:8) {
+                        Text(current?.destinationLabel ?? "新的私人话题").font(.caption).foregroundStyle(.secondary)
+                        TextField("发送消息",text:draft,axis:.vertical).lineLimit(2...6).textFieldStyle(.roundedBorder).disabled(sending || pending != nil)
+                        HStack {
+                            if let current, current.activeTask != nil {
+                                Button("停止本题",systemImage:"stop.fill") { Task { await stop(current.id) } }
+                            }
+                            Spacer()
+                            Button(pending == nil ? "发送" : "重试原消息",systemImage:"arrow.up") { Task { await send() } }
+                                .disabled(sending || (pending == nil && draft.wrappedValue.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
                         }
-                        Spacer()
-                        Button(pending == nil ? "发送" : "重试原消息",systemImage:"arrow.up") { Task { await send() } }
-                            .disabled(sending || (pending == nil && draft.wrappedValue.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
                     }
                 }
             }
@@ -170,7 +172,12 @@ struct FinanceTopicsView: View {
             messages=history;taskRows=tasks;hasOlder=feed.hasOlder ?? false
             workspace.updateTopicLiveReplies(feed.streaming, botID: botID, conversationID: id)
             workspace.rememberTopicMessages(history, botID: botID, topicID: id, generation: feed.sync)
-            if scenePhase == .active, let seq=messages.last?.seq,seq > (readSeq[id] ?? 0) {readSeq[id]=seq;try await workspace.client.readTopic(botID:botID,conversationID:id,seq:seq)}
+            if scenePhase == .active, let seq = messages.last?.seq, seq > (readSeq[id] ?? 0) {
+                let previous = readSeq[id]
+                readSeq[id] = seq
+                do { try await workspace.client.readTopic(botID: botID, conversationID: id, seq: seq) }
+                catch { if readSeq[id] == seq { readSeq[id] = previous }; throw error }
+            }
         } catch {if epoch==generation,id==selected {errorText=error.localizedDescription}}
     }
     private func send() async {

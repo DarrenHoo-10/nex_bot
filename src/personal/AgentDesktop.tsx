@@ -152,11 +152,10 @@ export function AgentDesktop() {
   const modelSelection = useModelChoice(botId, bot, {
     connectionId: selectedConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null,
   }, connections);
-  // topics are the finance assistant's; a session handed to another assistant opens one there too
+  // topics are the finance assistant's; other assistants with Feishu, forked CLI threads or existing topics show topic cards while keeping their main chat continuous
   const [forkBotId, setForkBotId] = useState<string>();
-  const finance = Boolean((financeBotId && financeBotId === botId) || (forkBotId && forkBotId === botId));
-  // An assistant that receives a Feishu app shows its Feishu topics the way the finance assistant does; its main chat stays continuous.
-  const topicMode = finance || Boolean(botId && state?.feishu?.apps.some((app) => app.botId === botId));
+  const finance = Boolean(financeBotId && financeBotId === botId);
+  const topicMode = finance || Boolean(botId && (forkBotId === botId || Number(bot?.topic_count) > 0 || state?.feishu?.apps.some((app) => app.botId === botId)));
   const [topicId, setTopicId] = useState<string>();
   const [topics,setTopics] = useState<FinanceTopic[]>([]);
   const [olderEnd,setOlderEnd] = useState(false);
@@ -332,9 +331,19 @@ export function AgentDesktop() {
     recent.set(window.key, { ...window, messages: window.messages.slice(-250), olderEnd: window.messages.length <= 250 && window.olderEnd });
     if (recent.size > 12) recent.delete(recent.keys().next().value!);
   };
-  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; localHistory.current.clear(); historySync.current = undefined; pendingSend.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
+  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; localHistory.current.clear(); readPositions.current.clear(); historySync.current = undefined; pendingSend.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
   selected.current = botId; pageRef.current = page;
+  const markRead = useCallback((currentBot: string, key: string, topicConversation: string | undefined, history: RecordRow[]) => {
+    const through = Number(history.at(-1)?.seq ?? 0);
+    if (!currentBot || !through) return;
+    if (historyTarget.current?.botId === currentBot || pageRef.current !== "agent" || !document.hasFocus()) return;
+    if (through <= (readPositions.current.get(key) ?? 0)) return;
+    readPositions.current.set(key, through);
+    void api("agents/read", { botId: currentBot, seq: through, conversationId: topicConversation }).catch(() => {
+      if (readPositions.current.get(key) === through) readPositions.current.delete(key);
+    });
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.dark = dark ? "1" : "0";
@@ -365,6 +374,7 @@ export function AgentDesktop() {
     if (!valid()) return;
     if (historySync.current && !sameHistory(historySync.current, next.sync)) {
       localHistory.current.clear();
+      readPositions.current.clear();
       loaded.current = undefined;
       setMessages([]);
       setStreaming([]); liveOffsets.current.clear();
@@ -463,14 +473,10 @@ export function AgentDesktop() {
           && next.tasks.some((task) => task.id === item.taskId && !terminal.includes(str(task.status))))));
       }
       setHistoryLoading(false);
-      const through = Number(history.at(-1)?.seq ?? 0);
-      if (!target && pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(draftKey) ?? 0)) {
-        readPositions.current.set(draftKey, through);
-        void api("agents/read", { botId: current, seq: through, conversationId: conversation }).catch(() => { if (readPositions.current.get(draftKey) === through) readPositions.current.delete(draftKey); });
-      }
+      if (!target) markRead(current, draftKey, conversation, history);
     }
     if (valid()) { publishedSync.current = next.sync; setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
-  }, [chatVisible, section, topicMode, conversation, draftKey, botId, accountStatus?.sessionId]);
+  }, [chatVisible, section, topicMode, conversation, draftKey, botId, accountStatus?.sessionId, markRead]);
   useEffect(() => {
     const query = new URLSearchParams({ incremental: "1" });
     if (publishedSync.current?.cursor) query.set("after", String(publishedSync.current.cursor));
@@ -516,6 +522,7 @@ export function AgentDesktop() {
         ++serial.current;
         loaded.current = undefined;
         localHistory.current.clear();
+        readPositions.current.clear();
         historySync.current = undefined;
         liveOffsets.current.clear();
         clearLocalCache();
@@ -540,6 +547,7 @@ export function AgentDesktop() {
     };
     const expired = () => { scope.abort(); offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
     const focused = () => {
+      if (chatVisible && botId && loaded.current?.key === draftKey) markRead(botId, draftKey, conversation, loaded.current.messages);
       if (stale) refresh();
       if (Date.now() - lastFrame > 20_000 || events.readyState !== 1) refresh(true);
     };
@@ -563,7 +571,7 @@ export function AgentDesktop() {
       window.removeEventListener("nex-session-expired", expired);
       document.removeEventListener("visibilitychange", visibilityChanged);
     };
-  }, [reload, offline, chatVisible, botId, conversation]);
+  }, [reload, offline, chatVisible, botId, conversation, draftKey, markRead]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
   useEffect(() => {
     const switched = loadedBot.current !== draftKey;

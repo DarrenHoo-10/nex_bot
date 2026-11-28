@@ -737,3 +737,50 @@ it("loads the first workspace snapshot when the desktop document starts hidden",
   expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?view=workspace"))).toBe(true);
   expect(container.querySelector(".workspace-brand")).not.toBeNull();
 });
+
+it("shows existing topics for a non-finance assistant with topic_count > 0, marks topic reads, and keeps main chat continuous", async () => {
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  const topic = { conversationId: "forked-thread", title: "分支排查", audience: "private", sourceContext: {}, last_activity_at: 2, message_count: 2, unread_count: 1, activeTask: null };
+  const topicMessage = { id: "tm-1", seq: 12, role: "assistant", kind: "message", content: "话题结论", conversation_id: topic.conversationId, created_at: 2 };
+  const mainMessage = { id: "mm-1", seq: 5, role: "assistant", kind: "message", content: "主对话结论", created_at: 1 };
+  const withTopics: State = { ...state, bots: [{ id: "agent", name: "开发专家", instructions: "", topic_count: 1, topic_unread_count: 1, unread_count: 1 }] };
+  fixture.api.mockImplementation(async (route: string) => {
+    if (route.startsWith("state?view=workspace")) return withTopics;
+    if (route === "agents/finance") return { botId: "other-finance" };
+    if (route.startsWith("agents/topics?")) return { topics: [topic] };
+    if (route.startsWith("agents/messages?")) {
+      if (route.includes("conversationId=forked-thread")) return { messages: /[?&]after=[1-9]/.test(route) ? [] : [topicMessage], sync, streaming: [], hasMore: false };
+      return { messages: /[?&]after=[1-9]/.test(route) ? [] : [mainMessage], sync, streaming: [], hasMore: false };
+    }
+    return {};
+  });
+  fixture.api.mockClear();
+  await act(async () => { root.render(createElement(AgentDesktop, { key: "non-finance-topics" })); });
+  const bubble = container.querySelector<HTMLButtonElement>(".transcript-inner .topic-bubble");
+  expect(bubble?.textContent).toContain("分支排查");
+  expect(bubble?.textContent).toContain("1 未读");
+  await type("主对话追问"); await enter();
+  const mainCall = fixture.api.mock.calls.find(([route]) => route === "agents/input")?.[1] as Record<string, unknown> | undefined;
+  expect(mainCall?.text).toBe("主对话追问");
+  expect(mainCall?.newConversation).toBeUndefined();
+  expect(mainCall?.conversationId).toBeUndefined();
+  await act(async () => { bubble!.click(); });
+  expect(fixture.api).toHaveBeenCalledWith("agents/read", { botId: "agent", seq: 12, conversationId: topic.conversationId });
+});
+
+it("marks loaded messages read as soon as the window regains focus", async () => {
+  let focused = false;
+  vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
+  const message = { id: "m-focus", seq: 9, role: "assistant", kind: "message", content: "已到达的消息", created_at: 100 };
+  fixture.api.mockImplementation(async (route: string) => {
+    if (route.startsWith("state?view=workspace")) return { ...state, historySeq: 9 };
+    if (route.startsWith("agents/messages?")) return { messages: /[?&]after=[1-9]/.test(route) ? [] : [message], sync, streaming: [], hasMore: false };
+    return {};
+  });
+  fixture.api.mockClear();
+  await act(async () => { root.render(createElement(AgentDesktop, { key: "focus-read" })); });
+  expect(fixture.api.mock.calls.some(([route]) => route === "agents/read")).toBe(false);
+  focused = true;
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  expect(fixture.api).toHaveBeenCalledWith("agents/read", { botId: "agent", seq: 9, conversationId: undefined });
+});
