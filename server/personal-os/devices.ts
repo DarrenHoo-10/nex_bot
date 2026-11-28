@@ -116,7 +116,10 @@ export class DeviceGateway {
             if (call.status === "unknown" && event.result && typeof event.result === "object" && (event.result as { reconciled?: boolean }).reconciled) this.store.insert("call_reconciliations", { id: id(), tool_call_id: callId, ...this.store.scope(), argument_hash: call.argument_hash, decision_key: resultHash, expected_call_version: call.version, source: "device_result", outcome: (event.result as { outcome?: string }).outcome === "confirmed_not_executed" ? "confirmed_not_executed" : "confirmed_stopped", evidence_json: json, created_at: now() });
             this.store.run("UPDATE device_calls SET status=?,result_json=?,result_hash=?,received_at=?,version=version+1 WHERE id=?", event.failed === true ? "failed" : "succeeded", json, resultHash, now(), callId);
             this.store.run("UPDATE tool_calls SET status=?,result_json=?,result_hash=?,version=version+1 WHERE id=? AND status IN ('executing','unknown','ready')", event.failed === true ? "failed" : "succeeded", json, resultHash, callId);
-            this.store.run("UPDATE tasks SET status='queued' WHERE id=(SELECT task_id FROM tool_calls WHERE id=?) AND status='needs_reconciliation'", callId);
+            this.store.run(
+              "UPDATE tasks SET status='queued' WHERE id=(SELECT task_id FROM tool_calls WHERE id=?) AND status='needs_reconciliation' AND NOT EXISTS (SELECT 1 FROM tool_calls WHERE task_id=tasks.id AND status='unknown')",
+              callId,
+            );
           });
           ws.send(JSON.stringify({ type: "ack", callId, resultHash }));
           const pending = this.pending.get(callId);

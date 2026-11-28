@@ -453,23 +453,23 @@ export class FeishuModule {
 
   cancelTask(taskId: string) { for (const [controller, active] of this.active) if (active === taskId) controller.abort(); }
 
-  private async callAs(row: Row, request: ReturnType<typeof parseToolCall>): Promise<Record<string, unknown>> {
+  private async callAs(row: Row, request: ReturnType<typeof parseToolCall>, beforeSend?: () => void): Promise<Record<string, unknown>> {
     // connectorAccess 返回的是连接器行；app_secret 在应用行里。
     const app = this.store.get("SELECT * FROM personal_feishu_apps WHERE connector_id=?", String(row.id));
     if (!app) throw new Error("飞书应用不存在");
     const credentials = this.credentials(app);
     const path = request.path + queryString(request.query);
-    if (request.as === "bot") return await this.api.request(credentials, request.method, path, request.body);
+    if (request.as === "bot") return await this.api.request(credentials, request.method, path, request.body, beforeSend);
     const attempt = async () => {
       const fresh = this.store.get("SELECT * FROM personal_feishu_apps WHERE connector_id=?", String(row.id))!;
       const token = await this.userAccessToken(fresh);
-      return await this.api.userRequest(credentials, token, request.method, path, request.body);
+      return await this.api.userRequest(credentials, token, request.method, path, request.body, beforeSend);
     };
     try { return await attempt(); }
     catch (error) {
       // user token 失效：刷新一次后重试；再失败按未授权返回。
       if (error instanceof FeishuApiError && userTokenInvalid.has(error.code)) {
-        this.clearUserToken(String(row.connector_id));
+        this.clearUserToken(String(row.id));
         return await attempt();
       }
       throw error;
@@ -503,10 +503,14 @@ export class FeishuModule {
       if (request.method !== "GET" && /^\/open-apis\/(im|bot|application)\//.test(request.path)) throw new Error("消息投递必须使用已核实内容和目的地的投递通道");
       const origin = this.mappingFor(String(call.task_id ?? ""));
       if (origin?.chat_type === "group" && request.as === "user") throw new Error("群话题不能使用主人的私人飞书授权");
-      dispatched = true;
+      if (!this.store.get("SELECT 1 FROM personal_feishu_apps WHERE connector_id=?", String(row.id))) throw new Error("飞书应用不存在");
       let result: Record<string, unknown>;
       try {
-        result = await this.callAs(row, request);
+        // Only mutating requests (POST/PUT) become unknown once actually sent on the wire.
+        // Read-only GET requests (feishu_read) have no external side effect and must never lock the task.
+        result = await this.callAs(row, request, () => {
+          if (request.method !== "GET") dispatched = true;
+        });
       } catch (error) {
         if ((error as { missingUserAuth?: boolean }).missingUserAuth) return { text: JSON.stringify({ error: "missing_scope", layer: "user", hint: "请主人在连接器的飞书卡片完成「授权文档访问」后重试。" }), images: [], isError: true };
         if (error instanceof FeishuApiError) {
@@ -526,7 +530,7 @@ export class FeishuModule {
         this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=? AND status='executing'", call.id);
         throw new Error("飞书调用中断或授权已变化，结果未知；请核实，不会自动重放。");
       }
-      throw new Error(`飞书调用失败，未发送请求：${safe(error)}`);
+      throw new Error(request.method === "GET" ? `飞书只读查询失败：${safe(error)}` : `飞书调用失败，未发送请求：${safe(error)}`);
     } finally { this.active.delete(controller); }
   }
 
@@ -1109,16 +1113,30 @@ export class FeishuModule {
   }
 
   private queueReply(mapping: Row, message: Row) {
-    if(mapping.chat_type === "group" && message.role === "system") {
-      const source=`feishu-private-error:${message.source_key}`;
-      if(this.store.get("SELECT id FROM agent_messages WHERE source_key=?",source))return;
-      const app=this.app(String(mapping.app_id));if(!app?.owner_open_id)return;
-      this.store.transaction(()=>{
-        const conversationId=this.agents.createTopic(String(message.bot_id),{title:"通道通知",audience:"private",sourceContext:{channel:"feishu",appId:mapping.app_id,originConversationId:mapping.conversation_id}}).id;
-        this.agents.publish(String(message.bot_id),"system","error",String(message.content),source,null,null,now(),conversationId);
-        this.store.insert("transcript",{id:id(),conversation_id:conversationId,task_id:null,role:"system",content:String(message.content),source_key:source,created_at:now()});
-        const destination=this.store.get("SELECT chat_id FROM feishu_destinations WHERE app_id=? AND chat_type='p2p' AND actor_open_id=? AND enabled=1",mapping.app_id,app.owner_open_id);
-        if(destination)this.enqueuePart({source,appId:String(mapping.app_id),chatId:String(destination.chat_id),conversationId,content:markdownCard(`出错了：${message.content}`),actor:String(app.owner_open_id),audience:"private",part:0});
+    if (mapping.chat_type === "group" && message.role === "system") {
+      // Never leak internal system errors into public Feishu groups, and never spawn
+      // standalone "通道通知" topics in NexBot (the error already lives in the originating
+      // topic). Only deliver privately to Feishu p2p when the owner has an enabled DM.
+      const source = `feishu-private-error:${message.source_key}`;
+      const app = this.app(String(mapping.app_id));
+      if (!app?.owner_open_id) return;
+      const destination = this.store.get(
+        "SELECT chat_id FROM feishu_destinations WHERE app_id=? AND chat_type='p2p' AND actor_open_id=? AND enabled=1",
+        mapping.app_id,
+        app.owner_open_id,
+      );
+      if (!destination) return;
+      if (this.store.get("SELECT id FROM feishu_delivery_parts WHERE source_key=? AND app_id=? AND chat_id=?", source, mapping.app_id, destination.chat_id)) return;
+      const conversationId = String(mapping.conversation_id ?? this.store.get("SELECT conversation_id FROM tasks WHERE id=?", message.task_id)?.conversation_id ?? "");
+      this.enqueuePart({
+        source,
+        appId: String(mapping.app_id),
+        chatId: String(destination.chat_id),
+        conversationId,
+        content: markdownCard(`出错了：${message.content}`),
+        actor: String(app.owner_open_id),
+        audience: "private",
+        part: 0,
       });
       return;
     }

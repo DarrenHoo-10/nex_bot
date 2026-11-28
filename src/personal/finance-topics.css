@@ -1,6 +1,8 @@
 .rk-workspace .topic-bubble{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;text-align:left;max-width:100%;min-width:0;box-sizing:border-box;overflow-wrap:anywhere}
 .topic-bubble strong{min-width:0;white-space:normal}
-.topic-bubble small,.topic-context small{font-size:12px;opacity:.86}
+.topic-bubble small{color:inherit;font-size:12px;opacity:.88}
+.topic-context strong{color:var(--foreground)}
+.topic-context small{color:var(--muted-foreground);font-size:12px;opacity:1}
 .topic-bubble .topic-meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
 .topic-bubble .topic-unread-badge{display:inline-flex;align-items:center;padding:1px 7px;border-radius:999px;background:rgba(255,255,255,.22);color:#fff;font-size:11px;font-weight:600;line-height:1.45;font-variant-numeric:tabular-nums}
 .topic-bubble .topic-chevron{margin-left:auto;opacity:.85}

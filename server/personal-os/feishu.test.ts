@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPersonalApp } from "./index.ts";
-import { id } from "./store.ts";
+import { hash, id } from "./store.ts";
 import { startFakeFeishu, messageEvent, cardActionEvent } from "./testing/fake-feishu.ts";
 import { reportBody } from "./feishu/module.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
@@ -538,5 +538,82 @@ describe("feishu connector in disposable Core", () => {
     await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_s1'")?.task_id);
     f.fake.deliver("cli_fake", messageEvent({ messageId: "om_s2", chatId: "oc_strict", chatType: "group", senderOpenId: "ou_member", parentId: "om_s1", content: JSON.stringify({ text: "追问不带@" }) }));
     await until(() => f.app.store.get("SELECT state FROM personal_feishu_messages WHERE message_id='om_s2'")?.state === "ignored");
+  }, 60_000);
+
+  it("hides orphan Feishu connectors, labels active ones by bot, and keeps feishu_read failures out of unknown", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const connector = (await f.state()).apps[0];
+    const toolsJson = String(f.app.store.get("SELECT tools_json FROM personal_connectors WHERE id=?", connector.id)!.tools_json);
+    const orphanId = id();
+    f.app.store.insert("personal_connectors", {
+      id: orphanId, kind: "feishu", ...f.app.store.scope(), name: "飞书", url: "https://open.feishu.cn",
+      transport: "http", provider: "mcp", enabled: 1, version: 2, tools_json: toolsJson, created_at: Date.now(),
+    });
+
+    expect(f.app.connectors.list().some((item) => item.id === orphanId)).toBe(false);
+    const directory = f.app.connectors.directory(String(f.bot.id));
+    expect(directory.some((item) => item.id === orphanId)).toBe(false);
+    expect(directory).toContainEqual(expect.objectContaining({ id: connector.id, name: "飞书 (秘书)" }));
+
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "orphan-read", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: orphanId, connectorVersion: 2, tool: "feishu_read", parameters: { path: "/open-apis/im/v1/chats/oc_orphan" } }) }] },
+      { kind: "openai-text", text: "已处理失效连接器" },
+    );
+    const orphanTask = f.app.agents.send(String(f.bot.id), "读一下孤儿连接器", "orphan-feishu-read").taskId;
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", orphanTask)?.status === "succeeded");
+    expect(f.app.store.get("SELECT status FROM tool_calls WHERE task_id=?", orphanTask)?.status).toBe("failed");
+
+    const run = f.app.store.get("SELECT * FROM task_runs WHERE task_id=? ORDER BY started_at DESC LIMIT 1", orphanTask)!;
+    const makeCall = (callId: string, tool: string, apiPath: string, body?: Record<string, unknown>) => {
+      const args = { action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool, parameters: { path: apiPath, ...(body ? { body } : {}) } };
+      f.app.store.insert("tool_calls", {
+        id: callId, task_id: run.task_id, run_id: run.id, ...f.app.store.scope(),
+        conversation_id: run.conversation_id, bot_id: run.bot_id, runtime_session_id: run.runtime_session_id,
+        assistant_entry_id: callId, provider_tool_call_id: callId,
+        tool_name: "connector.call", tool_version: "1", target_kind: "connector", target_id: connector.id,
+        arguments_json: JSON.stringify(args), canonical_envelope: "{}", argument_hash: hash(callId),
+        status: "executing", authorization_snapshot_json: "{}", created_at: Date.now(),
+      });
+      return { call: f.app.store.get("SELECT * FROM tool_calls WHERE id=?", callId)!, args };
+    };
+
+    const readProbe = makeCall(id(), "feishu_read", "/open-apis/docx/v1/documents/doc_probe/raw_content");
+    let readAuthCalls = 0;
+    await expect(f.app.feishu.execute(readProbe.call, readProbe.args, async () => {
+      if (++readAuthCalls === 2) throw new Error("权限已变化");
+    })).rejects.toThrow("飞书只读查询失败");
+    expect(f.app.store.get("SELECT status FROM tool_calls WHERE id=?", readProbe.call.id)?.status).toBe("executing");
+
+    const writeProbe = makeCall(id(), "feishu_write", "/open-apis/docx/v1/documents", { title: "测试文档" });
+    let writeAuthCalls = 0;
+    await expect(f.app.feishu.execute(writeProbe.call, writeProbe.args, async () => {
+      if (++writeAuthCalls === 2) throw new Error("权限已变化");
+    })).rejects.toThrow("结果未知");
+    expect(f.app.store.get("SELECT status FROM tool_calls WHERE id=?", writeProbe.call.id)?.status).toBe("unknown");
+  }, 60_000);
+
+  it("keeps group system errors inside the originating topic without spawning 通道通知 topics", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    await until(() => f.app.store.get("SELECT bot_open_id FROM personal_feishu_apps")?.bot_open_id === "ou_fake_bot");
+    f.fake.setChats([{ chatId: "oc_err", name: "报错测试群" }]);
+    const appId = (await f.state()).apps[0].id;
+    await f.api(`feishu/groups?id=${appId}`);
+    expect((await f.api("feishu/groups/save", { id: appId, chatId: "oc_err", trigger: "always", session: "new-topic", context: "", version: 1 })).status).toBe(200);
+
+    f.model.scripts.push({ kind: "openai-error", status: 400, message: "synthetic upstream error" });
+    f.fake.deliver("cli_fake", messageEvent({
+      messageId: "om_err_1", chatId: "oc_err", chatType: "group", senderOpenId: "ou_owner",
+      content: JSON.stringify({ text: "@_user_1 触发一次系统报错" }),
+      mentions: [{ key: "@_user_1", id: { open_id: "ou_fake_bot" }, name: "秘书" }],
+    }));
+    await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_err_1'")?.task_id);
+    const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_err_1'")!.task_id);
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "failed");
+
+    expect(f.app.store.all("SELECT id FROM conversations WHERE title='通道通知'")).toHaveLength(0);
+    expect(f.app.store.all("SELECT conversation_id FROM agent_topics WHERE bot_id=?", f.bot.id)).toHaveLength(1);
+    expect(f.app.store.all("SELECT id FROM feishu_delivery_parts WHERE chat_id='oc_err' AND content LIKE '%出错了%'")).toHaveLength(0);
   }, 60_000);
 });
