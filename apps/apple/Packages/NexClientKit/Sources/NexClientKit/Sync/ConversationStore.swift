@@ -18,6 +18,10 @@ public final class ConversationStore {
     /// latest page. Older history, read receipts and "back to bottom" are off until ``WorkspaceStore/showLatest(botID:)``
     /// or a sent message ends the view.
     public internal(set) var focusedMessageID: String?
+    /// Earliest unread message captured when entering this conversation before read receipts advance.
+    public private(set) var unreadAnchorID: String?
+    /// Increments whenever a fresh unread jump anchor is resolved, so views re-scroll even for cached conversations.
+    public private(set) var unreadJumpRevision = 0
     /// Last send or load error text (Core's message).
     public private(set) var sendError: String?
     public private(set) var isSending = false
@@ -46,6 +50,7 @@ public final class ConversationStore {
     @ObservationIgnored var loadedSync: SyncIdentity?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var readPosition = 0
+    @ObservationIgnored var pendingUnreadReadSeq: Int?
     /// Same text keeps the same clientId, so a retry after a network error is never a duplicate.
     @ObservationIgnored private(set) var pending: (text: String, attachmentIDs: [String], clientID: String)?
     @ObservationIgnored private var uploads: [String: Task<ChatAttachment, Error>] = [:]
@@ -56,8 +61,27 @@ public final class ConversationStore {
     public var activeTask: AgentTask? { workspace.state?.unfinishedTask(botID: botID) }
     public var canStop: Bool { activeTask.map { $0.status != "cancelling" } ?? false }
 
+    func prepareUnreadJump(readSeq: Int) {
+        guard focusedMessageID == nil else { return }
+        pendingUnreadReadSeq = readSeq
+        unreadAnchorID = nil
+    }
+
+    public func clearUnreadAnchor() {
+        pendingUnreadReadSeq = nil
+        unreadAnchorID = nil
+    }
+
     func commit(_ history: [AgentMessage], sync: SyncIdentity, streaming: [StreamingText], hasOlder: Bool?) {
         messages = history; loadedSync = sync; isLoaded = true
+        if let readSeq = pendingUnreadReadSeq, focusedMessageID == nil {
+            pendingUnreadReadSeq = nil
+            let earliest = history.first {
+                $0.seq > readSeq && $0.role != "user" && !($0.row.string("source_key")?.hasPrefix("stock-history:") ?? false)
+            }
+            unreadAnchorID = earliest?.id
+            if earliest != nil { unreadJumpRevision += 1 }
+        }
         let committed = Set(history.filter { $0.role == "assistant" }.map { "\($0.taskID ?? "")\u{1}\($0.content)" })
         self.streaming = streaming.filter { !$0.text.isEmpty && !committed.contains("\($0.taskId)\u{1}\($0.text)") }
         if let hasOlder { self.hasOlder = hasOlder }
@@ -88,7 +112,7 @@ public final class ConversationStore {
     func reset() {
         generation += 1
         messages = []; streaming = []; hasOlder = false; isLoadingOlder = false; isLoaded = false
-        loadedSync = nil; readPosition = 0
+        loadedSync = nil; readPosition = 0; pendingUnreadReadSeq = nil; unreadAnchorID = nil
     }
 
     func discardDraft() {
@@ -173,6 +197,7 @@ public final class ConversationStore {
         if pending?.text != text || pending?.attachmentIDs != ids { pending = (text, ids, UUID().uuidString) }
         let clientID = pending!.clientID
         if focusedMessageID != nil { workspace.leaveHistory(botID) }
+        clearUnreadAnchor()
         sendRevision += 1
         isSending = true; sendError = nil
         do {
@@ -200,6 +225,7 @@ public final class ConversationStore {
         if pending?.text != "job:\(job.id):\(text)" { pending = ("job:\(job.id):\(text)", [], UUID().uuidString) }
         let clientID = pending!.clientID
         if focusedMessageID != nil { workspace.leaveHistory(botID) }
+        clearUnreadAnchor()
         sendRevision += 1
         isSending = true; sendError = nil
         do {

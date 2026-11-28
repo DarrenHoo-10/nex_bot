@@ -13,7 +13,7 @@ public struct CliFolderGroup: Sendable, Hashable, Identifiable {
     /// every folder the project joins, first used last (empty for the scratch group)
     public var roots: [String] = []
     public var scratch: Bool = false
-    public var id: String { scratch ? "\u{0000}scratch" : label.lowercased() }
+    public var id: String { scratch ? CliSessions.scratchKey : label.lowercased() }
 }
 
 public struct CliDeviceGroup: Sendable, Hashable, Identifiable {
@@ -54,7 +54,7 @@ public enum CliSessions {
     }
 
     public static let scratchLabel = "未关联项目"
-    private static let scratchKey = "\u{0000}scratch"
+    public static let scratchKey = "/scratch"
 
     public static func folderLabel(_ cwd: String) -> String {
         let parts = cwd.split(whereSeparator: { $0 == "/" || $0 == "\\" })
@@ -144,6 +144,46 @@ public enum CliSessions {
     }
 
     public static func hiddenCount(_ sessions: [CliSession]) -> Int { sessions.filter(isArchived).count }
+
+    /// Case-insensitive multi-term search matching `matchesTerms` in `session-model.ts`.
+    public static func matchesTerms(_ haystack: String, query: String) -> Bool {
+        let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
+        guard !terms.isEmpty else { return true }
+        let lower = haystack.lowercased()
+        return terms.allSatisfy { lower.contains($0) }
+    }
+
+    /// Places newly seen projects in front of previously saved ones while keeping saved order.
+    public static func rememberProjects(_ folders: [CliFolderGroup], saved: [String]) -> [String] {
+        let savedSet = Set(saved)
+        let fresh = folders.map(\.id).filter { !savedSet.contains($0) }
+        return fresh + saved
+    }
+
+    /// Orders project folders by a saved ID list; unknown projects appear first in their natural order.
+    public static func orderProjects(_ folders: [CliFolderGroup], saved: [String]) -> [CliFolderGroup] {
+        guard !saved.isEmpty else { return folders }
+        var rank: [String: Int] = [:]
+        for (i, id) in saved.enumerated() where rank[id] == nil { rank[id] = i }
+        return folders.enumerated().sorted { a, b in
+            let ra = rank[a.element.id], rb = rank[b.element.id]
+            switch (ra, rb) {
+            case let (l?, r?): return l < r
+            case (nil, _?): return true
+            case (_?, nil): return false
+            case (nil, nil): return a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+
+    /// Moves `moving` before or after `target` in an ordered list of project IDs.
+    public static func moveProject(_ order: [String], moving: String, target: String, after: Bool) -> [String] {
+        guard moving != target else { return order }
+        var next = order.filter { $0 != moving }
+        guard let idx = next.firstIndex(of: target) else { return [moving] + next }
+        next.insert(moving, at: after ? idx + 1 : idx)
+        return next
+    }
 
     /// Running or waiting sessions on every computer, newest first: what the list pins above the projects.
     public static func active(_ sessions: [CliSession], pending: [CliSessionKey: Int] = [:]) -> [CliSession] {

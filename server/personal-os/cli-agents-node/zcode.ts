@@ -49,6 +49,17 @@ const AUXILIARY_TASK_TYPES = new Set([
   "workflow_child",
   "nested_workflow_child",
 ]);
+const ZCODE_RUNNING_TASK_STATUSES = new Set(["running", "streaming", "in_progress", "working"]);
+const ZCODE_WAITING_TASK_STATUSES = new Set(["waiting", "waiting_for_input", "needs_input", "awaiting_approval", "pending_input"]);
+
+function classifyZcodeTaskStatus(raw: unknown): "running" | "waiting" | null {
+  if (typeof raw !== "string") return null;
+  const status = raw.trim().toLowerCase();
+  if (!status) return null;
+  if (ZCODE_RUNNING_TASK_STATUSES.has(status)) return "running";
+  if (ZCODE_WAITING_TASK_STATUSES.has(status)) return "waiting";
+  return null;
+}
 
 export interface ZcodeHostChannel {
   /** Puts one message into a live session (a new turn or guidance). */
@@ -81,7 +92,12 @@ export interface ZcodeSessionRow {
   timeUpdated: number;
   timeCreated: number;
   archived: boolean;
+  /** True when a live external ZCode process holds this session in `session_runtime_presence` (even if merely opened to view). */
+  opened: boolean;
+  /** True when the externally opened session actually has an active turn executing. */
   running: boolean;
+  /** True when the externally opened session is waiting for user input or approval. */
+  waiting?: boolean;
   parentId: string | null;
   model?: string;
   context?: CliContextUsage;
@@ -251,38 +267,115 @@ export class ZcodeDb {
     return resolveZcodeTasksIndexPath(this.home);
   }
 
-  /** Reads ZCode Desktop's `tasks-index.sqlite` (read-only) to learn which sessions are archived or deleted in Desktop UI. */
-  private readTasksIndexState(): { archived: Set<string>; deleted: Set<string> } {
+  /** Reads ZCode Desktop's `tasks-index.sqlite` (read-only) to learn archive/delete flags and live task_status. */
+  private readTasksIndexState(): {
+    archived: Set<string>;
+    deleted: Set<string>;
+    status: Map<string, "running" | "waiting">;
+  } {
     const archived = new Set<string>();
     const deleted = new Set<string>();
+    const status = new Map<string, "running" | "waiting">();
     const file = this.tasksIndexFile();
-    if (!file || !existsSync(file)) return { archived, deleted };
+    if (!file || !existsSync(file)) return { archived, deleted, status };
     let db: DatabaseSync | null = null;
     try {
       db = new DatabaseSync(file, { readOnly: true });
       db.exec("PRAGMA query_only = 1; PRAGMA busy_timeout = 100");
       const cols = new Set((db.prepare("PRAGMA table_info(tasks)").all() as Array<Rec>).map((c) => String(c.name)));
-      if (!cols.has("task_id")) return { archived, deleted };
+      if (!cols.has("task_id")) return { archived, deleted, status };
       const hasCliDeleted = cols.has("cli_deleted");
-      const sql = hasCliDeleted
-        ? "SELECT task_id, archived, deleted, cli_deleted FROM tasks WHERE archived = 1 OR deleted = 1 OR cli_deleted = 1"
-        : "SELECT task_id, archived, deleted FROM tasks WHERE archived = 1 OR deleted = 1";
-      for (const row of db.prepare(sql).all() as Array<Rec>) {
+      const hasTaskStatus = cols.has("task_status");
+      const fields = ["task_id", "archived", "deleted"];
+      if (hasCliDeleted) fields.push("cli_deleted");
+      if (hasTaskStatus) fields.push("task_status");
+      const filter = [
+        "archived = 1",
+        "deleted = 1",
+        ...(hasCliDeleted ? ["cli_deleted = 1"] : []),
+        ...(hasTaskStatus ? ["task_status IS NOT NULL"] : []),
+      ].join(" OR ");
+      for (const row of db.prepare(`SELECT ${fields.join(", ")} FROM tasks WHERE ${filter}`).all() as Array<Rec>) {
         const id = str(row.task_id, 200);
         if (!id) continue;
         if (Number(row.deleted) === 1 || (hasCliDeleted && Number(row.cli_deleted) === 1)) deleted.add(id);
         else if (Number(row.archived) === 1) archived.add(id);
+        if (hasTaskStatus) {
+          const parsed = classifyZcodeTaskStatus(row.task_status);
+          if (parsed) status.set(id, parsed);
+        }
       }
     } catch {
       // Desktop tasks index missing or locked: fall back to db.sqlite alone.
     } finally {
       try { db?.close(); } catch { /* ignore */ }
     }
-    return { archived, deleted };
+    return { archived, deleted, status };
+  }
+
+  /** Sessions that currently have an active turn or queued input recorded in `db.sqlite`. */
+  private activeDbSessions(db: DatabaseSync): Set<string> {
+    const active = new Set<string>();
+    for (const sql of [
+      "SELECT DISTINCT session_id FROM turn_usage WHERE status = 'running'",
+      "SELECT DISTINCT session_id FROM session_input WHERE status = 'admitted'",
+    ]) {
+      try {
+        for (const row of db.prepare(sql).all() as Array<Rec>) {
+          const id = str(row.session_id, 200);
+          if (id) active.add(id);
+        }
+      } catch {
+        // Older or minimal fixture schema without `turn_usage` / `session_input`.
+      }
+    }
+    return active;
+  }
+
+  /** Whether an assistant message with `finish = "tool-calls"` still has an unfinished tool part. */
+  private hasRunningToolPart(db: DatabaseSync, messageId: string): boolean {
+    try {
+      const rows = db.prepare("SELECT data FROM part WHERE message_id=?").all(messageId) as Array<Rec>;
+      for (const row of rows) {
+        const data = isRec(row.data) ? row.data : safeJson(row.data);
+        if (!data || data.type !== "tool" || !isRec(data.state)) continue;
+        const st = typeof data.state.status === "string" ? data.state.status.toLowerCase() : "";
+        if (st === "running" || st === "pending") return true;
+      }
+    } catch {
+      // part table unreadable
+    }
+    return false;
+  }
+
+  /** Whether the latest message of an externally opened session indicates an active in-progress turn. */
+  private hasInProgressMessage(db: DatabaseSync, sessionId: string): boolean {
+    try {
+      const latest = db
+        .prepare("SELECT id, data FROM message WHERE session_id=? ORDER BY sequence DESC LIMIT 1")
+        .get(sessionId) as Rec | undefined;
+      if (!latest) return false;
+      const data = isRec(latest.data) ? latest.data : safeJson(latest.data);
+      if (!data) return false;
+      if (data.role === "user") return !isHiddenMessage(data);
+      if (data.role === "assistant") {
+        if (isRec(data.error)) return false;
+        const time = isRec(data.time) ? data.time : null;
+        const completed = time ? Number(time.completed) : NaN;
+        if (!Number.isFinite(completed) || completed <= 0) return true;
+        if (data.finish === "tool-calls" && typeof latest.id === "string" && latest.id) {
+          return this.hasRunningToolPart(db, latest.id);
+        }
+      }
+    } catch {
+      // best-effort check
+    }
+    return false;
   }
 
   /** Every non-auxiliary session worth reporting, newest first (active and archived).
-   * Deleted rows are left out; a live external pid makes the row `running`. */
+   * Deleted rows are left out; a live external pid marks the row `opened`, and
+   * only an actually executing turn marks it `running` / `waiting`. */
   scan(options?: { ignorePids?: ReadonlySet<number> }): ZcodeSessionRow[] {
     const db = this.open();
     if (!db) return [];
@@ -298,6 +391,7 @@ export class ZcodeDb {
         if (ignored?.has(pid)) continue;
         presence.set(session, presence.get(session) === true || alive(pid));
       }
+      const activeInDb = [...presence.values()].some(Boolean) ? this.activeDbSessions(db) : new Set<string>();
       const purged = new Set<string>();
       try {
         for (const row of db.prepare("SELECT session_id FROM session_purge").all() as Array<Rec>) {
@@ -321,6 +415,15 @@ export class ZcodeDb {
         const timeUpdated = Number(row.time_updated);
         if (!id || !Number.isSafeInteger(timeUpdated)) continue;
         if (purged.has(id) || desktopState.deleted.has(id)) continue;
+        const opened = presence.get(id) === true;
+        let running = false;
+        let waiting = false;
+        if (opened) {
+          const indexed = desktopState.status.get(id);
+          if (indexed === "running") running = true;
+          else if (indexed === "waiting") waiting = true;
+          else running = activeInDb.has(id) || this.hasInProgressMessage(db, id);
+        }
         filtered.push({
           id,
           directory: str(row.directory, CLI_LIMITS.cwd),
@@ -329,7 +432,9 @@ export class ZcodeDb {
           timeCreated: Number(row.time_created) || timeUpdated,
           timeUpdated,
           archived: (row.time_archived !== null && row.time_archived !== undefined) || desktopState.archived.has(id),
-          running: presence.get(id) === true,
+          opened,
+          running,
+          ...(waiting ? { waiting: true } : {}),
           parentId: row.parent_id === null || row.parent_id === undefined ? null : str(row.parent_id, 200),
         });
         if (filtered.length >= MAX_SESSIONS) break;
@@ -752,7 +857,8 @@ export class ZcodeScanner {
   }
 
   /** The wire rows for this machine's ZCode sessions. Live external processes
-   * report `running` (`liveIn: "desktop"`), and inactive sessions report
+   * report `liveIn: "desktop"` with `running`/`waiting` only while a turn is
+   * active (merely viewed sessions report `idle`), and inactive sessions report
    * `stopped` so NexAgent can resume them. */
   async scan(options: { now?: () => number } = {}): Promise<LocalSession[]> {
     const at = (options.now ?? this.options.now ?? Date.now)();
@@ -762,7 +868,7 @@ export class ZcodeScanner {
       .scan()
       .slice(0, MAX_SESSIONS)
       .map<LocalSession>((row) => {
-        const state: CliSessionState = row.running ? "running" : "stopped";
+        const state: CliSessionState = row.waiting ? "waiting" : row.running ? "running" : row.opened ? "idle" : "stopped";
         const session: LocalSession = {
           engine: "zcode",
           nativeId: row.id,
@@ -770,16 +876,16 @@ export class ZcodeScanner {
           cwd: row.directory || this.home,
           title: row.title,
           state,
-          liveIn: row.running ? "desktop" : undefined,
+          liveIn: row.opened ? "desktop" : undefined,
           lastActivityAt: row.timeUpdated,
           transcript: "",
         };
-        if (row.archived && !row.running) session.archived = true;
+        if (row.archived && !row.running && !row.waiting) session.archived = true;
         if (row.parentId && isCliNativeId(row.parentId)) session.forkOf = row.parentId;
         if (row.version) session.cliVersion = row.version;
         if (row.model) session.model = row.model;
         if (row.context) session.context = row.context;
-        if (row.running && host) {
+        if (row.opened && host) {
           session.sendVia = "host";
           session.route = { via: "host", home: this.home, sessionId: row.id };
         }
@@ -816,8 +922,52 @@ export function clearZcodeLaunchCache(): void {
   cachedLaunch = null;
 }
 
-function personalProviderConfig(homedir: string, env: NodeJS.ProcessEnv): string {
+export interface ZcodeProviderConfigMeta {
+  providerId: string;
+  providerName?: string;
+  accessType?: string;
+  baseUrl?: string;
+}
+
+export function personalProviderConfigPath(homedir: string, env: NodeJS.ProcessEnv): string {
   return env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE?.trim() || path.join(homedir, ".zcode", "v2", "provider_config.json");
+}
+
+/** Reads non-secret provider metadata (`access.type`, `api.baseUrl`, `providerName`) from ZCode's `provider_config.json`. */
+export function readZcodeProviderMeta(configPath: string): Map<string, ZcodeProviderConfigMeta> {
+  const result = new Map<string, ZcodeProviderConfigMeta>();
+  if (!configPath || !existsSync(configPath)) return result;
+  try {
+    const raw = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+    const root = isRec(raw) ? raw : null;
+    const cfg = root && isRec(root.config) ? root.config : null;
+    const rules = cfg && isRec(cfg.providerConfigRules) ? cfg.providerConfigRules : null;
+    const list = rules && Array.isArray(rules.providerRules) ? rules.providerRules : [];
+    for (const entry of list) {
+      if (!isRec(entry)) continue;
+      const providerId = typeof entry.providerId === "string" ? entry.providerId.trim() : "";
+      if (!providerId) continue;
+      const providerName = typeof entry.providerName === "string" ? entry.providerName.trim() : undefined;
+      const itemCfg = isRec(entry.config) ? entry.config : null;
+      const access = itemCfg && isRec(itemCfg.access) ? itemCfg.access : null;
+      const api = itemCfg && isRec(itemCfg.api) ? itemCfg.api : null;
+      const accessType = access && typeof access.type === "string" ? access.type.trim() : undefined;
+      const baseUrl = api && typeof api.baseUrl === "string" ? api.baseUrl.trim() : undefined;
+      result.set(providerId, {
+        providerId,
+        ...(providerName ? { providerName } : {}),
+        ...(accessType ? { accessType } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+      });
+    }
+  } catch {
+    // Best-effort metadata only; never block model discovery on malformed config.
+  }
+  return result;
+}
+
+function personalProviderConfig(homedir: string, env: NodeJS.ProcessEnv): string {
+  return personalProviderConfigPath(homedir, env);
 }
 
 function desktopBundleSpec(

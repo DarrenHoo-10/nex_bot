@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CliTurnReason, DeviceCliMessage } from "../../../shared/cli-agents.ts";
-import { ZcodeDb, ZcodeScanner, zcodeHomeExists, pidAlive } from "./zcode.ts";
+import { ZcodeDb, ZcodeScanner, zcodeHomeExists, pidAlive, readZcodeProviderMeta } from "./zcode.ts";
 import { ZcodeRuntime } from "./zcode-runtime.ts";
 import { harnessFor, allHarnesses } from "./harness.ts";
 
@@ -86,24 +86,92 @@ describe("discovery", () => {
   it("reports live, older and archived sessions without a 14-day cutoff, carries forkOf, and skips subagents and deleted rows", async () => {
     const host = tempHome(
       [
-        { id: "sess_live", timeUpdated: stamp(1000) },
+        {
+          id: "sess_live",
+          timeUpdated: stamp(1000),
+          messages: [{ id: "m_live", sessionId: "sess_live", sequence: 0, data: { role: "assistant", time: { created: 1000 } } }],
+        },
+        {
+          id: "sess_viewed",
+          timeUpdated: stamp(1200),
+          messages: [{ id: "m_done", sessionId: "sess_viewed", sequence: 0, data: { role: "assistant", time: { created: 1000, completed: 2000 }, finish: "stop" } }],
+        },
         { id: "sess_old", timeUpdated: stamp(60 * 86_400_000), parentId: "sess_live" },
         { id: "sess_sub", timeUpdated: stamp(1500), taskType: "subagent_child" },
         { id: "sess_archived", timeUpdated: stamp(3000), timeArchived: stamp(3500) },
         { id: "sess_deleted", timeUpdated: stamp(4000), timeDeleted: stamp(4500) },
       ],
-      [["sess_live", 4242]],
+      [["sess_live", 4242], ["sess_viewed", 4242]],
     );
     expect(await zcodeHomeExists(host)).toBe(true);
     const scanner = new ZcodeScanner(host, { pidAlive: alive, host: { submit: async () => ({ accepted: true }), interrupt: async () => ({ outcome: "ok" }) } });
     const rows = await scanner.scan();
-    expect(rows.map((row) => [row.nativeId, row.state, row.sendVia, row.archived ?? false, row.forkOf])).toEqual([
-      ["sess_live", "running", "host", false, undefined],
-      ["sess_archived", "stopped", undefined, true, undefined],
-      ["sess_old", "stopped", undefined, false, "sess_live"],
+    expect(rows.map((row) => [row.nativeId, row.state, row.liveIn, row.sendVia, row.archived ?? false, row.forkOf])).toEqual([
+      ["sess_live", "running", "desktop", "host", false, undefined],
+      ["sess_viewed", "idle", "desktop", "host", false, undefined],
+      ["sess_archived", "stopped", undefined, undefined, true, undefined],
+      ["sess_old", "stopped", undefined, undefined, false, "sess_live"],
     ]);
     expect(rows.every((row) => row.engine === "zcode" && row.cwd === "D:/proj")).toBe(true);
     expect(rows[0]!.route).toEqual({ via: "host", home: host, sessionId: "sess_live" });
+    scanner.close();
+  });
+
+  it("treats ZCode Desktop sessions opened merely for viewing as idle rather than running, honoring task_status and tool state", async () => {
+    const host = tempHome(
+      [
+        {
+          id: "sess_view_only",
+          timeUpdated: stamp(100),
+          messages: [{ id: "m1", sessionId: "sess_view_only", sequence: 0, data: { role: "assistant", time: { created: 1000, completed: 2000 }, finish: "stop" } }],
+        },
+        {
+          id: "sess_interrupted_tool",
+          timeUpdated: stamp(200),
+          messages: [{
+            id: "m2", sessionId: "sess_interrupted_tool", sequence: 0,
+            data: { role: "assistant", time: { created: 1000, completed: 2000 }, finish: "tool-calls" },
+            parts: [{ type: "tool", tool: "Read", state: { status: "completed", output: "ok" } }],
+          }],
+        },
+        {
+          id: "sess_running_tool",
+          timeUpdated: stamp(300),
+          messages: [{
+            id: "m3", sessionId: "sess_running_tool", sequence: 0,
+            data: { role: "assistant", time: { created: 1000, completed: 2000 }, finish: "tool-calls" },
+            parts: [{ type: "tool", tool: "Bash", state: { status: "running" } }],
+          }],
+        },
+        { id: "sess_waiting_task", timeUpdated: stamp(400) },
+        { id: "sess_empty_tab", timeUpdated: stamp(500) },
+      ],
+      [
+        ["sess_view_only", 5000],
+        ["sess_interrupted_tool", 5000],
+        ["sess_running_tool", 5000],
+        ["sess_waiting_task", 5000],
+        ["sess_empty_tab", 5000],
+      ],
+    );
+    const v2Dir = path.join(path.dirname(host), "v2");
+    mkdirSync(v2Dir, { recursive: true });
+    const tdb = new DatabaseSync(path.join(v2Dir, "tasks-index.sqlite"));
+    tdb.exec("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, task_status TEXT, archived INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0)");
+    tdb.prepare("INSERT INTO tasks (task_id, task_status, archived, deleted) VALUES (?, ?, 0, 0)").run("sess_view_only", "completed");
+    tdb.prepare("INSERT INTO tasks (task_id, task_status, archived, deleted) VALUES (?, ?, 0, 0)").run("sess_interrupted_tool", "interrupted");
+    tdb.prepare("INSERT INTO tasks (task_id, task_status, archived, deleted) VALUES (?, ?, 0, 0)").run("sess_waiting_task", "waiting_for_input");
+    tdb.close();
+
+    const scanner = new ZcodeScanner(host, { pidAlive: alive });
+    const rows = await scanner.scan();
+    expect(rows.map((r) => [r.nativeId, r.state, r.liveIn])).toEqual([
+      ["sess_view_only", "idle", "desktop"],
+      ["sess_interrupted_tool", "idle", "desktop"],
+      ["sess_running_tool", "running", "desktop"],
+      ["sess_waiting_task", "waiting", "desktop"],
+      ["sess_empty_tab", "idle", "desktop"],
+    ]);
     scanner.close();
   });
 
@@ -145,7 +213,14 @@ describe("discovery", () => {
   });
 
   it("keeps external running sessions read-only without a host channel", async () => {
-    const host = tempHome([{ id: "sess_a", timeUpdated: stamp(100) }], [["sess_a", 99]]);
+    const host = tempHome(
+      [{
+        id: "sess_a",
+        timeUpdated: stamp(100),
+        messages: [{ id: "m_a", sessionId: "sess_a", sequence: 0, data: { role: "user", time: { created: 1000 } } }],
+      }],
+      [["sess_a", 99]],
+    );
     const scanner = new ZcodeScanner(host, { pidAlive: alive });
     const rows = await scanner.scan();
     expect(rows[0]!.state).toBe("running");
@@ -426,6 +501,54 @@ describe("ZcodeRuntime app-server lifecycle", () => {
     await runtime.answer({ id: planQ.id, decision: "allow", answers: { "Approve plan?": "Approve" } });
     await waitUntil(() => ended.length >= 4);
     expect((await runtime.page("sess_account_only")).items.some((i) => i.kind === "assistant" && i.text.includes("plan approved"))).toBe(true);
+  });
+
+  it("classifies ZCode plans and API providers, skips disabled models, and parses object thoughtLevel", async () => {
+    const home = tempHome();
+    const providerConfig = path.join(path.dirname(home), "provider_config.json");
+    writeFileSync(
+      providerConfig,
+      JSON.stringify({
+        schemaVersion: 1,
+        config: {
+          providerConfigRules: {
+            providerRules: [
+              {
+                providerId: "coding-key-1",
+                providerName: "我的智谱",
+                config: {
+                  access: { type: "zhipu-coding-plan-api-key", apiKey: "secret-should-never-leak" },
+                  api: { type: "anthropic-messages", baseUrl: "https://open.bigmodel.cn/api/anthropic" },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const meta = readZcodeProviderMeta(providerConfig);
+    expect(meta.get("coding-key-1")).toEqual({
+      providerId: "coding-key-1",
+      providerName: "我的智谱",
+      accessType: "zhipu-coding-plan-api-key",
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    });
+
+    const { runtime } = setupRuntime(home, {
+      ZCODE_FIXTURE_PLANS: "1",
+      ZCODE_FIXTURE_OBJECT_THOUGHT: "1",
+      ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: providerConfig,
+    });
+    await runtime.probe();
+    const catalog = await runtime.models();
+    expect(catalog.currentEffort).toBe("medium");
+    expect(catalog.models.map((m) => [m.id, m.providerLabel, m.providerBadge, m.providerKind])).toEqual([
+      ["account:bigmodel-individual-coding-plan/GLM-5.3", "BigModel", "个人", "plan"],
+      ["account:bigmodel-start-plan/GLM-5.3-Flash", "Start Plan", "免费", "plan"],
+      ["coding-key-1/GLM-5.3", "我的智谱", "套餐", "plan"],
+      ["magpie/zcode/GLM-5.3-Flash", "Magpie", "API", "api"],
+      ["bigmodel/glm-5", "智谱", "API", "api"],
+    ]);
   });
 });
 

@@ -149,26 +149,47 @@ private struct AccountPane: View {
     }
 }
 
+private func sessionDeviceSymbol(_ name: String) -> String {
+    let lower = name.lowercased()
+    if lower.range(of: #"\b(android|iphone|ipad|ios|mobile|phone|pixel|huawei|xiaomi|redmi|honor|oppo|vivo|oneplus|samsung)\b|手机"#, options: .regularExpression) != nil {
+        return "iphone"
+    }
+    if lower.range(of: #"\b(browser|chrome|safari|firefox|edge|web)\b|浏览器"#, options: .regularExpression) != nil {
+        return "globe"
+    }
+    return "laptopcomputer"
+}
+
 private struct SessionsSection: View {
     let workspace: WorkspaceStore
     @State private var error: String?
     @State private var loaded = false
     @State private var loadFailed = false
+    @State private var revoking: ClientSession?
+
+    private var orderedSessions: [ClientSession] {
+        workspace.sessions.sorted { lhs, rhs in
+            let lc = lhs.sessionID == workspace.currentSessionID
+            let rc = rhs.sessionID == workspace.currentSessionID
+            if lc != rc { return lc }
+            return (lhs.expiresAt ?? .distantPast) > (rhs.expiresAt ?? .distantPast)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("登录设备").font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Text("\(workspace.sessions.count) 个有效登录").font(.system(size: 10)).foregroundStyle(Theme.muted)
+                Text("\(orderedSessions.count) 个有效登录").font(.system(size: 10)).foregroundStyle(Theme.muted)
                     .padding(.horizontal, 8).padding(.vertical, 4).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 5))
             }
             .padding(.top, 24)
             VStack(spacing: 14) {
-                ForEach(workspace.sessions) { session in
+                ForEach(orderedSessions) { session in
                     let current = session.sessionID == workspace.currentSessionID
                     HStack(spacing: 12) {
-                        Image(systemName: "laptopcomputer").font(.system(size: 14)).foregroundStyle(Theme.muted).frame(width: 20)
+                        Image(systemName: sessionDeviceSymbol(session.name)).font(.system(size: 14)).foregroundStyle(Theme.muted).frame(width: 20)
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
                                 Text(session.name.isEmpty ? "未命名设备" : session.name).font(.system(size: 13, weight: .semibold))
@@ -182,17 +203,20 @@ private struct SessionsSection: View {
                             }
                         }
                         Spacer()
-                        if !current { OutlineButton(title: "撤销登录") { revoke(session.sessionID) } }
+                        if !current { OutlineButton(title: "撤销登录", danger: true) { revoking = session } }
                     }
                 }
             }
             .padding(.top, 18)
             if loadFailed { Text("登录设备暂时无法加载，请稍后重新打开设置。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
-            else if !loaded && workspace.sessions.isEmpty { Text("正在加载登录设备…").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
-            else if workspace.sessions.isEmpty { Text("暂无其他有效登录。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
+            else if !loaded && orderedSessions.isEmpty { Text("正在加载登录设备…").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
+            else if orderedSessions.isEmpty { Text("暂无其他有效登录。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).padding(.top, 10) }
         }
         .task { load() }
+        .confirmationDialog("撤销该设备的登录？", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } }), titleVisibility: .visible, presenting: revoking) { session in
+            Button("撤销「\(session.name.isEmpty ? "未命名设备" : session.name)」", role: .destructive) { revoke(session.sessionID) }
+        }
     }
 
     private func load() {

@@ -71,7 +71,9 @@ limits.
    (the icon files are generated, not tracked), create a dedicated simulator with
    `xcrun simctl create` and pass it as `SIM_ID` to `release-preview.sh`, so the
    user's booted simulator is never used. Delete the simulator and directory afterwards.
-4. **Packages.** Build every platform the change reaches from the pushed commit:
+4. **Packages.** Unless the user explicitly specifies a subset of platforms,
+   every release builds and publishes all four client platforms together
+   (Windows, Android, Mac, and iOS) from the pushed commit:
    Windows `pnpm package:client:win`; Android
    `./gradlew --no-daemon :app:assembleDebug`
    in `android/` (JDK 17, Android SDK 36, the machine's debug key, so updates only
@@ -83,8 +85,11 @@ limits.
    not only the source: Windows with `node scripts/smoke-shell-login.mjs --exe=<exe>`,
    Android's version and `apksigner` (same certificate as the published build),
    Mac/iOS version, signature and bundle contents.
+
+   如无用户特别指定，每次构建与发布都必须四端（Windows、Android、Mac、iOS）一起打包并同步发布；仅在用户明确指定时才可单独发布部分平台。
 5. **Publish.** Create a GitHub pre-release tagged `nexbot-v<windows>-preview.N`
-   (Apple-only: `nexbot-apple-v<version>-preview.N`) at the build commit, with a
+   (or `nexbot-apple-v<version>-preview.N` only when the user explicitly requests
+   an Apple-only release) at the build commit, with a
    Chinese title and notes (platform/version table, install notes, what was and
    was not verified), the installers, `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`.
    Check uploaded sizes and digests against the local files. Then mirror to OSS

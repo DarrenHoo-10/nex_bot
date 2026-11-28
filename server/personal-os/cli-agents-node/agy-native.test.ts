@@ -107,7 +107,7 @@ describe("AGY user input", () => {
       expect(await isAgyArchived(dir, id)).toBe(false);
       expect((await scanAgyHistory(dir, "linux"))[0]?.row.archived).toBeUndefined();
 
-      expect(await deleteAgyConversation(dir, id)).toBe(true);
+      await deleteAgyConversation(dir, id);
       expect(existsSync(path.join(dir, "conversations", `${id}.pb`))).toBe(false);
       expect(existsSync(path.join(dir, "annotations", `${id}.pbtxt`))).toBe(false);
       expect(existsSync(path.join(dir, "brain", id))).toBe(false);

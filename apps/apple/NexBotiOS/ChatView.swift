@@ -24,6 +24,8 @@ struct ChatView: View {
     private var focusedID: String? { conversation.focusedMessageID }
     /// Changes when a search-result view finishes loading, so the target is scrolled to once per opening and not on each poll.
     private var focusKey: String { "\(focusedID ?? "")|\(conversation.isLoaded)" }
+    /// Changes when a conversation finishes loading or resolves a fresh earliest-unread anchor.
+    private var unreadKey: String { "\(botID)|\(conversation.isLoaded)|\(conversation.unreadJumpRevision)" }
 
     private var conversation: ConversationStore { workspace.conversation(for: botID) }
     private var bot: Bot? { workspace.bot(botID) }
@@ -85,21 +87,26 @@ struct ChatView: View {
                            index == 0 || !Calendar.current.isDate(date, inSameDayAs: previous?.createdAt ?? .distantPast) {
                             DateDivider(date: date)
                         }
-                        MessageRow(message: message, workspace: workspace, botName: bot?.name ?? "Agent", bot: bot,
-                                   groupEnd: MessageGrouping.ends(message, next: next),
-                                   onQuote: { author, text in quote = QuoteDraft(author: author, text: text) },
-                                   onOpenStep: { step in Task { await openStep(step) } },
-                                   onOpenPeer: { nav.openChat($0) },
-                                   onOpenJob: { jobSheet = JobSheetItem(id: $0) },
-                                   onReplyJob: { job in quote = nil; conv.replyJob = JobReplyTarget(id: job.id, title: job.title) })
-                            .overlay {
-                                if message.id == focusedID {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
-                                        .padding(-6).allowsHitTesting(false)
-                                }
+                        VStack(alignment: .leading, spacing: 0) {
+                            if focusedID == nil && message.id == conv.unreadAnchorID {
+                                UnreadDivider()
                             }
-                            .padding(.top, MessageGrouping.joins(previous, message) ? 4 : 14)
-                            .id(message.id)
+                            MessageRow(message: message, workspace: workspace, botName: bot?.name ?? "Agent", bot: bot,
+                                       groupEnd: MessageGrouping.ends(message, next: next),
+                                       onQuote: { author, text in quote = QuoteDraft(author: author, text: text) },
+                                       onOpenStep: { step in Task { await openStep(step) } },
+                                       onOpenPeer: { nav.openChat($0) },
+                                       onOpenJob: { jobSheet = JobSheetItem(id: $0) },
+                                       onReplyJob: { job in quote = nil; conv.replyJob = JobReplyTarget(id: job.id, title: job.title) })
+                                .overlay {
+                                    if message.id == focusedID {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
+                                            .padding(-6).allowsHitTesting(false)
+                                    }
+                                }
+                                .padding(.top, MessageGrouping.joins(previous, message) ? 4 : 14)
+                        }
+                        .id(message.id)
                     }
                     if conv.isLoaded && conv.messages.isEmpty && conv.streaming.isEmpty && !processing { welcome }
                     ForEach(conv.streaming, id: \.taskId) { part in
@@ -132,15 +139,26 @@ struct ChatView: View {
                     }
                 }
             }
-            .overlay(alignment: .bottom) {
-                if !atBottom && conv.messages.count > 3 && focusedID == nil {
-                    Button { scrollToBottom(proxy) } label: {
-                        Image(systemName: "arrow.down").font(.system(size: 17, weight: .regular))
-                            .frame(width: 40, height: 40)
-                            .glass(Circle(), strong: true, lift: .card)
+            .overlay(alignment: .bottomTrailing) {
+                if (!atBottom && !conv.messages.isEmpty) || focusedID != nil {
+                    Button {
+                        if focusedID != nil { workspace.showLatest(botID: botID) }
+                        else { scrollToBottom(proxy) }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.down").font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(Theme.brand)
+                            Text(focusedID != nil ? "返回最新消息" : "回到底部")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(Theme.foreground)
+                        }
+                        .padding(.horizontal, 12).frame(height: 34)
+                        .glass(Capsule(), strong: true, lift: .card)
                     }
-                    .buttonStyle(.plain).accessibilityLabel("回到底部").foregroundStyle(Theme.foreground).padding(.bottom, 10)
-                    .transition(.opacity)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(focusedID != nil ? "返回最新消息" : "回到底部")
+                    .padding(.trailing, 14).padding(.bottom, 10)
+                    .transition(.opacity.combined(with: .scale(scale: 0.94)))
                 }
             }
             .onChange(of: conv.messages.last?.seq) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
@@ -150,10 +168,19 @@ struct ChatView: View {
             .onChange(of: conv.sendRevision) {
                 atBottom = true; proxy.scrollTo(bottomID, anchor: .bottom)
             }
-            .task(id: "\(botID)|\(conv.isLoaded)") {
+            .task(id: unreadKey) {
                 guard conv.isLoaded, focusedID == nil else { return }
-                atBottom = true
-                proxy.scrollTo(bottomID, anchor: .bottom)
+                if let unreadID = conv.unreadAnchorID, conv.messages.contains(where: { $0.id == unreadID }) {
+                    atBottom = false
+                    for delay in [0, 80, 260] {
+                        if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                        guard !Task.isCancelled else { return }
+                        proxy.scrollTo(unreadID, anchor: .top)
+                    }
+                } else {
+                    atBottom = true
+                    proxy.scrollTo(bottomID, anchor: .bottom)
+                }
             }
             .task(id: focusKey) { await scrollToFocused(proxy) }
             .debugCommand { command, arg in
@@ -371,6 +398,23 @@ struct ChatView: View {
     private func show(_ item: PreviewItem) {
         PreviewCenter.shared.items[botID] = item
         nav.openAgentDetail(botID, tab: .work)
+    }
+}
+
+private struct UnreadDivider: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(Theme.brand.opacity(0.24)).frame(height: 1)
+            Text("以下为未读消息")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Theme.brand)
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .background(Theme.brandSoft, in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.brand.opacity(0.22), lineWidth: 1))
+            Rectangle().fill(Theme.brand.opacity(0.24)).frame(height: 1)
+        }
+        .padding(.top, 16).padding(.bottom, 4)
+        .accessibilityLabel("以下为未读消息")
     }
 }
 

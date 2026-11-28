@@ -42,6 +42,7 @@ targetTemplates:
       - path: ../Shared/WorkspaceSurface.swift
       - path: ../Shared/AgentSessionsView.swift
       - path: ../Shared/AgentSessionDetail.swift
+      - path: ../Shared/AgentWorkbenchInspector.swift
       - path: ../Shared/ChatSkillPicker.swift
       - path: ../Shared/AgentImages.swift
       - path: ../Shared/FinanceTopicsView.swift
@@ -50,6 +51,8 @@ targetTemplates:
       - path: ../Shared/ComposerContextControl.swift
       - path: ../Shared/AgentNotifier.swift
       - path: ../Shared/CliTerminalView.swift
+      - path: ../Shared/CliTerminalPrefs.swift
+      - path: ../Shared/CliTerminalKeyBar.swift
       - path: ../Shared/Assets.xcassets
     dependencies:
       - package: NexClientKit

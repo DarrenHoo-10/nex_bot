@@ -10,6 +10,31 @@
 .model-menu.na-model-menu .na-model-head span { font-size: 12px; font-weight: 600; color: var(--mm-muted); }
 .model-menu.na-model-menu .na-model-head small { font-size: 11px; color: var(--mm-muted); }
 
+.model-menu.na-model-menu button.na-provider-trigger,
+.model-menu.na-model-menu .na-provider-static {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: calc(100% - 8px);
+  min-height: 36px; margin: 2px 4px 6px; padding: 6px 10px;
+  border: 1px solid var(--mm-line); border-radius: 10px; background: var(--mm-hover);
+  color: var(--mm-ink); text-align: left; font-size: 13px; font-weight: 500; transform: none;
+}
+.model-menu.na-model-menu button.na-provider-trigger { cursor: pointer; }
+.model-menu.na-model-menu button.na-provider-trigger:hover,
+.model-menu.na-model-menu button.na-provider-trigger:focus-visible {
+  border-color: var(--mm-accent); background: var(--mm-paper); outline: 0;
+}
+.model-menu.na-model-menu .na-provider-row-main { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; }
+.model-menu.na-model-menu .na-provider-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.model-menu.na-model-menu .na-provider-badge {
+  flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; line-height: 1.45;
+  background: color-mix(in srgb, var(--mm-muted) 14%, transparent); color: var(--mm-muted);
+}
+.model-menu.na-model-menu .na-provider-badge[data-kind="plan"] {
+  background: color-mix(in srgb, var(--mm-soft) 80%, transparent); color: var(--mm-accent);
+}
+.model-menu.na-model-menu .na-provider-arrow { flex: none; color: var(--mm-muted); transition: transform .15s ease; }
+.model-menu.na-model-menu .na-provider-arrow[data-open="true"] { transform: rotate(90deg); color: var(--mm-accent); }
+.model-menu.na-model-menu .na-provider-list { padding-top: 2px; }
+
 .model-menu.na-model-menu .model-menu-search { margin: 0 4px 6px; padding: 0 9px; height: 32px; border: 1px solid var(--mm-line); border-radius: 9px; background: var(--mm-hover); color: var(--mm-muted); }
 .model-menu.na-model-menu .model-menu-search:focus-within { border-color: var(--mm-accent); background: var(--mm-paper); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mm-accent) 14%, transparent); }
 .model-menu.na-model-menu .model-menu-search input,

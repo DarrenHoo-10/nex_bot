@@ -92,11 +92,27 @@ public struct AttachmentLink: Sendable, Hashable, Identifiable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Strips Markdown syntax so contact-list previews read as clean plain text.
+    private static func stripMarkdown(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: #"(?m)^[ \t]{0,3}(?:`{3,}|~{3,})[^\n]*$"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^[ \t]{0,3}(?:[-*_][ \t]*){3,}$"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^[ \t]{0,3}#{1,6}[ \t]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^[ \t]{0,3}>+[ \t]?"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^[ \t]{0,3}(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"!\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\[([^\]]+)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"`+([^`\n]+)`+"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"(\*\*|__|~~)(\S(?:.*?\S)?)\1"#, with: "$2", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// One-line contact-list preview. Pictures show 图片; a file-only message
     /// shows the first file name; the generated 下载图片 line never leaks in.
     public static func preview(_ content: String) -> String {
         let parsed = parse(content)
-        let body = stripped(parsed.body).replacingOccurrences(of: "\n", with: " ")
+        let body = stripMarkdown(stripped(parsed.body))
         if !body.isEmpty { return body }
         if !embeddedImages(content).isEmpty || parsed.links.contains(where: { $0.isImage }) { return "图片" }
         return parsed.links.first?.name ?? ""

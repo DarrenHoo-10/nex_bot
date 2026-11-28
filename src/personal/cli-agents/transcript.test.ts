@@ -117,11 +117,13 @@ describe("groupItems", () => {
 
   it("hides task notices and legacy queued notifications, but renders user-pasted XML", () => {
     const text = "<task-notification><task-id>task-1</task-id><output-file>/private/task.log</output-file><status>completed</status><summary>private output</summary></task-notification>";
+    const runtimeSubagent = "<task-notification>\n<task-id>ab1e65b3c50f512f8</task-id>\n<tool-use-id>toolu_01LySzsZLx2y73GdRpGRSote</tool-use-id>\n<output-file>C:\\temp\\ab1e65b3c50f512f8.output</output-file>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>report</result>\n</task-notification>";
     const blocks = groupItems([
       toolItem("t1", 1),
       { kind: "notice", id: "event", ts: 2, text: "", level: "info", taskEnd: { id: "task-1", state: "completed" } },
       { kind: "notice", id: "old-notice", ts: 3, text, level: "info" },
       { kind: "user", id: "old-queued", ts: 4, text, queued: true },
+      { kind: "user", id: "cached-runtime", ts: 4.5, text: runtimeSubagent },
       toolItem("t2", 5),
       { kind: "user", id: "input", ts: 6, text },
       { kind: "user", id: "queued-input", ts: 7, text, queued: true, queuedByUser: true },

@@ -6,6 +6,7 @@ public struct FinanceTopic: RowBacked, Identifiable {
     public var id: String { row.string("conversationId") ?? row.string("conversation_id") ?? "" }
     public var title: String { row.string("title") ?? "新话题" }
     public var audience: String { row.string("audience") ?? "private" }
+    public var readSeq: Int { row.int("read_seq") ?? 0 }
     public var unread: Int { row.int("unread_count") ?? 0 }
     public var replyCount: Int { row.int("message_count") ?? 0 }
     public var messages: [AgentMessage] { row["messages"]?.arrayValue?.compactMap(\.objectValue).map(AgentMessage.init) ?? [] }

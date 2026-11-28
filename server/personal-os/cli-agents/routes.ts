@@ -140,7 +140,7 @@ export class CliAgentRoutes {
             body: {
               ...this.hub.list(),
               requests: this.hub.requests(),
-              ...(this.extras.workbench ? { workbench: this.extras.workbench.list(), queues: this.extras.workbench.queues() } : {}),
+              ...(this.extras.workbench ? { workbench: this.extras.workbench.list(), deletedKeys: this.extras.workbench.deletedKeys(), queues: this.extras.workbench.queues() } : {}),
               ...(this.extras.teams ? { teams: this.extras.teams.listRuns() } : {}),
             },
           };
@@ -327,7 +327,7 @@ export class CliAgentRoutes {
     const workbench = this.extras.workbench;
     if (!workbench) return cliErrorResult("not_found");
     const key = request.search.get("key");
-    if (!key || key.length > 200) return cliErrorResult("invalid");
+    if (!key || (!this.key(key) && key.length > 128)) return cliErrorResult("invalid");
     return { status: 200, body: { notes: workbench.listNotes(key) } };
   }
 

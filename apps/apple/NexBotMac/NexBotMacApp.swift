@@ -35,6 +35,20 @@ final class UIState {
     /// 待办 and Agent 会话 take the place of the conversation; only one of them at a time.
     var todosVisible = false { didSet { if todosVisible { agentsVisible = false } } }
     var agentsVisible = false { didSet { if agentsVisible { todosVisible = false } } }
+    /// The open NexAgent new-session composer target, shared between the left rail and detail pane.
+    var agentComposing: AgentNewTarget?
+    /// Width of the left sidebar in NexAgent mode, persisted under `nexagent.railWidth`.
+    static let agentRailWidthKey = "nexagent.railWidth"
+    var agentRailWidth: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: UIState.agentRailWidthKey)
+        return saved >= 220 && saved <= 420 ? CGFloat(saved) : 272
+    }() {
+        didSet {
+            let clamped = min(420, max(220, agentRailWidth))
+            if clamped != agentRailWidth { agentRailWidth = clamped; return }
+            UserDefaults.standard.set(Double(clamped), forKey: UIState.agentRailWidthKey)
+        }
+    }
     /// The open composer popover (＋ menu, permission or model); DEBUG commands set it for screenshots.
     var composerMenu: ComposerMenuKind?
     /// The in-app 退出当前账号？ dialog of the main window.

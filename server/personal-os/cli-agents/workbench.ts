@@ -289,8 +289,8 @@ export class CliAgentWorkbench {
     ).changes);
     if (!changes) throw this.staleOrMissing(logicalId);
     this.store.run(
-      "UPDATE cli_agent_workbench SET parent_id=?,version=version+1,updated_at=? WHERE parent_id=? AND deleted_at IS NULL",
-      parent.parent_id, now(), logicalId,
+      "UPDATE cli_agent_workbench SET parent_id=?,kind=CASE WHEN ? IS NULL AND kind='side' THEN 'main' ELSE kind END,version=version+1,updated_at=? WHERE parent_id=? AND deleted_at IS NULL",
+      parent.parent_id, parent.parent_id, now(), logicalId,
     );
     this.store.run("UPDATE cli_agent_outbox SET status='withdrawn',version=version+1,updated_at=? WHERE workbench_id=? AND status='pending'", now(), logicalId);
     this.pushWorkbench();
@@ -300,6 +300,13 @@ export class CliAgentWorkbench {
   /** Non-deleted rows, parents before children. */
   list(): CliWorkbenchSessionView[] {
     return this.store.all("SELECT * FROM cli_agent_workbench WHERE deleted_at IS NULL ORDER BY created_at,id").map((row) => this.workbenchView(row));
+  }
+
+  /** Native session keys that have been soft-deleted in the workbench, so clients hide them across restarts. */
+  deletedKeys(): CliSessionKey[] {
+    return this.store
+      .all("SELECT DISTINCT session_key FROM cli_agent_workbench WHERE deleted_at IS NOT NULL AND session_key IS NOT NULL")
+      .map((row) => String(row.session_key) as CliSessionKey);
   }
 
   /** One row as the wire sees it, for the mutation answers. */

@@ -75,16 +75,18 @@ final class CliAgentsTests: XCTestCase {
 
     func testTaskNotificationsDoNotBecomeChatBubblesOrUserTurns() throws {
         let text = "<task-notification><task-id>task-1</task-id><output-file>/private/task.log</output-file><status>completed</status><summary>private output</summary></task-notification>"
+        let runtimeSubagent = "<task-notification>\n<task-id>ab1e65b3c50f512f8</task-id>\n<tool-use-id>toolu_01LySzsZLx2y73GdRpGRSote</tool-use-id>\n<output-file>/tmp/ab1e65b3c50f512f8.output</output-file>\n<status>completed</status>\n<summary>Agent finished</summary>\n</task-notification>"
         let items = try decode([CliItem].self, [
             ["kind": "notice", "id": "new", "ts": 1, "level": "info", "text": "", "taskEnd": ["id": "task-1", "state": "completed"]],
             ["kind": "notice", "id": "legacy-notice", "ts": 2, "level": "info", "text": text],
             ["kind": "user", "id": "legacy-queued", "ts": 3, "queued": true, "text": text],
-            ["kind": "user", "id": "pasted", "ts": 4, "text": text],
-            ["kind": "user", "id": "queued-input", "ts": 5, "queued": true, "queuedByUser": true, "text": text],
+            ["kind": "user", "id": "cached-runtime", "ts": 4, "text": runtimeSubagent],
+            ["kind": "user", "id": "pasted", "ts": 5, "text": text],
+            ["kind": "user", "id": "queued-input", "ts": 6, "queued": true, "queuedByUser": true, "text": text],
         ])
         XCTAssertEqual(CliTranscript.group(items).map(\.id), ["pasted", "queued-input"])
         XCTAssertEqual(CliTranscript.userTurns(items), 2)
-        XCTAssertTrue(items.prefix(3).allSatisfy(\.text.isEmpty))
+        XCTAssertTrue(items.prefix(4).allSatisfy(\.text.isEmpty))
     }
 
     func testAgentMessagesFoldIntoActivityInsteadOfUserBubbles() throws {
@@ -285,6 +287,8 @@ final class CliAgentsTests: XCTestCase {
         let office = CliSessions.group(devices: [CliDevice(id: "d1", name: "Office", online: true)], sessions: sessions)[0]
         XCTAssertEqual(office.folders.map(\.label), ["nex_bot", "未关联项目"])
         XCTAssertTrue(office.folders[1].scratch)
+        XCTAssertEqual(office.folders[1].id, CliSessions.scratchKey)
+        XCTAssertFalse(office.folders[1].id.utf8.contains(0))
         XCTAssertEqual(office.folders[1].cwd, "")
         XCTAssertEqual(office.folders[1].sessions.map(\.key), ["d1:agy:empty", "d1:zcode:tmp", "d1:codex:scratch"])
         XCTAssertEqual(CliSessions.projectLabel(sessions[0]), "未关联项目")

@@ -10,6 +10,7 @@ struct MainView: View {
     @Environment(\.colorScheme) private var scheme
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
     @State private var agents: CliAgentsModel
+    @State private var dragStartRailWidth: CGFloat?
 
     init(workspace: WorkspaceStore) {
         self.workspace = workspace
@@ -23,10 +24,32 @@ struct MainView: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            ContactsList(workspace: workspace, agents: agents)
-                .frame(width: ui.railOpen ? 252 : 74)
-                .clipShape(Self.panel)
-                .glass(Self.panel)
+            ZStack(alignment: .trailing) {
+                ContactsList(workspace: workspace, agents: agents)
+                    .frame(width: ui.railOpen ? (ui.agentsVisible ? ui.agentRailWidth : 252) : 74)
+                    .clipShape(Self.panel)
+                    .glass(Self.panel)
+                if ui.railOpen && ui.agentsVisible {
+                    Color.clear
+                        .frame(width: 8)
+                        .contentShape(Rectangle())
+                        .onHover { inside in
+                            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                        }
+                        .gesture(
+                            DragGesture(minimumDistance: 2)
+                                .onChanged { value in
+                                    let base = dragStartRailWidth ?? ui.agentRailWidth
+                                    if dragStartRailWidth == nil { dragStartRailWidth = base }
+                                    ui.agentRailWidth = min(420, max(220, base + value.translation.width))
+                                }
+                                .onEnded { _ in
+                                    dragStartRailWidth = nil
+                                }
+                        )
+                        .offset(x: 4)
+                }
+            }
             VStack(spacing: 0) {
                 UpdateBanner()
                 NoticeBanner(workspace: workspace)
@@ -34,7 +57,7 @@ struct MainView: View {
                     if ui.todosVisible {
                         TodosView(workspace: workspace) { id in ui.todosVisible = false; workspace.select(id) }
                     } else if ui.agentsVisible {
-                        AgentSessionsView(model: agents, workspace: workspace) { id in ui.agentsVisible = false; workspace.select(id) }
+                        AgentSessionsView(model: agents, workspace: workspace, composing: Bindable(ui).agentComposing) { id in ui.agentsVisible = false; workspace.select(id) }
                     } else if let id = workspace.selectedBotID, workspace.bot(id) != nil {
                         if id == workspace.financeBotID { FinanceTopicsView(workspace: workspace, botID: id).id(id) }
                         else { ConversationView(workspace: workspace, botID: id).id(id) }

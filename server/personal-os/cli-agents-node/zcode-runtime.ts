@@ -25,6 +25,7 @@ import {
   type CliItem,
   type CliLaunchOptions,
   type CliModelCatalog,
+  type CliModelProviderKind,
   type CliOpArgs,
   type CliPermissionMode,
   type CliRequestQuestion,
@@ -61,10 +62,13 @@ import {
 import {
   ZcodeDb,
   defaultZcodeHome,
+  personalProviderConfigPath,
+  readZcodeProviderMeta,
   resolveZcodeDbPath,
   resolveZcodeLaunch,
   type ZcodeHostChannel,
   type ZcodeLaunchSpec,
+  type ZcodeProviderConfigMeta,
   type ZcodeSessionRow,
 } from "./zcode.ts";
 
@@ -235,20 +239,74 @@ function formatModelRef(ref: ZcodeRecord): { id: string; providerId: string; mod
   return { id: `${providerId}/${modelId}`, providerId, modelId };
 }
 
-function parseAvailableModels(settings: ZcodeRecord): {
+const ZCODE_ACCOUNT_PROVIDERS: Record<string, { label: string; badge: string }> = {
+  "account:bigmodel-individual-coding-plan": { label: "BigModel", badge: "个人" },
+  "account:bigmodel-team-coding-plan": { label: "BigModel", badge: "团队" },
+  "account:bigmodel-start-plan": { label: "Start Plan", badge: "免费" },
+  "account:bigmodel-offpeak-idle-plan": { label: "BigModel", badge: "闲时" },
+  "account:bigmodel-highspeed-card": { label: "BigModel", badge: "高速" },
+  "account:zai-individual-coding-plan": { label: "Z.AI", badge: "个人" },
+  "account:zai-team-coding-plan": { label: "Z.AI", badge: "团队" },
+  "account:zai-start-plan": { label: "Start Plan", badge: "免费" },
+  "account:zai-offpeak-idle-plan": { label: "Z.AI", badge: "闲时" },
+  "account:zai-highspeed-card": { label: "Z.AI", badge: "高速" },
+};
+
+const ZCODE_PLAN_NAME_RE = /(?:coding[\s-]?plan|token[\s-]?plan|agent[\s-]?plan|step[\s-]?plan|start[\s-]?plan|\bm[\s-]?plan\b)/i;
+const ZCODE_PLAN_URL_RE = /(?:\/api\/(?:coding|plan)(?:\/|$)|\/step_plan(?:\/|$)|coding\.dashscope\.|token-plan|zcode-plan)/i;
+
+function classifyZcodeProvider(
+  providerId: string,
+  rawProviderLabel: string,
+  configMeta?: ZcodeProviderConfigMeta,
+): { label: string; badge: string; kind: CliModelProviderKind } {
+  const knownAccount = ZCODE_ACCOUNT_PROVIDERS[providerId];
+  if (knownAccount) return { ...knownAccount, kind: "plan" };
+  const fallbackLabel = rawProviderLabel || configMeta?.providerName || providerId;
+  if (providerId.startsWith("account:") || configMeta?.accessType === "zhipu-account") {
+    return { label: fallbackLabel, badge: "套餐", kind: "plan" };
+  }
+  if (
+    configMeta?.accessType === "zhipu-coding-plan-api-key"
+    || ZCODE_PLAN_NAME_RE.test(fallbackLabel)
+    || ZCODE_PLAN_NAME_RE.test(providerId)
+    || ZCODE_PLAN_URL_RE.test(configMeta?.baseUrl ?? "")
+  ) {
+    return { label: fallbackLabel, badge: "套餐", kind: "plan" };
+  }
+  return { label: fallbackLabel, badge: "API", kind: "api" };
+}
+
+function readThoughtLevel(value: unknown): string {
+  const direct = asZcodeString(value).trim();
+  if (direct) return direct;
+  const obj = asZcodeRecord(value);
+  return asZcodeString(obj.current).trim() || asZcodeString(obj.defaultLevel).trim();
+}
+
+function parseAvailableModels(
+  settings: ZcodeRecord,
+  providerMeta: ReadonlyMap<string, ZcodeProviderConfigMeta> = new Map(),
+): {
   catalog: CliModelCatalog;
   meta: Map<string, ModelMeta>;
 } {
   const modelSettings = asZcodeRecord(settings.model);
   const available = asZcodeArray(modelSettings.available);
   const meta = new Map<string, ModelMeta>();
-  const options: CliModelCatalog["models"] = [];
+  const planOptions: CliModelCatalog["models"] = [];
+  const apiOptions: CliModelCatalog["models"] = [];
   for (const entry of available) {
     const rec = asZcodeRecord(entry);
+    if (asZcodeString(rec.disabledReason).trim()) continue;
     const ref = formatModelRef(asZcodeRecord(rec.ref));
     if (!ref || !isCliModel(ref.id) || meta.has(ref.id)) continue;
     const label = clipUnits(asZcodeString(rec.label).trim() || ref.modelId, CLI_MODEL_LIMITS.label);
-    const providerLabel = clipUnits(asZcodeString(rec.providerLabel).trim() || ref.providerId, CLI_MODEL_LIMITS.description);
+    const rawProviderLabel = asZcodeString(rec.providerLabel).trim();
+    const providerInfo = classifyZcodeProvider(ref.providerId, rawProviderLabel, providerMeta.get(ref.providerId));
+    const provider = clipUnits(ref.providerId, CLI_MODEL_LIMITS.provider);
+    const providerLabel = clipUnits(providerInfo.label, CLI_MODEL_LIMITS.providerLabel);
+    const providerBadge = clipUnits(providerInfo.badge, CLI_MODEL_LIMITS.providerBadge);
     const reasoning = asZcodeRecord(rec.reasoning);
     const rawLevels = asZcodeArray(reasoning.levels)
       .map((item) => asZcodeString(asZcodeRecord(item).value).trim())
@@ -271,18 +329,23 @@ function parseAvailableModels(settings: ZcodeRecord): {
       ...(Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow: Math.trunc(contextWindow) } : {}),
     };
     meta.set(ref.id, item);
-    if (options.length < CLI_MODEL_LIMITS.models) {
-      options.push({
-        id: ref.id,
-        label,
-        ...(providerLabel ? { description: providerLabel } : {}),
-        ...(efforts.length ? { efforts } : { efforts: [] }),
-      });
-    }
+    const option = {
+      id: ref.id,
+      label,
+      ...(providerLabel ? { description: providerLabel } : {}),
+      ...(efforts.length ? { efforts } : { efforts: [] }),
+      provider,
+      providerLabel,
+      providerBadge,
+      providerKind: providerInfo.kind,
+    };
+    if (providerInfo.kind === "plan") planOptions.push(option);
+    else apiOptions.push(option);
   }
+  const options = [...planOptions, ...apiOptions].slice(0, CLI_MODEL_LIMITS.models);
   const currentRef = formatModelRef(asZcodeRecord(modelSettings.current));
   const current = currentRef && meta.has(currentRef.id) ? currentRef.id : options[0]?.id;
-  const rawThought = asZcodeString(settings.thoughtLevel).trim();
+  const rawThought = readThoughtLevel(settings.thoughtLevel);
   const currentEffort = isCliEffort("zcode", rawThought) ? rawThought : undefined;
   return {
     catalog: {
@@ -468,9 +531,9 @@ export class ZcodeRuntime {
         configDir: home,
         cwd: row.directory || home,
         title: row.title,
-        state: row.running ? "running" : "stopped",
-        ...(row.running ? { liveIn: "desktop" as const } : {}),
-        ...(row.archived && !row.running ? { archived: true } : {}),
+        state: row.waiting ? "waiting" : row.running ? "running" : row.opened ? "idle" : "stopped",
+        ...(row.opened ? { liveIn: "desktop" as const } : {}),
+        ...(row.archived && !row.running && !row.waiting ? { archived: true } : {}),
         ...(row.parentId && isCliNativeId(row.parentId) ? { forkOf: row.parentId } : {}),
         lastActivityAt: row.timeUpdated,
         transcript: "",
@@ -478,7 +541,7 @@ export class ZcodeRuntime {
         ...(row.model ? { model: row.model } : {}),
         ...(context ? { context } : {}),
       };
-      if (row.running && host) {
+      if (row.opened && host) {
         local.sendVia = "host";
         local.route = { via: "host", home, sessionId: id };
       }
@@ -682,6 +745,12 @@ export class ZcodeRuntime {
     }
   }
 
+  private providerMeta(): Map<string, ZcodeProviderConfigMeta> {
+    const homedir = this.options.homedir ?? os.homedir();
+    const env = { ...this.options.env, ...this.launchSpec?.env };
+    return readZcodeProviderMeta(personalProviderConfigPath(homedir, env));
+  }
+
   private async readModels(): Promise<CliModelCatalog> {
     const server = await this.ensureServer();
     const workspacePath = await canonicalCwd(this.options.homedir ?? os.homedir());
@@ -698,7 +767,7 @@ export class ZcodeRuntime {
       void server.request("session/close", { sessionId: probeId }, 5000).catch(() => {});
     }
     this.armServerIdle();
-    const parsed = parseAvailableModels(asZcodeRecord(response.settings));
+    const parsed = parseAvailableModels(asZcodeRecord(response.settings), this.providerMeta());
     this.modelMeta = parsed.meta;
     return parsed.catalog;
   }
@@ -773,11 +842,11 @@ export class ZcodeRuntime {
   }
 
   private absorbSettings(session: Session, settings: ZcodeRecord): void {
-    const parsed = parseAvailableModels(settings);
+    const parsed = parseAvailableModels(settings, this.providerMeta());
     if (parsed.meta.size > 0) this.modelMeta = parsed.meta;
     const modelSettings = asZcodeRecord(settings.model);
     const currentRef = formatModelRef(asZcodeRecord(modelSettings.current));
-    const thoughtLevel = asZcodeString(settings.thoughtLevel).trim() || undefined;
+    const thoughtLevel = readThoughtLevel(settings.thoughtLevel) || undefined;
     if (currentRef) {
       session.model = currentRef.id;
       const meta = this.modelMeta.get(currentRef.id);
@@ -788,6 +857,17 @@ export class ZcodeRuntime {
         ...(level ? { reasoningLevel: level } : {}),
       };
     }
+  }
+
+  /** Picks the closest available model when a session's persisted model (e.g. a Desktop-only OAuth account:* plan)
+   * is unavailable in standalone app-server: prefers the same model id (plans before APIs), else the catalog default. */
+  private pickFallbackModel(available: CliModelCatalog, wantedId?: string): string | undefined {
+    const wantedModelId = wantedId ? parseModelId(wantedId)?.modelId.toLowerCase() : undefined;
+    if (wantedModelId) {
+      const sameModel = available.models.find((entry) => parseModelId(entry.id)?.modelId.toLowerCase() === wantedModelId);
+      if (sameModel) return sameModel.id;
+    }
+    return available.current ?? available.models[0]?.id;
   }
 
   private toWireModelParam(selection: ModelSelection): ZcodeRecord {
@@ -841,8 +921,8 @@ export class ZcodeRuntime {
     const responseSettings = asZcodeRecord(response.settings);
     this.absorbSettings(session, responseSettings);
     if (!settings.model && (!session.model || !this.modelMeta.has(session.model))) {
-      const available = parseAvailableModels(responseSettings).catalog;
-      const fallback = available.current ?? available.models[0]?.id;
+      const available = parseAvailableModels(responseSettings, this.providerMeta()).catalog;
+      const fallback = this.pickFallbackModel(available, session.model);
       if (fallback) {
         await this.applySettings(server, session, { model: fallback, ...(settings.effort ? { effort: settings.effort } : {}) });
       }
@@ -928,8 +1008,8 @@ export class ZcodeRuntime {
       const modelUnavailable = !session.model || (this.modelMeta.size > 0 && !this.modelMeta.has(session.model));
       const desired: CliLaunchOptions = { ...settings };
       if (!desired.model && (hasRestoreWarning || modelUnavailable)) {
-        const available = parseAvailableModels(responseSettings).catalog;
-        const fallback = available.current ?? available.models[0]?.id;
+        const available = parseAvailableModels(responseSettings, this.providerMeta()).catalog;
+        const fallback = this.pickFallbackModel(available, session.model);
         if (!fallback) throw new ZcodeError("invalid", "ZCode 没有可用的模型，请先在 ZCode 中配置模型");
         desired.model = fallback;
       }

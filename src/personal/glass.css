@@ -114,11 +114,11 @@
 
 /* ---------- Transcript ---------- */
 .rk-workspace .transcript {
-  flex: 1; min-height: 0; padding: 12px 10px 20px; overflow-y: auto; overflow-anchor: none; scroll-behavior: auto; scrollbar-width: thin;
+  flex: 1; min-height: 0; max-width: 100%; padding: 12px 10px 20px; overflow-x: hidden; overflow-y: auto; overscroll-behavior-x: none; overflow-anchor: none; scroll-behavior: auto; scrollbar-width: thin;
   -webkit-mask-image: linear-gradient(transparent 0, #000 22px, #000 calc(100% - 26px), transparent);
   mask-image: linear-gradient(transparent 0, #000 22px, #000 calc(100% - 26px), transparent);
 }
-.rk-workspace .transcript-inner { display: flow-root; width: 100%; max-width: 700px; min-height: 100%; margin: 0 auto; }
+.rk-workspace .transcript-inner { display: flow-root; width: 100%; min-width: 0; max-width: min(700px, 100%); min-height: 100%; margin: 0 auto; box-sizing: border-box; }
 .rk-workspace .day-divider { display: flex; justify-content: center; margin: 18px 0 4px; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .rk-workspace .day-divider span { padding: 0; border: 0; background: none; font-size: inherit; font-weight: 500; color: inherit; }
 .rk-workspace .older { margin: 0 auto 8px; padding: 4px 12px; border-radius: 999px; }

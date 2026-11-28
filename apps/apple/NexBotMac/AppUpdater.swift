@@ -52,14 +52,18 @@ final class AppUpdater {
     func install() async throws {
         guard case .ready(let version) = status, let file, !installing else { return }
         installing = true
-        defer { installing = false }
+        var handedOff = false
+        defer { if !handedOff { installing = false } }
         let target = Bundle.main.bundleURL, bundleID = Bundle.main.bundleIdentifier ?? ""
         let script = try await Task.detached { try Self.prepare(dmg: file, version: version, bundleID: bundleID, target: target) }.value
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
         helper.arguments = [script.path, String(ProcessInfo.processInfo.processIdentifier)]
         try helper.run()
-        NSApp.terminate(nil)
+        handedOff = true
+        await LocalDeviceController.shared.shutdown()
+        // Run from the main RunLoop outside this @MainActor task so `.terminateLater` cannot deadlock Swift Concurrency.
+        RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
     }
 
     /// Mounts the DMG, checks the app inside, and writes the swap script. Returns the script.

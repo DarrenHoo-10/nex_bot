@@ -26,6 +26,9 @@ public final class CliAgentsModel {
 
     public private(set) var devices: [CliDevice] = []
     public private(set) var sessions: [CliSession] = []
+    public private(set) var workbench: [CliWorkbenchSession] = []
+    public private(set) var workbenchMeta: [CliSessionKey: CliWorkbenchMeta] = [:]
+    public private(set) var deletedKeys: Set<CliSessionKey> = []
     public private(set) var requests = CliRequestStore()
     @ObservationIgnored private var fragments: [CliSessionKey: (items: [CliItem], more: Bool?)] = [:]
     public private(set) var queues: [CliSessionKey: CliSessionQueue] = [:]
@@ -37,6 +40,8 @@ public final class CliAgentsModel {
     /// The first message of a session started here, until its transcript holds it.
     public private(set) var echoes: [CliSessionKey: CliLaunchEcho] = [:]
     public private(set) var link: CliAgentStream.Status = .idle
+    /// Incremented whenever a new `CliAgentStream` is created so mounted terminal controllers rebind cleanly.
+    public private(set) var streamRevision = 0
     /// A first list has arrived.
     public private(set) var loaded = false
     public private(set) var loadError: String?
@@ -56,6 +61,7 @@ public final class CliAgentsModel {
     @ObservationIgnored private var eventTask: Task<Void, Never>?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var workbenchGeneration = 0
     @ObservationIgnored private var started = false
     @ObservationIgnored private var previousStates: [CliSessionKey: CliSessionState]?
     @ObservationIgnored private var previousRequestIds: Set<String>?
@@ -105,9 +111,55 @@ public final class CliAgentsModel {
     public var selectedLaunch: CliLaunch? { launches.first { $0.key == selectedKey } }
 
     public var pendingCounts: [CliSessionKey: Int] { requests.counts(now: now) }
+
+    private func setWorkbench(_ rows: [CliWorkbenchSession]) {
+        workbench = rows
+        let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        var map: [CliSessionKey: CliWorkbenchMeta] = [:]
+        for row in rows {
+            guard let key = row.sessionKey, !key.isEmpty else { continue }
+            let parentKey = row.parentId.flatMap { byId[$0]?.sessionKey }
+            map[key] = CliWorkbenchMeta(id: row.id, version: row.version, title: row.title, parent: parentKey, kind: row.kind, archived: row.archived, deleted: row.deleted)
+        }
+        workbenchMeta = map
+    }
+
+    public func displayTitle(for session: CliSession) -> String {
+        if let custom = workbenchMeta[session.key]?.title {
+            let trimmed = CliTranscript.unwrapPastedContent(custom).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return CliSessions.title(session)
+    }
+    public func isDeleted(_ session: CliSession) -> Bool {
+        deletedKeys.contains(session.key) || workbenchMeta[session.key]?.deleted == true
+    }
+    public func isArchived(_ session: CliSession) -> Bool {
+        (workbenchMeta[session.key]?.archived == true) || session.archived || session.hidden
+    }
+    public func isSideSession(_ session: CliSession) -> Bool {
+        (workbenchMeta[session.key]?.kind == .side) || (session.nativeSideParentKey != nil)
+    }
+    public func parentKey(of session: CliSession) -> CliSessionKey? {
+        if let wbParent = workbenchMeta[session.key]?.parent, !wbParent.isEmpty { return wbParent }
+        return session.nativeForkParentKey
+    }
+    public func sideSessions(of parentKey: CliSessionKey) -> [CliSession] {
+        displaySessions.filter { s in
+            guard !isDeleted(s) else { return false }
+            if let meta = workbenchMeta[s.key], meta.kind == .side {
+                return meta.parent == parentKey
+            }
+            return s.nativeSideParentKey == parentKey
+        }.sorted { $0.lastActivityAt > $1.lastActivityAt }
+    }
+    public var allGroups: [CliDeviceGroup] { CliSessions.group(devices: devices, sessions: displaySessions, showHidden: true) }
     public var groups: [CliDeviceGroup] { CliSessions.group(devices: devices, sessions: displaySessions, showHidden: showHidden) }
     public var hiddenCount: Int { CliSessions.hiddenCount(sessions) }
-    public var waitingCount: Int { CliSessions.waitingCount(sessions, asked: Set(pendingCounts.keys)) }
+    public var waitingCount: Int {
+        let visible = sessions.filter { !isDeleted($0) && !isArchived($0) && !isSideSession($0) }
+        return CliSessions.waitingCount(visible, asked: Set(pendingCounts.keys))
+    }
     public var selected: CliSession? { selectedKey.flatMap { key in displaySessions.first { $0.key == key } } }
     public func device(_ id: String) -> CliDevice? { devices.first { $0.id == id } }
     /// The cards of a session: open ones and the ones closed lately, oldest first.
@@ -126,6 +178,7 @@ public final class CliAgentsModel {
         started = true
         let stream = streamFactory?(self) ?? CliAgentStream(requestProvider: { [weak self] in await self?.streamRequest() })
         self.stream = stream
+        streamRevision += 1
         eventTask = Task { [weak self] in
             for await event in stream.events { self?.handle(event) }
         }
@@ -160,11 +213,17 @@ public final class CliAgentsModel {
 
     private func streamRequest() -> URLRequest? { clientProvider().cliStreamRequest() }
 
-    /// Loads the snapshot over HTTP. Ignored if a pushed list arrived while it was on its way.
+    /// Loads the snapshot over HTTP. Native list is ignored if a newer WS list arrived while in flight,
+    /// while the workbench tree uses its own independent generation so WS `list` never drops workbench metadata.
     public func refresh() async {
         let mine = generation
+        let wbMine = workbenchGeneration
         do {
             let snapshot = try await clientProvider().cliSnapshot()
+            deletedKeys = Set(snapshot.deletedKeys)
+            if wbMine == workbenchGeneration {
+                setWorkbench(snapshot.workbench)
+            }
             guard mine == generation else { return }
             touch()
             devices = snapshot.devices; sessions = snapshot.sessions
@@ -176,6 +235,16 @@ public final class CliAgentsModel {
         } catch {
             guard mine == generation, !loaded else { return }
             loadError = CliErrorText.text(for: error, fallback: "读取失败")
+        }
+    }
+
+    public func refreshWorkbench() async {
+        let wbMine = workbenchGeneration
+        if let snapshot = try? await clientProvider().cliSnapshot() {
+            deletedKeys = Set(snapshot.deletedKeys)
+            if wbMine == workbenchGeneration {
+                setWorkbench(snapshot.workbench)
+            }
         }
     }
 
@@ -535,6 +604,107 @@ public final class CliAgentsModel {
         return catalog
     }
 
+    public func searchSessions(_ query: String) async throws -> [CliSearchHit] {
+        try await clientProvider().cliSearch(query: query)
+    }
+
+    // MARK: Workbench mutations, Git & Notes
+
+    public func sendIdempotent(_ key: CliSessionKey, text: String, clientMessageId: String, requestId: String) async throws -> CliSendResult {
+        try await clientProvider().cliSendIdempotent(key: key, text: text, clientMessageId: clientMessageId, requestId: requestId)
+    }
+
+    public func renameWorkbenchSession(_ session: CliSession, title: String, expectedId: String? = nil, expectedVersion: Int? = nil) async throws {
+        let row = workbenchMeta[session.key]
+        let id = expectedId ?? row?.id
+        let ver = expectedVersion ?? row?.version
+        try await clientProvider().cliRenameWorkbenchSession(id: id, expectedVersion: ver, key: id == nil ? session.key : nil, title: title)
+        await refresh()
+    }
+
+    public func archiveWorkbenchSession(_ session: CliSession, archived: Bool) async throws {
+        // Legacy hidden-only session (not natively archived and not workbench-archived): restore directly via cliHide
+        // so it works even when the device is offline or lacks `sessionManage`.
+        let wbArchived = workbenchMeta[session.key]?.archived == true
+        if !archived && session.hidden && !session.archived && !wbArchived {
+            try await clientProvider().cliHide(key: session.key, hidden: false)
+            await refresh()
+            return
+        }
+        let row = workbenchMeta[session.key]
+        do {
+            try await clientProvider().cliArchiveWorkbenchSession(id: row?.id, expectedVersion: row?.version, key: session.key, archived: archived)
+            if !archived && session.hidden {
+                try await clientProvider().cliHide(key: session.key, hidden: false)
+            }
+        } catch {
+            await refresh()
+            throw error
+        }
+        await refresh()
+    }
+
+    public func deleteWorkbenchSession(_ session: CliSession, expectedId: String? = nil, expectedVersion: Int? = nil) async throws {
+        let row = workbenchMeta[session.key]
+        let id = expectedId ?? row?.id
+        let ver = expectedVersion ?? row?.version
+        try await clientProvider().cliDeleteWorkbenchSession(id: id, expectedVersion: ver, key: id == nil ? session.key : nil)
+        deletedKeys.insert(session.key)
+        if selectedKey == session.key { select(nil) }
+        await refresh()
+    }
+
+    @discardableResult
+    public func forkWorkbenchSession(_ parent: CliSession, title: String = "", kind: CliWorkbenchKind = .fork, requestId: String = UUID().uuidString) async throws -> CliSessionKey {
+        let client = clientProvider()
+        let created = try await client.cliBranchSession(parentKey: parent.key, title: title, requestId: requestId, kind: kind)
+        // If a previous attempt already bound this logical row, return its key without starting a duplicate CLI.
+        if let already = workbench.first(where: { $0.id == created.id }), let boundKey = already.sessionKey, !boundKey.isEmpty {
+            return boundKey
+        }
+        do {
+            // Only `.fork` copies parent transcript via `forkFrom`; `.side` starts a clean side-chat bound to `parentId`.
+            let key = try await client.cliStart(deviceId: parent.deviceId, engine: parent.engine, cwd: parent.cwd, parentId: created.id, forkFrom: kind == .fork ? parent.key : nil)
+            await refresh()
+            return key
+        } catch {
+            await refresh()
+            if let existing = workbench.first(where: { $0.id == created.id }), let boundKey = existing.sessionKey, !boundKey.isEmpty {
+                return boundKey
+            }
+            // Leave the unbound logical row in place if error might be transient/timeout; only delete on explicit HTTP 4xx rejection.
+            if let status = CoreError.wrap(error).status, (400..<500).contains(status) {
+                if let orphan = workbench.first(where: { $0.id == created.id }) {
+                    try? await client.cliDeleteWorkbenchSession(id: orphan.id, expectedVersion: orphan.version)
+                } else {
+                    try? await client.cliDeleteWorkbenchSession(id: created.id, expectedVersion: created.version)
+                }
+                await refresh()
+            }
+            throw error
+        }
+    }
+
+    public func gitInfo(for key: CliSessionKey) async throws -> CliGitInfo {
+        try await clientProvider().cliGit(key: key)
+    }
+
+    public func notes(for key: CliSessionKey) async throws -> [CliNote] {
+        try await clientProvider().cliNotes(key: key)
+    }
+
+    public func createNote(key: CliSessionKey, id: String = UUID().uuidString, message: String, quote: String, body: String, num: Int, start: Int? = nil, end: Int? = nil) async throws -> CliNote {
+        try await clientProvider().cliCreateNote(key: key, id: id, message: message, quote: quote, body: body, num: num, start: start, end: end)
+    }
+
+    public func updateNote(id: String, expectedVersion: Int, body: String) async throws -> CliNote {
+        try await clientProvider().cliUpdateNote(id: id, expectedVersion: expectedVersion, body: body)
+    }
+
+    public func deleteNote(id: String, expectedVersion: Int) async throws {
+        try await clientProvider().cliDeleteNote(id: id, expectedVersion: expectedVersion)
+    }
+
     @discardableResult
     public func startSession(deviceId: String, engine: CliEngine, cwd: String) async throws -> CliSessionKey {
         let key = try await clientProvider().cliStart(deviceId: deviceId, engine: engine, cwd: cwd)
@@ -672,6 +842,9 @@ public final class CliAgentsModel {
         case .status(let status):
             fragments.removeAll()
             link = status
+            if status == .open {
+                Task { [weak self] in await self?.refreshWorkbench() }
+            }
             terminal?.handle(event)
         case .output:
             terminal?.handle(event)
@@ -690,6 +863,9 @@ public final class CliAgentsModel {
         switch message {
         case .queue(let queue):
             if subscribed[queue.sessionKey] != nil { queues[queue.sessionKey] = queue }
+        case .workbench(let rows):
+            workbenchGeneration += 1
+            setWorkbench(rows)
         case .list(let newDevices, let newSessions):
             generation += 1
             devices = newDevices; sessions = newSessions

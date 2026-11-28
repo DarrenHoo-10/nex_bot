@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { imageFilesFromClipboard, optimisticOutgoing, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
+import { topicTimeline } from "./FinanceTopics";
+import {
+  SCROLL_TO_BOTTOM_THRESHOLD,
+  findUnreadJumpTarget,
+  imageFilesFromClipboard,
+  optimisticOutgoing,
+  shouldShowScrollToBottom,
+  withPendingOptimistic,
+  withoutCommittedStreaming,
+} from "./transcript-session";
 
 describe("transcript session", () => {
   it("keeps an optimistic send until the matching server row arrives", () => {
@@ -38,5 +47,73 @@ describe("transcript session", () => {
       files: [new File(["hello"], "note.txt", { type: "text/plain" })],
     });
     expect(text).toEqual([]);
+  });
+
+  it("finds the earliest unread main message or unread topic card in timeline order", () => {
+    const timeline = topicTimeline(
+      [
+        { id: "m1", seq: 1, role: "assistant", kind: "message", content: "已读消息", created_at: 10 },
+        { id: "m2", seq: 2, role: "user", kind: "message", content: "我的消息", created_at: 20 },
+        { id: "m3", seq: 3, role: "assistant", kind: "message", content: "导入记录", source_key: "stock-history:1", created_at: 25 },
+        { id: "m4", seq: 4, role: "assistant", kind: "message", content: "最早未读回复", created_at: 40 },
+        { id: "m5", seq: 5, role: "assistant", kind: "message", content: "较新未读回复", created_at: 60 },
+      ],
+      [
+        {
+          conversationId: "topic-read",
+          title: "已读话题",
+          audience: "private",
+          sourceContext: {},
+          last_activity_at: 15,
+          message_count: 2,
+          unread_count: 0,
+          activeTask: null,
+        },
+        {
+          conversationId: "topic-unread-early",
+          title: "较早未读话题",
+          audience: "public",
+          sourceContext: { channel: "feishu", chatName: "反馈群" },
+          last_activity_at: 30,
+          message_count: 3,
+          messages: [{ id: "tm1", role: "assistant", content: "查到了。**NexBot macOS** 已修复" }],
+          unread_count: 2,
+          activeTask: null,
+        },
+      ],
+    );
+
+    // Topic preview strips Markdown syntax rather than leaking raw ** markers.
+    const topicRow = timeline.find((row) => row.id === "topic-unread-early");
+    expect(topicRow?.preview).toBe("查到了。NexBot macOS 已修复");
+
+    // No unread -> stays at bottom.
+    expect(findUnreadJumpTarget({ messages: timeline, readSeq: 1, mainUnreadCount: 0, topicUnreadCount: 0 })).toBeNull();
+
+    // Only sub-conversation unread -> jumps to the corresponding topic card.
+    expect(findUnreadJumpTarget({ messages: timeline, readSeq: 5, mainUnreadCount: 0, topicUnreadCount: 2 })).toEqual({
+      kind: "topic",
+      id: "topic-unread-early",
+    });
+
+    // Both main and topic unread -> picks whichever appears earliest in the timeline (topic at t=30 before m4 at t=40).
+    expect(findUnreadJumpTarget({ messages: timeline, readSeq: 1, mainUnreadCount: 2, topicUnreadCount: 2 })).toEqual({
+      kind: "topic",
+      id: "topic-unread-early",
+    });
+
+    // Only main unread -> skips user & stock-history rows and lands on earliest unread assistant reply (m4).
+    expect(findUnreadJumpTarget({ messages: timeline, readSeq: 1, mainUnreadCount: 2, topicUnreadCount: 0 })).toEqual({
+      kind: "message",
+      id: "m4",
+    });
+  });
+
+  it("shows the scroll-to-bottom control based on scroll distance rather than message count", () => {
+    expect(shouldShowScrollToBottom({ following: true, distanceFromBottom: 600, hasMessages: true })).toBe(false);
+    expect(shouldShowScrollToBottom({ following: false, distanceFromBottom: SCROLL_TO_BOTTOM_THRESHOLD - 1, hasMessages: true })).toBe(false);
+    expect(shouldShowScrollToBottom({ following: false, distanceFromBottom: SCROLL_TO_BOTTOM_THRESHOLD, hasMessages: true })).toBe(true);
+    expect(shouldShowScrollToBottom({ following: false, distanceFromBottom: 600, hasMessages: false })).toBe(false);
+    expect(shouldShowScrollToBottom({ following: true, distanceFromBottom: 0, hasMessages: true, focused: true })).toBe(true);
   });
 });

@@ -225,7 +225,7 @@ export async function createPersonalApp(options: AppOptions) {
     },
   });
   const handleUpgrade = installUpgrade(server, { device: gateway.handleUpgrade, stream: cliStream.handleUpgrade });
-  gateway.onCallSettled = (callId) => jobs.callSettled(callId);
+  gateway.onCallSettled = (callId) => { runtime.deliverSettledCall(callId); jobs.callSettled(callId); };
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
   // Device calls are marked unsettled first, so a lease whose call the device has not confirmed stays held.
   runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); jobs.releaseLeases(taskId); connectors.cancelTask(taskId); finance.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };

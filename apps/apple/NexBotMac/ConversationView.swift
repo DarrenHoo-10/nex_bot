@@ -233,7 +233,7 @@ private struct MessageList: View {
 
     /// Changes when a search-result view finishes loading, so the target is scrolled to once per opening and not on each poll.
     private var focusKey: String { "\(focusedID ?? "")|\(conversation.isLoaded)" }
-    private var loadKey: String { "\(botID)|\(conversation.isLoaded)" }
+    private var loadKey: String { "\(botID)|\(conversation.isLoaded)|\(conversation.unreadJumpRevision)" }
 
     private var tailKey: String {
         "\(conversation.messages.last?.seq ?? 0)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")|\(processing)"
@@ -249,15 +249,25 @@ private struct MessageList: View {
         }
     }
 
-    /// Scrolls to the end once rows exist and again after they are measured, then allows older pages.
+    /// Scrolls to the earliest unread message when entering an unread chat, otherwise to the end, then allows older pages.
     private func settleAtBottom(_ proxy: ScrollViewProxy) async {
         settled = false
         guard conversation.isLoaded else { return }
         if focusedID == nil {
-            for delay in [0, 60, 300] {
-                try? await Task.sleep(for: .milliseconds(delay))
-                guard !Task.isCancelled else { return }
-                proxy.scrollTo("bottom", anchor: .bottom)
+            if let unreadID = conversation.unreadAnchorID,
+               let seq = conversation.messages.first(where: { $0.id == unreadID })?.seq {
+                atBottom = false
+                for delay in [0, 60, 300] {
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo(seq, anchor: .top)
+                }
+            } else {
+                for delay in [0, 60, 300] {
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
         }
         settled = true
@@ -293,16 +303,21 @@ private struct MessageList: View {
                             DayDivider(label: day)
                         }
                         let joined = MessageGrouping.joins(previous, message)
-                        MessageRow(message: message, bot: bot, workspace: workspace, joined: joined,
-                                   groupEnd: MessageGrouping.ends(message, next: next), onOpenImage: onOpenImage)
-                            .overlay {
-                                if message.id == focusedID {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
-                                        .padding(-6).allowsHitTesting(false)
-                                }
+                        VStack(alignment: .leading, spacing: 0) {
+                            if focusedID == nil && message.id == conversation.unreadAnchorID {
+                                UnreadDivider()
                             }
-                            .padding(.top, joined ? 4 : 14)
-                            .id(message.seq)
+                            MessageRow(message: message, bot: bot, workspace: workspace, joined: joined,
+                                       groupEnd: MessageGrouping.ends(message, next: next), onOpenImage: onOpenImage)
+                                .overlay {
+                                    if message.id == focusedID {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
+                                            .padding(-6).allowsHitTesting(false)
+                                    }
+                                }
+                                .padding(.top, joined ? 4 : 14)
+                        }
+                        .id(message.seq)
                     }
                     ForEach(conversation.streaming, id: \.taskId) { stream in
                         StreamingReply(workspace: workspace, bot: bot, stream: stream)
@@ -349,14 +364,26 @@ private struct MessageList: View {
                     welcome
                 }
             }
-            .overlay(alignment: .bottom) {
-                if !atBottom && conversation.messages.count > 3 && focusedID == nil {
-                    Button { atBottom = true; withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
-                        Image(systemName: "arrow.down").font(.system(size: 16, weight: .regular))
-                            .foregroundStyle(Theme.foreground).frame(width: 36, height: 36)
-                            .glass(Circle(), strong: true, lift: .card).contentShape(Circle())
+            .overlay(alignment: .bottomTrailing) {
+                if (!atBottom && !conversation.messages.isEmpty) || focusedID != nil {
+                    Button {
+                        if focusedID != nil { workspace.showLatest(botID: botID) }
+                        else { atBottom = true; withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.down").font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(Theme.brand)
+                            Text(focusedID != nil ? "返回最新消息" : "回到底部")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(Theme.foreground)
+                        }
+                        .padding(.horizontal, 12).frame(height: 34)
+                        .glass(Capsule(), strong: true, lift: .card)
+                        .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain).accessibilityLabel("回到底部").padding(.bottom, 10)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(focusedID != nil ? "返回最新消息" : "回到底部")
+                    .padding(.trailing, 14).padding(.bottom, 10)
                 }
             }
             .onChange(of: tailKey) {
@@ -435,6 +462,23 @@ private struct DayDivider: View {
     var body: some View {
         Text(label).font(.system(size: 11, weight: .medium).monospacedDigit()).foregroundStyle(Theme.muted)
             .frame(maxWidth: .infinity).padding(.top, 18).padding(.bottom, 4)
+    }
+}
+
+private struct UnreadDivider: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(Theme.brand.opacity(0.24)).frame(height: 1)
+            Text("以下为未读消息")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Theme.brand)
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .background(Theme.brandSoft, in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.brand.opacity(0.22), lineWidth: 1))
+            Rectangle().fill(Theme.brand.opacity(0.24)).frame(height: 1)
+        }
+        .padding(.top, 16).padding(.bottom, 4)
+        .accessibilityLabel("以下为未读消息")
     }
 }
 

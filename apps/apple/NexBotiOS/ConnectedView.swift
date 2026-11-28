@@ -26,8 +26,12 @@ struct ConnectedView: View {
             .onChange(of: workspace.contentCacheScope) { old, new in
                 if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
             }
-            .task(id: workspace.connection) { if workspace.connection == .connected, agents.notificationsOn { agents.start() } }
-            .onAppear { agents.installNotifier() }
+            .task(id: workspace.connection) { syncAgentStream() }
+            .onChange(of: nav.agentMode) { _, _ in syncAgentStream() }
+            .onChange(of: nav.path) { _, _ in syncAgentStream() }
+            .onChange(of: scenePhase) { _, _ in syncAgentStream() }
+            .onChange(of: agents.notificationsOn) { _, _ in syncAgentStream() }
+            .onAppear { agents.installNotifier(); syncAgentStream() }
             .environment(nav)
             .environment(preferences)
             .sheet(isPresented: $nav.showMenu) {
@@ -53,6 +57,18 @@ struct ConnectedView: View {
         #if DEBUG
             .task { await DebugHooks.runCommands(model: model, workspace: workspace, nav: nav) }
         #endif
+    }
+
+    /// Centralizes NexAgent WebSocket lifecycle on the persistent root view so switching back to NexBot
+    /// stops the socket when notifications are disabled, while brief `.inactive` transitions keep it alive.
+    private func syncAgentStream() {
+        let inAgentUI = nav.agentMode || nav.path.contains(.agentSessions)
+        let shouldRun = workspace.connection == .connected && (agents.notificationsOn || (inAgentUI && scenePhase != .background))
+        if shouldRun {
+            if scenePhase == .active { agents.reconnect() } else { agents.start() }
+        } else if !agents.notificationsOn && (!inAgentUI || scenePhase == .background) {
+            agents.stop()
+        }
     }
 }
 

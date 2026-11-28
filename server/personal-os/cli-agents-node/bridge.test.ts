@@ -1138,7 +1138,7 @@ describe("launch options, search and attachments", () => {
   it("lists the features this executor has", async () => {
     const t = setup();
     await t.bridge.prepare();
-    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills"]);
+    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch", "sessionManage"]);
   });
 
   it("starts and continues with the model and effort the user picked", async () => {

@@ -1044,4 +1044,76 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(previewBody).toMatchObject({ kind: "tool", title: "agent.create" });
     expect(previewBody.content).toContain("数据分析师");
   }, 40_000);
+  it("re-enters an in-flight delegation without Core restart and keeps needs_reconciliation while another unknown call remains", async () => {
+    const f = await fixture();
+    let releaseChild!: () => void;
+    const childGate = new Promise<void>((resolve) => { releaseChild = resolve; });
+    f.fake.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "live-a2a", name: "broker", args: JSON.stringify({ action: "agent.delegate", botId: f.bots[1].id, message: "同进程重入测试" }) }] },
+      { kind: "openai-text", text: "子任务完成", waitFor: childGate },
+      { kind: "openai-text", text: "主任务重入恢复完成" },
+    );
+    const task = f.app.runtime.input(f.conversation, "委派并在运行中恢复", id());
+    await wait(() => f.fake.requests.length === 2);
+    expect(f.app.store.get("SELECT status FROM tool_calls WHERE provider_tool_call_id='live-a2a'")?.status).toBe("executing");
+
+    // Kill the parent worker in-process without restarting Core, then resume before the child finishes.
+    f.app.runtime.workers.get(task)!.child.kill();
+    await wait(() => !f.app.runtime.workers.has(task));
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status).toBe("paused");
+    expect(f.app.store.get("SELECT status FROM tool_calls WHERE provider_tool_call_id='live-a2a'")?.status).toBe("executing");
+
+    f.app.runtime.resume(task);
+    await wait(() => f.app.runtime.workers.has(task) && [...f.app.runtime.pendingReplies.values()].some((pending) => pending.worker.taskId === task));
+    releaseChild();
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
+    await wait(() => !f.app.runtime.workers.size);
+    expect(f.app.store.all("SELECT * FROM a2a_messages")).toHaveLength(1);
+    expect(f.app.store.get("SELECT result_summary FROM tasks WHERE id=?", task)?.result_summary).toBe("主任务重入恢复完成");
+
+    // Settling one device call must not clear needs_reconciliation while another tool call on the task is still unknown.
+    await wait(() => Boolean(f.app.gateway.hostDeviceId && f.app.gateway.sockets.has(f.app.gateway.hostDeviceId)));
+    const deviceId = f.app.gateway.hostDeviceId!;
+    const ws = f.app.gateway.sockets.get(deviceId)!;
+    const local = f.app.store.get("SELECT * FROM device_local_grants WHERE device_id=? AND local_grant_id='shared'", deviceId)!;
+    const run = f.app.store.get("SELECT * FROM task_runs WHERE task_id=? ORDER BY started_at DESC LIMIT 1", task)!;
+    const nowMs = Date.now();
+    const unknownCallId = id(), deviceCallId = id(), grantId = id(), argHash = hash(deviceCallId);
+    f.app.store.transaction(() => {
+      f.app.store.run("UPDATE tasks SET status='needs_reconciliation',ended_at=NULL WHERE id=?", task);
+      f.app.store.insert("tool_calls", {
+        id: unknownCallId, task_id: run.task_id, run_id: run.id, ...f.app.store.scope(),
+        conversation_id: run.conversation_id, bot_id: run.bot_id, runtime_session_id: run.runtime_session_id,
+        assistant_entry_id: "reconcile-guard", provider_tool_call_id: "unknown-sibling",
+        tool_name: "connector.call", tool_version: "1", target_kind: "connector", target_id: "feishu",
+        arguments_json: "{}", canonical_envelope: "{}", argument_hash: hash(unknownCallId),
+        status: "unknown", authorization_snapshot_json: "{}", created_at: nowMs,
+      });
+      f.app.store.insert("tool_calls", {
+        id: deviceCallId, task_id: run.task_id, run_id: run.id, ...f.app.store.scope(),
+        conversation_id: run.conversation_id, bot_id: run.bot_id, runtime_session_id: run.runtime_session_id,
+        assistant_entry_id: "reconcile-guard", provider_tool_call_id: "device-sibling",
+        tool_name: "device.exec", tool_version: "1", target_kind: "device", target_id: deviceId,
+        arguments_json: "{}", canonical_envelope: "{}", argument_hash: argHash,
+        status: "executing", authorization_snapshot_json: "{}", created_at: nowMs,
+      });
+      f.app.store.insert("device_grants", {
+        id: grantId, ...f.app.store.scope(), bot_id: run.bot_id, device_id: deviceId,
+        local_grant_id: "shared", local_policy_version: local.policy_version, scope_json: local.scope_json,
+        status: "active", created_at: nowMs, expires_at: nowMs + 120_000,
+      });
+      f.app.store.insert("device_calls", {
+        id: deviceCallId, ...f.app.store.scope(), bot_id: run.bot_id, device_id: deviceId,
+        grant_id: grantId, local_grant_id: "shared", grant_version: 1, local_policy_version: local.policy_version,
+        status: "delivered", delivery_count: 1, lease_seq: 1,
+        lease_issued_at: nowMs, lease_expires_at: nowMs + 30_000, deadline_at: nowMs + 120_000, created_at: nowMs - 1,
+      });
+    });
+
+    const payload = { stdout: "ok" }, resultHash = hash(JSON.stringify(payload));
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "result", callId: deviceCallId, argumentHash: argHash, result: payload, resultHash, failed: false })), false);
+    expect(f.app.store.get("SELECT status FROM tool_calls WHERE id=?", deviceCallId)?.status).toBe("succeeded");
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status).toBe("needs_reconciliation");
+    expect(f.app.runtime.workers.has(task)).toBe(false);
+  }, 60_000);
 });

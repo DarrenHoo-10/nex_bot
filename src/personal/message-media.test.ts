@@ -112,6 +112,12 @@ describe("message previews and names", () => {
     expect(messagePreview("普通消息\n\n[截图.png](/api/attachments/image-4)")).toBe("普通消息");
   });
 
+  it("strips Markdown headings, emphasis, code and links from sidebar previews", () => {
+    expect(messagePreview("# 📈 大盘复盘\n## 今日总结\n- **主板**走强")).toBe("📈 大盘复盘 今日总结 主板走强");
+    expect(messagePreview("查到了。**NexBot** `config.json` [查看详情](https://example.test)")).toBe("查到了。NexBot config.json 查看详情");
+    expect(messagePreview("> 引用一段话\n```ts\nconst x = 1;\n```")).toBe("引用一段话 const x = 1;");
+  });
+
   it("normalizes download names without losing the real extension", () => {
     expect(imageDownloadName("截图.PNG")).toBe("截图.PNG");
     expect(imageDownloadName("生成图片")).toBe("生成图片.png");

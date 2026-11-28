@@ -2,9 +2,10 @@
 // three tabs sit in a row above it (the project, the CLI, and the session's options: worktree, branch and
 // permissions), and sending starts the session with that message.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, GitBranch, PanelLeftOpen, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Check, ChevronDown, GitBranch, PanelLeftOpen, Search, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { cliPermissionLabel, cliPermissionModes, type CliDeviceView, type CliEngine, type CliGitBranches, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { useAnchoredPopover } from "../components/anchored-popover";
+import { useCompactComposer } from "../components/use-compact-composer";
 import { fetchBranches } from "./api";
 import type { LaunchChoice } from "./CliModelMenu";
 import { Composer } from "./Composer";
@@ -177,6 +178,112 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   );
 }
 
+interface BranchOption {
+  value: string;
+  label: string;
+  isCurrent: boolean;
+}
+
+function orderedBranches(branches: readonly string[], currentBranch?: string): BranchOption[] {
+  const options: BranchOption[] = [];
+  const hasCurrent = !!currentBranch && branches.includes(currentBranch);
+  if (!hasCurrent) options.push({ value: "", label: "当前 HEAD", isCurrent: false });
+  const seen = new Set<string>();
+  const add = (name: string) => {
+    if (!name || seen.has(name) || !branches.includes(name)) return;
+    seen.add(name);
+    options.push({ value: name, label: name, isCurrent: name === currentBranch });
+  };
+  if (currentBranch) add(currentBranch);
+  add("main");
+  add("master");
+  for (const name of branches) add(name);
+  return options;
+}
+
+function BranchPickerField({ label, value, branches, currentBranch, onChange, expanded, onExpanded, compact }: {
+  label: string; value: string; branches: readonly string[]; currentBranch?: string;
+  onChange(next: string): void; expanded: boolean; onExpanded(next: boolean): void; compact: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const options = useMemo(() => orderedBranches(branches, currentBranch), [branches, currentBranch]);
+  const filtered = useMemo(() => {
+    const text = query.trim().toLocaleLowerCase();
+    if (!text) return options;
+    return options.filter((entry) => entry.label.toLocaleLowerCase().includes(text));
+  }, [options, query]);
+
+  useEffect(() => {
+    if (!expanded) { setQuery(""); setActiveIndex(-1); return; }
+    if (!compact) requestAnimationFrame(() => searchRef.current?.focus());
+  }, [expanded, compact]);
+
+  useEffect(() => { setActiveIndex(-1); }, [query]);
+
+  const select = (next: string) => {
+    onChange(next);
+    onExpanded(false);
+    if (!compact) triggerRef.current?.focus();
+  };
+
+  const displayLabel = value || "当前 HEAD";
+  const displayIsCurrent = !!value && value === currentBranch;
+
+  return <div className="na-branch-picker" data-open={expanded || undefined}>
+    <button ref={triggerRef} type="button" className="na-branch-trigger" aria-label={label}
+      aria-haspopup="listbox" aria-expanded={expanded} data-value={value}
+      onClick={() => onExpanded(!expanded)}>
+      <GitBranch size={14} aria-hidden="true"/>
+      <span className="na-branch-value" title={displayLabel}>{displayLabel}</span>
+      {displayIsCurrent ? <em className="na-branch-tag">当前</em> : null}
+      <ChevronDown size={13} className="na-branch-chevron" aria-hidden="true"/>
+    </button>
+    {expanded ? <div className="na-branch-panel">
+      <div className="model-menu-search na-branch-search">
+        <Search size={14} aria-hidden="true"/>
+        <input ref={searchRef} type="text" value={query} placeholder="搜索分支…" aria-label={`搜索${label}`}
+          spellCheck={false} autoComplete="off"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault(); event.stopPropagation();
+              onExpanded(false);
+              triggerRef.current?.focus();
+            } else if (event.key === "ArrowDown") {
+              event.preventDefault();
+              if (filtered.length) setActiveIndex((current) => (current + 1) % filtered.length);
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              if (filtered.length) setActiveIndex((current) => (current <= 0 ? filtered.length - 1 : current - 1));
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              const target = filtered[activeIndex >= 0 ? activeIndex : 0];
+              if (target) select(target.value);
+            }
+          }}/>
+        {query ? <button type="button" className="na-branch-clear" aria-label="清空分支搜索" onClick={() => { setQuery(""); searchRef.current?.focus(); }}><X size={13}/></button> : null}
+      </div>
+      <div className="na-branch-list" role="listbox" aria-label={label}>
+        {filtered.length ? filtered.map((entry, index) => {
+          const selected = entry.value === value;
+          return <button key={entry.value || "__head__"} type="button" role="option" aria-selected={selected}
+            className="na-branch-option" data-active={index === activeIndex || undefined} data-value={entry.value}
+            onMouseEnter={() => setActiveIndex(index)}
+            onClick={() => select(entry.value)}>
+            <span className="na-branch-option-name" title={entry.label}>{entry.label}</span>
+            {entry.isCurrent ? <em className="na-branch-tag">当前</em> : null}
+            {selected ? <Check size={14} className="na-branch-check" aria-hidden="true"/> : null}
+          </button>;
+        }) : <div className="na-branch-empty">没有匹配的分支</div>}
+      </div>
+    </div> : null}
+  </div>;
+}
+
 /** The third tab: how the session runs. It opens a panel with branch selection (in-place switch when clean, or
  * a new worktree off a chosen base branch) and, where the CLI supports it, permissions. */
 function SessionOptions({ git, branch, onBranch, branches, currentBranch, dirty, selectedBranch, onSelectedBranch, baseBranch, onBaseBranch, problem, engine, modes, permissions, onPermissions }: {
@@ -187,60 +294,71 @@ function SessionOptions({ git, branch, onBranch, branches, currentBranch, dirty,
   problem: string | null;
   engine: CliEngine; modes: readonly CliPermissionMode[]; permissions?: CliPermissionMode; onPermissions(next: CliPermissionMode): void;
 }) {
+  const compact = useCompactComposer();
   const [open, setOpen] = useState(false);
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
-  useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false), 280);
+  useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false), 336, "start", false, compact);
   const on = branch !== null;
   const switching = !on && !!selectedBranch && selectedBranch !== currentBranch;
-  const chipLabel = on ? "Worktree" : selectedBranch;
+  // Compact mobile keeps tab 3 a lightweight settings trigger (Plan A) so project & harness tabs never collide.
+  const chipLabel = on ? "Worktree" : compact ? "" : selectedBranch;
   const chipTitle = on ? (baseBranch ? `Worktree（基于 ${baseBranch}）· ${branch || ""}` : branch || "Worktree") : (selectedBranch ? `分支 · ${selectedBranch}` : "分支、Worktree 与权限");
-  const close = () => { setOpen(false); trigger.current?.focus(); };
+  const close = () => { setOpen(false); setBranchPickerOpen(false); if (!compact) trigger.current?.focus(); };
+  useEffect(() => { if (!open) setBranchPickerOpen(false); }, [open]);
+  useEffect(() => { setBranchPickerOpen(false); }, [on]);
   return <div className="model-menu-root" ref={root}>
     <button ref={trigger} type="button" className="na-pick-chip na-options-chip" data-on={on || switching || undefined} data-invalid={problem ? true : undefined}
       aria-label="会话选项" aria-haspopup="dialog" aria-expanded={open} title={chipTitle} onClick={() => setOpen(!open)}>
-      <GitBranch size={15}/>{chipLabel ? <span>{chipLabel}</span> : null}
-      {permissions && permissions !== "full" ? <ShieldAlert size={13} className="na-options-ask" aria-label={cliPermissionLabel(engine, permissions)}/> : null}<ChevronDown size={13}/>
+      <GitBranch size={15}/>
+      {chipLabel ? <span>{chipLabel}</span> : null}
+      {compact && switching ? <i className="na-options-dot" aria-hidden="true"/> : null}
+      {permissions && permissions !== "full" ? <ShieldAlert size={13} className="na-options-ask" aria-label={cliPermissionLabel(engine, permissions)}/> : null}
+      <ChevronDown size={13}/>
     </button>
-    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu na-options-menu" role="dialog" aria-label="会话选项"
+    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu na-options-menu" data-sheet={compact || undefined} role="dialog" aria-label="会话选项"
       onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } }}>
-      <label className="na-option-row" data-disabled={!git || undefined}>
-        <span className="na-option-text"><b>Worktree</b>{git ? null : <small>不是 Git 仓库</small>}</span>
-        <input type="checkbox" role="switch" className="na-switch" checked={on} disabled={!git} onChange={(event) => onBranch(event.target.checked ? randomBranch() : null)}/>
-      </label>
-      {git && !on && branches.length > 0 ? <label className="na-option-field">
-        <span>分支{dirty ? " · 有未提交改动" : ""}</span>
-        <span className="model-menu-search na-option-select">
-          <GitBranch size={14}/>
-          <select aria-label="选择分支" value={selectedBranch} onChange={(event) => onSelectedBranch(event.target.value)}>
-            {!currentBranch || !branches.includes(currentBranch) ? <option value="">当前 HEAD</option> : null}
-            {branches.map((name) => <option key={name} value={name}>{name === currentBranch ? `${name}（当前）` : name}</option>)}
-          </select>
-          <ChevronDown size={13}/>
-        </span>
-      </label> : null}
-      {on && branches.length > 0 ? <label className="na-option-field">
-        <span>基准分支</span>
-        <span className="model-menu-search na-option-select">
-          <GitBranch size={14}/>
-          <select aria-label="基准分支" value={baseBranch} onChange={(event) => onBaseBranch(event.target.value)}>
-            {!currentBranch || !branches.includes(currentBranch) ? <option value="">当前 HEAD</option> : null}
-            {branches.map((name) => <option key={name} value={name}>{name === currentBranch ? `${name}（当前）` : name}</option>)}
-          </select>
-          <ChevronDown size={13}/>
-        </span>
-      </label> : null}
-      {on ? <label className="na-option-field"><span>新分支</span>
-        <span className="model-menu-search"><GitBranch size={14}/><input aria-label="新分支名称" value={branch} spellCheck={false} autoComplete="off"
-          onChange={(event) => onBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); close(); } }}/></span>
-      </label> : null}
-      {problem ? <div className="model-menu-status" role="alert">{problem}</div> : null}
-      {permissions ? <div className="na-option-field"><span>权限</span>
-        <div className="na-option-modes" role="radiogroup" aria-label="权限">
-          {modes.map((mode) => <button key={mode} type="button" role="radio" aria-checked={permissions === mode} onClick={() => onPermissions(mode)}>
-            {mode === "full" ? <ShieldCheck size={14}/> : <ShieldAlert size={14}/>}<span>{cliPermissionLabel(engine, mode)}</span>{permissions === mode ? <Check size={14}/> : null}
-          </button>)}
+      {compact ? <>
+        <div className="na-dir-handle" aria-hidden="true"/>
+        <div className="na-options-sheet-head">
+          <strong>会话设置</strong>
+          <button type="button" className="icon-button" aria-label="关闭会话设置" onClick={close}><X size={17}/></button>
         </div>
-      </div> : null}
+      </> : null}
+      <div className="na-options-body">
+        <label className="na-option-row" data-disabled={!git || undefined}>
+          <span className="na-option-text"><b>Worktree</b>{git ? null : <small>不是 Git 仓库</small>}</span>
+          <input type="checkbox" role="switch" className="na-switch" checked={on} disabled={!git} onChange={(event) => onBranch(event.target.checked ? randomBranch() : null)}/>
+        </label>
+        {git && !on && branches.length > 0 ? <div className="na-option-field">
+          <span className="na-option-label">
+            <span>分支</span>
+            {dirty ? <em className="na-option-badge is-warn">有未提交改动</em> : null}
+          </span>
+          <BranchPickerField label="选择分支" value={selectedBranch} branches={branches} currentBranch={currentBranch}
+            onChange={onSelectedBranch} expanded={branchPickerOpen} onExpanded={setBranchPickerOpen} compact={compact}/>
+        </div> : null}
+        {on && branches.length > 0 ? <div className="na-option-field">
+          <span className="na-option-label"><span>基准分支</span></span>
+          <BranchPickerField label="基准分支" value={baseBranch} branches={branches} currentBranch={currentBranch}
+            onChange={onBaseBranch} expanded={branchPickerOpen} onExpanded={setBranchPickerOpen} compact={compact}/>
+        </div> : null}
+        {on ? <label className="na-option-field"><span>新分支</span>
+          <span className="model-menu-search"><GitBranch size={14}/><input aria-label="新分支名称" value={branch} spellCheck={false} autoComplete="off"
+            onChange={(event) => onBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); close(); } }}/></span>
+        </label> : null}
+        {problem ? <div className="na-option-alert" role="alert">
+          <span>{problem}</span>
+          {dirty && !on && switching ? <button type="button" className="na-option-alert-action" onClick={() => onBranch(randomBranch())}>改用 Worktree</button> : null}
+        </div> : null}
+        {permissions ? <div className="na-option-field"><span>权限</span>
+          <div className="na-option-modes" role="radiogroup" aria-label="权限">
+            {modes.map((mode) => <button key={mode} type="button" role="radio" aria-checked={permissions === mode} onClick={() => onPermissions(mode)}>
+              {mode === "full" ? <ShieldCheck size={14}/> : <ShieldAlert size={14}/>}<span>{cliPermissionLabel(engine, mode)}</span>{permissions === mode ? <Check size={14}/> : null}
+            </button>)}
+          </div>
+        </div> : null}
+      </div>
     </div>}
   </div>;
 }

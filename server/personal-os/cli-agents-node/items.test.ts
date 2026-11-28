@@ -248,11 +248,23 @@ describe("claude: system, attachment, sidechain, metadata, ignored", () => {
     const event = { kind: "notice", id: "n1", ts: MS, level: "info", text: "", taskEnd: { id: "job-1", state: "completed" } };
     for (const record of [
       { type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", prompt: text } },
+      { type: "attachment", attachment: { type: "queued_command", origin: { kind: "task-notification", producer: "session-task" }, prompt: text } },
       { type: "attachment", attachment: { type: "task_notification", taskId: "job-1", status: "completed", summary: text } },
       { type: "user", isMeta: true, message: { content: [{ type: "text", text }] } },
+      { type: "user", isSidechain: false, origin: { kind: "task-notification", producer: "session-task", runId: "run-1" }, message: { role: "user", content: text } },
     ]) {
       expect(claude({ ...record, uuid: "n1", timestamp: TS }).items).toEqual([event]);
     }
+    const nonMetaPeer = claude({
+      type: "user",
+      uuid: "p-user",
+      timestamp: TS,
+      origin: { kind: "peer", from: "a857eeb3b739a78b5", senderTaskId: "a857eeb3b739a78b5", name: "Explore", body: "Mapped architecture." },
+      message: { role: "user", content: '<agent-message from="a857eeb3b739a78b5" name="Explore">Mapped architecture.</agent-message>' },
+    });
+    expect(nonMetaPeer.items).toEqual([
+      { kind: "tool", id: "p-user", ts: MS, name: "AgentMessage", input: "子 Agent Explore (a857eeb3)", status: "ok", output: "Mapped architecture." },
+    ]);
     const prompt = { type: "queued_command", commandMode: "prompt", prompt: text };
     expect(claude({ type: "attachment", attachment: prompt }).items).toMatchObject([{ kind: "user", text, queued: true, queuedByUser: true }]);
     expect(claude({ type: "attachment", attachment: { ...prompt, commandMode: "task-notification", prompt: "malformed payload" } }).items).toEqual([]);

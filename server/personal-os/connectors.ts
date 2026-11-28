@@ -29,6 +29,7 @@ export function connectorAccess(store: CoreStore, args: Record<string, unknown>)
   // Connector tool grants were retired: every enabled connector serves every bot in the workspace.
   const row = store.get("SELECT * FROM personal_connectors WHERE id=? AND enabled=1 AND workspace_id=? AND owner_user_id=?", connectorId, store.workspace, store.owner);
   if (!row) throw new Error("连接器不存在或已停用");
+  if (row.kind === "feishu" && !store.get("SELECT 1 FROM personal_feishu_apps WHERE connector_id=?", row.id)) throw new Error("飞书应用不存在或已失效");
   if (row.provider === "gmail" && !row.credential) throw new Error("Gmail 授权已失效，请重新连接");
   if (row.provider === "github" && !row.credential) throw new Error("GitHub 授权已失效，请重新连接");
   if (args.action === "connector.call") {
@@ -66,7 +67,11 @@ export class ConnectorModule {
     return row;
   }
   list(): ConnectorView[] {
-    return this.store.all("SELECT * FROM personal_connectors WHERE workspace_id=? AND owner_user_id=? ORDER BY created_at,id", this.store.workspace, this.store.owner).map((row) => ({
+    return this.store.all(
+      "SELECT c.* FROM personal_connectors c LEFT JOIN personal_feishu_apps a ON a.connector_id=c.id WHERE c.workspace_id=? AND c.owner_user_id=? AND (c.kind!='feishu' OR a.connector_id IS NOT NULL) ORDER BY c.created_at,c.id",
+      this.store.workspace,
+      this.store.owner,
+    ).map((row) => ({
       id: String(row.id), kind: row.kind === "feishu" ? "feishu" : "mcp", provider: row.provider as "mcp" | "gmail" | "github", account: row.account as string | null, name: String(row.name), url: String(row.url), transport: row.transport as "http" | "sse", enabled: row.enabled === 1, version: Number(row.version), hasToken: !!row.credential,
       tools: JSON.parse(String(row.tools_json)), checkedAt: row.checked_at as number | null, error: row.error as string | null,
       grants: [],
@@ -193,7 +198,18 @@ export class ConnectorModule {
     }
   }
   directory(_botId: string) {
-    return this.list().filter((item) => item.enabled && (item.provider === "mcp" || item.hasToken)).map((item) => ({ id: item.id, name: item.account ? `${item.name} (${item.account})` : item.name, version: item.version, tools: item.tools.map((tool) => tool.name) }));
+    const feishuLabels = new Map<string, string>();
+    for (const row of this.store.all(
+      "SELECT a.connector_id, COALESCE(NULLIF(b.name,''), NULLIF(a.bot_name,''), a.app_id) AS label FROM personal_feishu_apps a LEFT JOIN bots b ON b.id=a.bot_id",
+    )) {
+      if (row.label) feishuLabels.set(String(row.connector_id), String(row.label));
+    }
+    return this.list()
+      .filter((item) => item.enabled && (item.provider === "mcp" || item.hasToken))
+      .map((item) => {
+        const suffix = item.account || (item.kind === "feishu" ? feishuLabels.get(item.id) : undefined);
+        return { id: item.id, name: suffix ? `${item.name} (${suffix})` : item.name, version: item.version, tools: item.tools.map((tool) => tool.name) };
+      });
   }
   async execute(call: Row, args: Record<string, unknown>, authorize: () => Promise<void>) {
     if (args.action === "connector.list") return { connectors: this.directory(String(call.bot_id)) };

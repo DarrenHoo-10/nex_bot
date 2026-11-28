@@ -37,12 +37,12 @@ import NexClientKit
                     switch arg {
                     case "connectors": nav.openConnectors()
                     case "devices": nav.openDevices()
-                    case "settings": nav.openSettings(nav.settingsCategory)
+                    case "settings": nav.openSettings()
                     case "detail": if let id = nav.currentBotID ?? workspace.bots.first?.id { nav.openAgentDetail(id, tab: nav.detailTab) }
                     default: break
                     }
                 case "detailtab": if let tab = AgentDetailTab.allCases.first(where: { ["work": "工作", "settings": "设置"][arg] == $0.rawValue }) { nav.detailTab = tab }
-                case "settingscat": if let c = ["account": SettingsCategory.account, "model": .model, "memory": .memory, "connectors": .connectors, "devices": .devices][arg] { nav.settingsCategory = c }
+                case "settingscat": if let c = ["account": SettingsCategory.account, "model": .model, "memory": .memory, "connectors": .connectors, "devices": .devices, "about": .about][arg] { nav.openSettings(c) }
                 case "back": nav.showMenu = false; if !nav.path.isEmpty { nav.path.removeLast() }
                 case "menu": nav.showMenu = true
                 case "dark", "light", "system": UserDefaults.standard.set(parts[0], forKey: AppearanceMode.key)

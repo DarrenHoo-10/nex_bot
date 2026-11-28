@@ -1,8 +1,18 @@
 // The model and effort menu of an Agent session: the same menu as NexBot's chat
 // composer, listing the rows the CLI's own `/model` picker shows on that computer.
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Check, ChevronDown, Search } from "lucide-react";
-import { CLI_MODELS, CLI_REASONING_LEVELS, cliReasoningChoice, resolveCliEffort, type CliEngine, type CliModelCatalog } from "../../../shared/cli-agents";
+import { Check, ChevronDown, ChevronRight, Search } from "lucide-react";
+import {
+  CLI_MODELS,
+  CLI_REASONING_LEVELS,
+  cliModelDisplayLabel,
+  cliModelProviderGroups,
+  cliReasoningChoice,
+  resolveCliEffort,
+  type CliEngine,
+  type CliModelCatalog,
+  type CliModelOption,
+} from "../../../shared/cli-agents";
 import { EffortChoices } from "../components/EffortChoices";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import { useCompactComposer } from "../components/use-compact-composer";
@@ -64,26 +74,55 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
   const open = controlledOpen ?? localOpen;
   const setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
   const [query, setQuery] = useState("");
+  const [pickedProvider, setPickedProvider] = useState("");
+  const [pickingProvider, setPickingProvider] = useState(false);
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   // the trigger names the chosen model, so the list is read before the menu opens
   const { catalog, loading, error } = useModelCatalog(deviceId, engine, live);
   const models = catalog.models;
-  useEffect(() => { if (!open) setQuery(""); }, [open]);
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      setPickedProvider("");
+      setPickingProvider(false);
+    }
+  }, [open]);
+  useEffect(() => {
+    setPickedProvider("");
+    setPickingProvider(false);
+  }, [deviceId, engine]);
   const anchor = () => anchorRef?.current ?? trigger.current;
   useAnchoredPopover(open, panel, anchor, () => [root.current, anchorRef?.current], () => setOpen(false), 320, "start", compact);
 
-  const label = (id: string) => models.find((row) => row.id === id)?.label ?? id;
+  const label = (id: string) => cliModelDisplayLabel(models, id);
   const fallback = running?.trim() || catalog.current || "";
-  const shown = useMemo(() => {
+  const groups = useMemo(() => cliModelProviderGroups(models), [models]);
+  const activeModelId = choice.model || fallback;
+  const activeModelProvider = models.find((row) => row.id === activeModelId)?.provider?.trim() ?? "";
+  const defaultProviderId = models.find((row) => row.id === fallback)?.provider?.trim() || groups[0]?.id || "";
+  const selectedProviderId = (pickedProvider && groups.some((group) => group.id === pickedProvider) ? pickedProvider : activeModelProvider) || groups[0]?.id || "";
+  const activeGroup = groups.find((group) => group.id === selectedProviderId) ?? groups[0];
+  const planGroups = useMemo(() => groups.filter((group) => group.kind === "plan"), [groups]);
+  const apiGroups = useMemo(() => groups.filter((group) => group.kind !== "plan"), [groups]);
+
+  const shown = useMemo((): readonly CliModelOption[] => {
     if (!open) return [];
-    const listed = choice.model && !models.some((row) => row.id === choice.model) ? [...models, { id: choice.model, label: choice.model }] : models;
+    const customRow: CliModelOption | null = choice.model && !models.some((row) => row.id === choice.model)
+      ? { id: choice.model, label: cliModelDisplayLabel(models, choice.model) }
+      : null;
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (!terms.length) return listed;
-    return listed.filter((row) => {
-      const search = `${row.id} ${row.label} ${row.description ?? ""}`.toLowerCase();
-      return terms.every((term) => search.includes(term));
-    });
-  }, [open, models, choice.model, query]);
+    if (terms.length) {
+      const listed = customRow ? [...models, customRow] : models;
+      return listed.filter((row) => {
+        const search = `${row.id} ${row.label} ${row.description ?? ""} ${row.providerLabel ?? ""} ${row.providerBadge ?? ""}`.toLowerCase();
+        return terms.every((term) => search.includes(term));
+      });
+    }
+    if (activeGroup) {
+      return customRow && activeGroup.id === defaultProviderId ? [...activeGroup.models, customRow] : activeGroup.models;
+    }
+    return customRow ? [...models, customRow] : models;
+  }, [open, models, choice.model, query, activeGroup, defaultProviderId]);
   const dynamicCatalog = engine === "agy" || engine === "zcode";
   const levelsFor = (model: string) => models.find((row) => row.id === (model || fallback))?.efforts ?? [];
   const levels = dynamicCatalog ? levelsFor(choice.model) : CLI_REASONING_LEVELS;
@@ -94,34 +133,111 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
 
   const pick = (model: string) => {
     if (disabled || model === choice.model) return;
+    const pickedRow = models.find((row) => row.id === model);
+    if (pickedRow?.provider?.trim()) setPickedProvider(pickedRow.provider.trim());
+    else if (!model) setPickedProvider("");
     onChange({ model, effort: dynamicCatalog ? resolveCliEffort(engine, levelsFor(model), selectedEffort) ?? "" : selectedEffort });
   };
+
+  const showDefaultRow = !query && !(dynamicCatalog && running) && (!activeGroup || activeGroup.id === defaultProviderId);
+  const rowMeta = (row: CliModelOption): string | undefined => {
+    if (query.trim() && row.providerLabel) {
+      return row.providerBadge ? `${row.providerLabel} · ${row.providerBadge}` : row.providerLabel;
+    }
+    if (activeGroup && row.description && row.description === activeGroup.label) return undefined;
+    return row.description;
+  };
+  const renderProviderOption = (group: (typeof groups)[number]) => (
+    <button
+      key={group.id}
+      type="button"
+      role="option"
+      aria-selected={group.id === activeGroup?.id}
+      className="model-menu-row na-model-row na-provider-row"
+      onClick={() => {
+        setPickedProvider(group.id);
+        setPickingProvider(false);
+        setQuery("");
+      }}
+    >
+      <span className="na-provider-row-main">
+        <span className="model-menu-name">{group.label}</span>
+        {group.badge ? <span className="na-provider-badge" data-kind={group.kind}>{group.badge}</span> : null}
+      </span>
+      {group.id === activeGroup?.id ? <Check size={15} className="model-menu-check"/> : null}
+    </button>
+  );
 
   const title = choice.model ? label(choice.model) : fallback ? label(fallback) : "默认模型";
   return <div className="model-menu-root" ref={root}>
     {!anchorRef && <button ref={trigger} type="button" className={triggerClassName} aria-label="模型设置" aria-haspopup="dialog" aria-expanded={open} title={choice.model || fallback || undefined} onClick={() => setOpen(!open)}>
       <span>{title}</span>{(!dynamicCatalog || levels.length > 0) && <span className="na-effort">{effortLabel(selectedEffort)}</span>}<ChevronDown size={13}/>
     </button>}
-    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); anchor()?.focus(); } }}>
-      <div className="na-model-head"><span>模型</span></div>
-      {levels.length > 0 && <EffortChoices levels={levels} value={selectedEffort} label={effortLabel} onChange={commitLevel} disabled={disabled}/>}
-      {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)}/></label> : null}
-      <div className="model-menu-list" role="listbox" aria-label="可用模型">
-        {!query ? <>
-          {!(dynamicCatalog && running) && <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick("")} title={fallback || undefined}>
-            <span className="na-model-text"><span className="model-menu-name">默认</span>{fallback ? <small>{label(fallback)}</small> : null}</span>
-            {!choice.model ? <Check size={15} className="model-menu-check"/> : null}
-          </button>}
-          {shown.length ? <div className="na-model-divider" role="presentation"/> : null}
-        </> : null}
-        {shown.map((row) => <button type="button" role="option" aria-selected={row.id === choice.model} key={row.id} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick(row.id)} title={row.id}>
-          <span className="na-model-text"><span className="model-menu-name">{row.label}</span>{"description" in row && row.description ? <small>{row.description}</small> : null}</span>
-          {row.id === choice.model ? <Check size={15} className="model-menu-check"/> : null}
-        </button>)}
-        {loading ? <div className="model-menu-status" role="status">正在获取模型…</div> : null}
-        {error ? <div className="model-menu-status" role="alert">{error}</div> : null}
-        {!shown.length && query ? <div className="model-menu-status">没有匹配的模型</div> : null}
-      </div>
+    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" tabIndex={-1} onKeyDown={(event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pickingProvider) {
+          setPickingProvider(false);
+          return;
+        }
+        setOpen(false);
+        anchor()?.focus();
+      }
+    }}>
+      {activeGroup ? (
+        groups.length > 1 ? (
+          <button
+            type="button"
+            className="na-provider-trigger"
+            aria-label="套餐与供应商"
+            aria-expanded={pickingProvider}
+            onClick={() => setPickingProvider((current) => !current)}
+          >
+            <span className="na-provider-row-main">
+              <span className="na-provider-name">{activeGroup.label}</span>
+              {activeGroup.badge ? <span className="na-provider-badge" data-kind={activeGroup.kind}>{activeGroup.badge}</span> : null}
+            </span>
+            <ChevronRight size={14} className="na-provider-arrow" data-open={pickingProvider || undefined}/>
+          </button>
+        ) : (
+          <div className="na-provider-static">
+            <span className="na-provider-name">{activeGroup.label}</span>
+            {activeGroup.badge ? <span className="na-provider-badge" data-kind={activeGroup.kind}>{activeGroup.badge}</span> : null}
+          </div>
+        )
+      ) : (
+        <div className="na-model-head"><span>模型</span></div>
+      )}
+      {pickingProvider && groups.length > 1 ? (
+        <div className="model-menu-list na-provider-list" role="listbox" aria-label="套餐与供应商">
+          {planGroups.map(renderProviderOption)}
+          {planGroups.length > 0 && apiGroups.length > 0 ? <div className="na-model-divider" role="presentation"/> : null}
+          {apiGroups.map(renderProviderOption)}
+        </div>
+      ) : <>
+        {levels.length > 0 && <EffortChoices levels={levels} value={selectedEffort} label={effortLabel} onChange={commitLevel} disabled={disabled}/>}
+        {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)}/></label> : null}
+        <div className="model-menu-list" role="listbox" aria-label="可用模型">
+          {showDefaultRow ? <>
+            <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick("")} title={fallback || undefined}>
+              <span className="na-model-text"><span className="model-menu-name">默认</span>{fallback ? <small>{label(fallback)}</small> : null}</span>
+              {!choice.model ? <Check size={15} className="model-menu-check"/> : null}
+            </button>
+            {shown.length ? <div className="na-model-divider" role="presentation"/> : null}
+          </> : null}
+          {shown.map((row) => {
+            const sub = rowMeta(row);
+            return <button type="button" role="option" aria-selected={row.id === choice.model} key={row.id} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick(row.id)} title={row.id}>
+              <span className="na-model-text"><span className="model-menu-name">{row.label}</span>{sub ? <small>{sub}</small> : null}</span>
+              {row.id === choice.model ? <Check size={15} className="model-menu-check"/> : null}
+            </button>;
+          })}
+          {loading ? <div className="model-menu-status" role="status">正在获取模型…</div> : null}
+          {error ? <div className="model-menu-status" role="alert">{error}</div> : null}
+          {!shown.length && query ? <div className="model-menu-status">没有匹配的模型</div> : null}
+        </div>
+      </>}
       {note ? <div className="na-model-note" role="status">{note}</div> : null}
     </div>}
   </div>;

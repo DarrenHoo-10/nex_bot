@@ -162,10 +162,26 @@ export function parseMessageMedia(value: string, includeCli = false): ParsedMess
   return { text: text.trim() ? text : "", images };
 }
 
+function stripMarkdownPreview(value: string): string {
+  return value
+    .replace(/^[ \t]{0,3}(?:`{3,}|~{3,})[^\n]*$/gm, " ")
+    .replace(/^[ \t]{0,3}(?:[-*_][ \t]*){3,}$/gm, " ")
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/^[ \t]{0,3}>+[ \t]?/gm, "")
+    .replace(/^[ \t]{0,3}(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, "")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/`+([^`\n]+)`+/g, "$1")
+    .replace(/(\*\*|__|~~)(?=\S)(.+?)(?<=\S)\1/g, "$2")
+    .replace(/(^|[\s(（【「『])([*_])(?=\S)([^*\n_]+?)(?<=\S)\2(?=$|[\s.,!?;:，。！？；：)）】」』])/g, "$1$3")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** One-line preview used by the contact list and quote bar. */
 export function messagePreview(value: string): string {
   const { text, images } = parseMessageMedia(value);
-  const preview = text.replace(/\s+/g, " ").trim();
+  const preview = stripMarkdownPreview(text);
   return preview || (images.length ? "图片" : "");
 }
 

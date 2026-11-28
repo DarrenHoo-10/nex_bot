@@ -10,8 +10,32 @@ public struct CliModelOption: Sendable, Hashable, Identifiable, Decodable {
     public var description: String?
     /// Effort levels the model takes; nil when the CLI does not say (every level of the engine is offered).
     public var efforts: [String]?
-    public init(id: String, label: String, description: String? = nil, efforts: [String]? = nil) {
+    /// Stable provider / plan id when a CLI groups models by provider or plan (e.g. ZCode).
+    public var provider: String?
+    public var providerLabel: String?
+    public var providerBadge: String?
+    /// `"plan"` for subscription plans, `"api"` for API-key providers.
+    public var providerKind: String?
+    public init(id: String, label: String, description: String? = nil, efforts: [String]? = nil,
+                provider: String? = nil, providerLabel: String? = nil, providerBadge: String? = nil, providerKind: String? = nil) {
         self.id = id; self.label = label; self.description = description; self.efforts = efforts
+        self.provider = provider; self.providerLabel = providerLabel; self.providerBadge = providerBadge; self.providerKind = providerKind
+    }
+}
+
+/// One provider / plan section of a grouped CLI model catalog (plans before API providers).
+public struct CliModelProviderGroup: Sendable, Hashable, Identifiable {
+    public var id: String
+    public var label: String
+    public var badge: String?
+    public var isPlan: Bool
+    public var models: [CliModelOption]
+    public init(id: String, label: String, badge: String? = nil, isPlan: Bool, models: [CliModelOption]) {
+        self.id = id; self.label = label; self.badge = badge; self.isPlan = isPlan; self.models = models
+    }
+    public var displayTitle: String {
+        if let badge, !badge.isEmpty { return "\(label) · \(badge)" }
+        return label
     }
 }
 
@@ -145,6 +169,67 @@ public enum CliLaunches {
 
     public static let effortLabels: [String: String] = ["": "默认", "minimal": "极低", "low": "低", "medium": "中", "high": "高", "xhigh": "很高", "max": "最高", "ultra": "超高"]
     public static func effortLabel(_ level: String) -> String { effortLabels[level] ?? level }
+
+    private static let zcodeAccountProviders: [String: (label: String, badge: String)] = [
+        "account:bigmodel-individual-coding-plan": ("BigModel", "个人"),
+        "account:bigmodel-team-coding-plan": ("BigModel", "团队"),
+        "account:bigmodel-start-plan": ("Start Plan", "免费"),
+        "account:bigmodel-offpeak-idle-plan": ("BigModel", "闲时"),
+        "account:bigmodel-highspeed-card": ("BigModel", "高速"),
+        "account:zai-individual-coding-plan": ("Z.AI", "个人"),
+        "account:zai-team-coding-plan": ("Z.AI", "团队"),
+        "account:zai-start-plan": ("Start Plan", "免费"),
+        "account:zai-offpeak-idle-plan": ("Z.AI", "闲时"),
+        "account:zai-highspeed-card": ("Z.AI", "高速"),
+    ]
+
+    /// Groups provider-scoped models (e.g. ZCode plans & API providers), placing plans before API providers.
+    public static func providerGroups(_ models: [CliModelOption]) -> [CliModelProviderGroup] {
+        guard models.contains(where: { !($0.provider?.trimmingCharacters(in: .whitespaces).isEmpty ?? true) }) else { return [] }
+        var indexById: [String: Int] = [:]
+        var groups: [CliModelProviderGroup] = []
+        for row in models {
+            let trimmed = row.provider?.trimmingCharacters(in: .whitespaces) ?? ""
+            let id = trimmed.isEmpty ? "__other__" : trimmed
+            if let idx = indexById[id] {
+                groups[idx].models.append(row)
+            } else {
+                let pLabel = row.providerLabel?.trimmingCharacters(in: .whitespaces)
+                let desc = row.description?.trimmingCharacters(in: .whitespaces)
+                let label = (pLabel?.isEmpty == false ? pLabel : nil) ?? (desc?.isEmpty == false ? desc : nil) ?? (id == "__other__" ? "其他" : id)
+                let badge = row.providerBadge?.trimmingCharacters(in: .whitespaces)
+                let isPlan = row.providerKind == "plan"
+                indexById[id] = groups.count
+                groups.append(CliModelProviderGroup(id: id, label: label, badge: badge?.isEmpty == false ? badge : nil, isPlan: isPlan, models: [row]))
+            }
+        }
+        return groups.filter(\.isPlan) + groups.filter { !$0.isPlan }
+    }
+
+    /// Display label for a model id, adding the plan/provider name when multiple providers share the same model label.
+    public static func modelDisplayLabel(_ models: [CliModelOption], id: String) -> String {
+        if let row = models.first(where: { $0.id == id }) {
+            let pLabel = row.providerLabel?.trimmingCharacters(in: .whitespaces) ?? ""
+            if !pLabel.isEmpty, let provider = row.provider {
+                let key = row.label.trimmingCharacters(in: .whitespaces).lowercased()
+                let duplicates = models.filter { $0.provider != provider && $0.label.trimmingCharacters(in: .whitespaces).lowercased() == key }
+                if !duplicates.isEmpty {
+                    let sameLabel = duplicates.contains { ($0.providerLabel?.trimmingCharacters(in: .whitespaces) ?? "") == pLabel }
+                    let badge = row.providerBadge?.trimmingCharacters(in: .whitespaces) ?? ""
+                    let prefix = sameLabel && !badge.isEmpty ? "\(pLabel) \(badge)" : pLabel
+                    return "\(prefix) · \(row.label)"
+                }
+            }
+            return row.label
+        }
+        if let slash = id.firstIndex(of: "/"), slash > id.startIndex, id.index(after: slash) < id.endIndex {
+            let provider = String(id[..<slash])
+            if let known = zcodeAccountProviders[provider] {
+                return "\(known.label) · \(id[id.index(after: slash)...])"
+            }
+        }
+        return id
+    }
 
     /// Effort levels `model` takes: what the CLI says for it, else every level of the engine.
     public static func efforts(engine: CliEngine, models: [CliModelOption], model: String) -> [String] {

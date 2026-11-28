@@ -86,10 +86,23 @@ extension UIColor {
 }
 #endif
 
-/// The blue NexBot companion mark (`src/personal/assets/nexbot-mark.svg`).
+/// The blue NexBot companion mark (`src/personal/assets/nexbot-mark.svg`), or emerald-teal NexAgent mark.
 struct BrandMark: View {
     var size: CGFloat = 28
+    var agent: Bool = false
     var body: some View {
-        Image("NexBotMark").resizable().scaledToFit().frame(width: size, height: size).accessibilityHidden(true)
+        if agent {
+            ZStack {
+                RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                    .fill(LinearGradient(colors: [Theme.nexAgentBubbleTop, Theme.nexAgentBubbleBottom], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: size * 0.48, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+        } else {
+            Image("NexBotMark").resizable().scaledToFit().frame(width: size, height: size).accessibilityHidden(true)
+        }
     }
 }

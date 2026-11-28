@@ -21,6 +21,15 @@
 .todo-app[data-right="closed"] > main > header {
   padding-right: max(2px, calc(var(--window-caption-width) - 14px + 12px)) !important;
 }
+/* Settings pane runs flush to the window edge so native caption controls sit on a single clean surface. */
+@media (min-width: 721px) {
+  .rk-workspace[data-page="settings"] > main {
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+}
 /* Below 1040px the panel overlays the column, so the header always clears the caption. */
 @media (max-width: 1040px) {
   .rk-workspace > main > header { padding-right: max(2px, calc(var(--window-caption-width) - 14px + 12px)) !important; }

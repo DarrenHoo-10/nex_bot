@@ -178,6 +178,14 @@ public final class WorkspaceStore {
         // to leave it deliberately.
         for (id, c) in conversations where id != botID && c.focusedMessageID != nil { leaveHistory(id, reload: false) }
         guard botID != selectedBotID else { return }
+        if let botID {
+            let conv = conversation(for: botID)
+            if let bot = self.bot(botID), bot.unreadCount > bot.topicUnreadCount {
+                conv.prepareUnreadJump(readSeq: bot.readSeq)
+            } else {
+                conv.clearUnreadAnchor()
+            }
+        }
         selectedBotID = botID
         if started { openStream(); scheduleRefresh(after: 0) }
     }
@@ -529,7 +537,7 @@ public final class WorkspaceStore {
                     feed = try await client.feed(bot: current, at: next.sync.at)
                 }
             }
-            let older = same ? (memoryHit ? conv.hasOlder : cached?.hasOlder) : feed.map { $0.hasOlder ?? ($0.messages.count >= 100) }
+            var older = same ? (memoryHit ? conv.hasOlder : cached?.hasOlder) : feed.map { $0.hasOlder ?? ($0.messages.count >= 100) }
             while let page = feed {
                 guard request == serial, selectedBotID == current else { return }
                 guard page.sync.sameGeneration(as: next.sync) else { clearContent(); scheduleRefresh(after: 0); return }
@@ -539,6 +547,24 @@ public final class WorkspaceStore {
                 feed = try await client.feed(bot: current, after: lastRow.seq, at: lastRow.row.int("created_at") ?? 0)
             }
             guard request == serial, selectedBotID == current else { return }
+            if target == nil, !conv.isLoaded, conv.pendingUnreadReadSeq == nil,
+               let nextBot = next.bots.first(where: { $0.id == current }),
+               nextBot.unreadCount > nextBot.topicUnreadCount {
+                conv.prepareUnreadJump(readSeq: nextBot.readSeq)
+            }
+            if target == nil, let unreadReadSeq = conv.pendingUnreadReadSeq {
+                var backfilled = 0
+                while backfilled < 4, older == true, let first = history.first, first.seq > unreadReadSeq + 1 {
+                    let page = try await client.feed(bot: current, before: first.seq, at: first.row.int("created_at"))
+                    guard request == serial, selectedBotID == current else { return }
+                    guard page.sync.sameGeneration(as: next.sync) else { break }
+                    older = page.hasOlder ?? (page.messages.count >= 100)
+                    let prepended = page.messages.filter { $0.seq < first.seq }
+                    if prepended.isEmpty { older = false; break }
+                    history = prepended + history
+                    backfilled += 1
+                }
+            }
             let feedSync = feed?.sync ?? next.sync
             let streaming = feed.map { page in
                 page.streaming.map { partial in

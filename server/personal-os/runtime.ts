@@ -27,13 +27,24 @@ import { commonToolPrompt, missingToolArguments, searchTools, type TaskOrigin } 
 import type { ModelScope } from './calibration.ts';
 import { isolateSource } from './topic-access.ts';
 
-interface Running { child: ChildProcess; taskId: string; runId: string; runtimeId: string; generation: number; model: ModelScope; timer?: NodeJS.Timeout; finished: boolean; streaming: string; controller:AbortController }
+interface Running { child: ChildProcess; taskId: string; runId: string; runtimeId: string; generation: number; model: ModelScope; timer?: NodeJS.Timeout; waitingCalls: Set<string>; finished: boolean; streaming: string; controller:AbortController }
 /** A background maintenance run of one conversation's projection: a worker process without a task. `summaries`/`failures` count its summarizer outcomes. */
 interface Maintenance { child: ChildProcess; runId: string; conversationId: string; botId: string; runtimeId: string; stopped: boolean; done: boolean; failure?: string; controller: AbortController; summaries: number; failures: number; lastError?: string }
 /** Per-assistant capacity. Background work leaves one slot for owner chat. */
 const BOT_WORKER_SLOTS = 4;
 const BACKGROUND_SLOTS = BOT_WORKER_SLOTS - 1;
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
+const RECOVERABLE_TOOLS = new Set<string>([
+  ...jobActions,
+  "agent.feishuDelivery", "html.render", "web.fetch", "tool.search",
+  "memory.search", "memory.read", "memory.write", "memory.core.update", "memory.topic",
+  "agent.directory", "agent.delegate", "agent.create", "agent.update",
+  "device.inventory", "device.info", "device.read", "device.list",
+  "skill.list", "skill.read",
+  "todo.list", "todo.save", "todo.delete",
+  "routine.list", "routine.save", "routine.toggle", "routine.run", "routine.delete",
+  "connector.list", "connector.tools", "attachment.read",
+]);
 // Summarizer instructions. A digest of one tool result stays plain text and has its own short instruction (the
 // conversation one asks for a working note and overran the output cap); a turn summary returns JSON whose
 // workingNote Core writes into the assistant's working note; an episode archive is validated structured JSON.
@@ -106,7 +117,7 @@ export class TaskRuntime {
         store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id=?", task.id);
       }
       for (const call of store.all("SELECT * FROM tool_calls WHERE status='executing'")) {
-        const recoverable = [...jobActions, "agent.feishuDelivery", "html.render", "web.fetch", "tool.search","memory.search", "memory.read", "memory.write", "memory.core.update", "memory.topic", "agent.directory", "agent.delegate", "agent.create", "agent.update", "device.inventory", "device.info", "device.read", "device.list", "skill.list", "skill.read", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "routine.delete", "connector.list", "connector.tools", "attachment.read"].includes(String(call.tool_name));
+        const recoverable = this.isRecoverableTool(call);
         store.run("UPDATE tool_calls SET status=? WHERE id=?", recoverable ? "ready" : "unknown", call.id);
         if (!recoverable) store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=?", call.task_id);
       }
@@ -155,7 +166,12 @@ export class TaskRuntime {
       for (const input of this.store.pending(taskId)) worker.child.send({ type: "steer", input: this.inputRecord(input) });
       for (const [callId, pending] of this.pendingReplies) if (pending.worker === worker) {
         const call = this.store.get("SELECT * FROM tool_calls WHERE id=?", callId);
-        if (call?.status === "cancelled") { this.reply(pending.worker, pending.requestId, JSON.parse(String(call.result_json))); this.pendingReplies.delete(callId); this.clearWait(worker); }
+        if (call?.status === "cancelled") {
+          this.pendingReplies.delete(callId);
+          worker.waitingCalls.delete(callId);
+          this.reply(pending.worker, pending.requestId, JSON.parse(String(call.result_json)));
+          this.syncWait(worker);
+        }
       }
     } else { this.store.run("UPDATE tasks SET status='queued' WHERE id=? AND status IN ('running','paused','awaiting_approval')", taskId); this.kick(taskId); }
     this.changed(); return taskId;
@@ -237,15 +253,18 @@ export class TaskRuntime {
     });
     const child = this.spawnWorker(workerDir);
     const scope: ModelScope = { provider: model.provider, endpoint: model.endpoint, model: model.model };
-    const worker: Running = { child, taskId, runId, runtimeId, generation, model: scope, finished: false, streaming: "",controller:new AbortController() }; this.workers.set(taskId, worker);
+    const worker: Running = { child, taskId, runId, runtimeId, generation, model: scope, waitingCalls: new Set(), finished: false, streaming: "",controller:new AbortController() }; this.workers.set(taskId, worker);
     child.on("message", (event: WorkerEvent) => { void this.event(worker, event).catch((error: unknown) => { if (event.requestId) this.reply(worker, event.requestId, undefined, error instanceof Error ? error.message : "Core error"); else this.fail(worker, error); }); });
     child.once("error", (error) => this.fail(worker, error));
     child.once("close", () => {
       worker.controller.abort();
       clearTimeout(worker.timer);
+      worker.timer = undefined;
+      worker.waitingCalls.clear();
       this.workers.delete(taskId);
       for (const [callId, p] of this.pendingReplies) if (p.worker === worker) this.pendingReplies.delete(callId);
       this.store.run("UPDATE task_runs SET status=?,ended_at=? WHERE id=? AND ended_at IS NULL", worker.finished ? "ended" : "interrupted", now(), runId);
+      if (!this.closing) this.reconcileClosedRunCalls(runId, taskId, String(task.conversation_id));
       const current = this.store.get("SELECT * FROM tasks WHERE id=?", taskId);
       if (!worker.finished && current?.status === "running") this.store.run("UPDATE tasks SET status='paused',result_summary='运行意外停止，请点击继续' WHERE id=?", taskId);
       if (current?.status === "cancelling") this.finishTask(taskId, "cancelled", String(current.result_summary || "用户取消"));
@@ -669,8 +688,16 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
       if (terminal.includes(String(call.status))) { this.reply(worker, event.requestId, this.replayToolResult(call)); return; }
       if (call.status === "unknown") throw new Error("执行结果未知，请先人工核对");
       this.pendingReplies.set(String(call.id), { worker, requestId: event.requestId });
-      if (call.status === "awaiting_approval") this.wait(worker);
-      else await this.execute(call, worker);
+      if (call.status === "awaiting_approval") {
+        worker.waitingCalls.add(String(call.id));
+        this.syncWait(worker);
+      } else if (call.status === "executing") {
+        await this.resumeExecuting(call, worker);
+      } else {
+        worker.waitingCalls.delete(String(call.id));
+        this.syncWait(worker);
+        await this.execute(call, worker);
+      }
     }
     if (event.type === "done") {
       const task = this.assert(worker);
@@ -745,13 +772,158 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
     });
     this.changed(); return this.store.get("SELECT * FROM tool_calls WHERE id=?", callId)!;
   }
+  private isRecoverableTool(call: Row): boolean {
+    const name = String(call.tool_name);
+    if (RECOVERABLE_TOOLS.has(name)) return true;
+    if (name === "connector.call") {
+      try { return (JSON.parse(String(call.arguments_json)) as { tool?: unknown }).tool === "feishu_read"; }
+      catch { return false; }
+    }
+    return false;
+  }
+  private reconcileClosedRunCalls(runId: string, taskId: string, conversationId: string) {
+    const rows = this.store.all(
+      "SELECT * FROM tool_calls WHERE (run_id=? OR (conversation_id=? AND run_id IN (SELECT id FROM task_runs WHERE ended_at IS NOT NULL))) AND status='executing'",
+      runId,
+      conversationId,
+    );
+    if (!rows.length) return;
+    this.store.transaction(() => {
+      for (const call of rows) {
+        const callId = String(call.id);
+        const targetTaskId = String(call.task_id || taskId);
+        if (call.tool_name === "agent.delegate") {
+          if (!this.store.get("SELECT id FROM a2a_messages WHERE call_id=?", callId)) {
+            this.store.run("UPDATE tool_calls SET status='ready',version=version+1 WHERE id=? AND status='executing'", callId);
+          }
+          continue;
+        }
+        if (call.target_kind === "device") {
+          const dc = this.store.get("SELECT status,result_json,result_hash FROM device_calls WHERE id=?", callId);
+          if (!dc) {
+            this.store.run("UPDATE tool_calls SET status='ready',version=version+1 WHERE id=? AND status='executing'", callId);
+          } else if (dc.result_json) {
+            this.store.run("UPDATE tool_calls SET status=?,result_json=?,result_hash=?,version=version+1 WHERE id=? AND status='executing'", dc.status === "failed" ? "failed" : "succeeded", dc.result_json, dc.result_hash ?? hash(String(dc.result_json)), callId);
+          } else if (dc.status === "unknown") {
+            this.store.run("UPDATE tool_calls SET status='unknown',version=version+1 WHERE id=? AND status='executing'", callId);
+            this.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=? AND ended_at IS NULL AND status NOT IN ('cancelling','cancelled')", targetTaskId);
+          }
+          continue;
+        }
+        if (this.isRecoverableTool(call)) {
+          this.store.run("UPDATE tool_calls SET status='ready',version=version+1 WHERE id=? AND status='executing'", callId);
+        } else {
+          this.store.run("UPDATE tool_calls SET status='unknown',version=version+1 WHERE id=? AND status='executing'", callId);
+          this.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=? AND ended_at IS NULL AND status NOT IN ('cancelling','cancelled')", targetTaskId);
+        }
+      }
+    });
+  }
+  deliverSettledCall(callId: string) {
+    const call = this.store.get("SELECT * FROM tool_calls WHERE id=?", callId);
+    if (!call) return;
+    const pending = this.pendingReplies.get(callId);
+    if (!pending || pending.worker.child.killed || pending.worker.finished) {
+      if (terminal.includes(String(call.status)) && !this.store.get("SELECT 1 FROM tool_calls WHERE task_id=? AND status='unknown'", call.task_id)) {
+        const woke = this.store.run("UPDATE tasks SET status='queued' WHERE id=? AND ended_at IS NULL AND status='paused'", call.task_id);
+        if (woke.changes > 0) this.kick(String(call.task_id));
+      }
+      return;
+    }
+    if (terminal.includes(String(call.status))) {
+      this.pendingReplies.delete(callId);
+      pending.worker.waitingCalls.delete(callId);
+      this.reply(pending.worker, pending.requestId, this.replayToolResult(call));
+      this.syncWait(pending.worker);
+    } else if (call.status === "unknown") {
+      this.pendingReplies.delete(callId);
+      pending.worker.waitingCalls.delete(callId);
+      this.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=? AND ended_at IS NULL AND status NOT IN ('cancelling','cancelled')", pending.worker.taskId);
+      pending.worker.child.kill();
+      this.changed();
+    }
+  }
+  private syncWait(worker: Running) {
+    if (worker.finished || worker.child.killed) {
+      clearTimeout(worker.timer);
+      worker.timer = undefined;
+      return;
+    }
+    let pendingForWorker = 0;
+    let hasActiveNonWaiting = false;
+    for (const [callId, pending] of this.pendingReplies) {
+      if (pending.worker !== worker) continue;
+      pendingForWorker++;
+      if (!worker.waitingCalls.has(callId)) hasActiveNonWaiting = true;
+    }
+    if (pendingForWorker > 0 && !hasActiveNonWaiting) {
+      if (!worker.timer) this.wait(worker);
+    } else if (worker.timer) {
+      this.clearWait(worker);
+    }
+  }
+  private async resumeExecuting(call: Row, worker: Running) {
+    this.assert(worker);
+    await this.requireIdentity(worker);
+    const callId = String(call.id);
+    if (call.tool_name === "agent.delegate") {
+      const link = this.store.get("SELECT * FROM a2a_messages WHERE call_id=?", callId);
+      if (link) {
+        await this.delegate(call, JSON.parse(String(call.arguments_json)) as Record<string, unknown>, worker);
+        return;
+      }
+      this.store.run("UPDATE tool_calls SET status='ready',version=version+1 WHERE id=? AND status='executing'", callId);
+      worker.waitingCalls.delete(callId);
+      this.syncWait(worker);
+      await this.execute(this.store.get("SELECT * FROM tool_calls WHERE id=?", callId)!, worker);
+      return;
+    }
+    if (call.target_kind === "device") {
+      const deviceCall = this.store.get("SELECT * FROM device_calls WHERE id=?", callId);
+      if (deviceCall?.result_json) {
+        const failed = deviceCall.status === "failed";
+        this.store.run("UPDATE tool_calls SET status=?,result_json=?,result_hash=?,version=version+1 WHERE id=? AND status='executing'", failed ? "failed" : "succeeded", deviceCall.result_json, deviceCall.result_hash ?? hash(String(deviceCall.result_json)), callId);
+        this.deliverSettledCall(callId);
+        return;
+      }
+      if (deviceCall && ["delivered", "running"].includes(String(deviceCall.status))) {
+        worker.waitingCalls.add(callId);
+        this.syncWait(worker);
+        return;
+      }
+      if (deviceCall?.status === "unknown") {
+        this.store.run("UPDATE tool_calls SET status='unknown',version=version+1 WHERE id=? AND status='executing'", callId);
+        this.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=? AND ended_at IS NULL AND status NOT IN ('cancelling','cancelled')", worker.taskId);
+        this.pendingReplies.delete(callId);
+        throw new Error("执行结果未知，请先人工核对");
+      }
+    }
+    const owningRunActive = [...this.workers.values()].some((running) => running.runId === call.run_id && running !== worker && !running.finished && !running.child.killed);
+    if (owningRunActive) {
+      worker.waitingCalls.add(callId);
+      this.syncWait(worker);
+      return;
+    }
+    if (this.isRecoverableTool(call)) {
+      this.store.run("UPDATE tool_calls SET status='ready',version=version+1 WHERE id=? AND status='executing'", callId);
+      worker.waitingCalls.delete(callId);
+      this.syncWait(worker);
+      await this.execute(this.store.get("SELECT * FROM tool_calls WHERE id=?", callId)!, worker);
+      return;
+    }
+    this.store.run("UPDATE tool_calls SET status='unknown',version=version+1 WHERE id=? AND status='executing'", callId);
+    this.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=? AND ended_at IS NULL AND status NOT IN ('cancelling','cancelled')", worker.taskId);
+    this.pendingReplies.delete(callId);
+    throw new Error("执行结果未知，请先人工核对");
+  }
   wait(worker: Running) {
     clearTimeout(worker.timer);
     this.store.run("UPDATE task_runs SET status='waiting',wait_started_at=?,release_after_at=? WHERE id=?", now(), now() + 60_000, worker.runId);
-    worker.timer = setTimeout(() => { worker.child.kill(); }, 60_000);
+    worker.timer = setTimeout(() => { worker.timer = undefined; worker.child.kill(); }, 60_000);
   }
   clearWait(worker: Running) {
     clearTimeout(worker.timer);
+    worker.timer = undefined;
     this.store.run("UPDATE task_runs SET status='active',wait_started_at=NULL,release_after_at=NULL WHERE id=?", worker.runId);
   }
   decide(approvalId: string, digest: string, allow: boolean, sessionId = this.store.session, remember = false) {
@@ -778,16 +950,24 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
     });
     const pending = this.pendingReplies.get(String(call.id));
     if (pending && !pending.worker.child.killed) {
-      this.clearWait(pending.worker);
-      if (allow) void this.execute(this.store.get("SELECT * FROM tool_calls WHERE id=?", call.id)!, pending.worker).catch((e: unknown) => this.fail(pending.worker, e));
-      else { this.reply(pending.worker, pending.requestId, { error: "用户拒绝" }); this.pendingReplies.delete(String(call.id)); }
+      pending.worker.waitingCalls.delete(String(call.id));
+      if (allow) {
+        this.syncWait(pending.worker);
+        void this.execute(this.store.get("SELECT * FROM tool_calls WHERE id=?", call.id)!, pending.worker).catch((e: unknown) => this.fail(pending.worker, e));
+      } else {
+        this.pendingReplies.delete(String(call.id));
+        this.reply(pending.worker, pending.requestId, { error: "用户拒绝" });
+        this.syncWait(pending.worker);
+      }
     } else this.kick(String(task.id));
     this.changed();
   }
   async execute(call: Row, worker: Running) {
     this.assert(worker);
     await this.requireIdentity(worker);
-    if (call.status !== "ready") throw new Error("工具未获批准");
+    if (call.status !== "ready") {
+      throw new Error(call.status === "awaiting_approval" || call.status === "rejected" ? "工具未获批准" : `工具调用状态异常（${String(call.status)}），无法执行`);
+    }
     const args = JSON.parse(String(call.arguments_json)) as Record<string, unknown>;
     try {
       this.assertTopicTool(worker.taskId,String(call.tool_name),args);
@@ -947,7 +1127,12 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
     const json = JSON.stringify(result);
     this.store.run("UPDATE tool_calls SET status=?,result_json=?,result_hash=?,version=version+1 WHERE id=? AND status IN ('ready','executing')", failed ? "failed" : "succeeded", json, hash(json), call.id);
     const pending = this.pendingReplies.get(String(call.id));
-    if (pending) { this.reply(pending.worker, pending.requestId, result); this.pendingReplies.delete(String(call.id)); }
+    if (pending) {
+      this.pendingReplies.delete(String(call.id));
+      pending.worker.waitingCalls.delete(String(call.id));
+      this.reply(pending.worker, pending.requestId, result);
+      this.syncWait(pending.worker);
+    }
     this.changed();
   }
   async delegate(call: Row, args: Record<string, unknown>, worker: Running) {
@@ -980,9 +1165,19 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
       link = this.store.get("SELECT * FROM a2a_messages WHERE call_id=?", call.id)!;
     }
     const child = this.store.get("SELECT * FROM tasks WHERE id=?", link.child_task_id)!;
-    if (child.ended_at !== null) { this.completeDelegations(); return; }
+    if (child.ended_at !== null) {
+      this.completeDelegations();
+      const fresh = this.store.get("SELECT * FROM tool_calls WHERE id=?", call.id);
+      if (fresh?.status === "executing") {
+        const resultJson = link.result ? String(link.result) : JSON.stringify({ agentId: link.receiver_bot_id, taskId: link.child_task_id, status: child.status, result: child.result_summary });
+        this.store.run("UPDATE tool_calls SET status='succeeded',result_json=?,result_hash=? WHERE id=? AND status='executing'", resultJson, hash(resultJson), call.id);
+      }
+      this.deliverSettledCall(String(call.id));
+      return;
+    }
     this.store.run("UPDATE a2a_messages SET status='running' WHERE id=?", link.id);
-    this.wait(worker);
+    worker.waitingCalls.add(String(call.id));
+    this.syncWait(worker);
     this.kick(String(link.child_task_id));
   }
   completeDelegations() {
@@ -995,8 +1190,12 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
         this.store.run("UPDATE tasks SET status=? WHERE id=? AND ended_at IS NULL AND status NOT IN ('cancelling','needs_reconciliation')", this.workers.has(String(link.parent_task_id)) ? "running" : "queued", link.parent_task_id);
       });
       const pending = this.pendingReplies.get(String(link.call_id));
-      if (pending) { this.clearWait(pending.worker); this.reply(pending.worker, pending.requestId, result); this.pendingReplies.delete(String(link.call_id)); }
-      else this.kick(String(link.parent_task_id));
+      if (pending) {
+        this.pendingReplies.delete(String(link.call_id));
+        pending.worker.waitingCalls.delete(String(link.call_id));
+        this.reply(pending.worker, pending.requestId, result);
+        this.syncWait(pending.worker);
+      } else this.kick(String(link.parent_task_id));
     }
   }
   finishTask(taskId: string, status: string, result: string) {

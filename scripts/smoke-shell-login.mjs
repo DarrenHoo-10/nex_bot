@@ -155,7 +155,7 @@ try {
     core.store.run("UPDATE client_sessions SET last_seen_at=? WHERE session_id=?", Date.now() - age, session.sessionId);
   }
   await until(() => second.evaluate("document.querySelector('.signed-in-devices')?.textContent.includes('示例 Mac')"));
-  if (!await second.evaluate("(()=>{const rows=[...document.querySelectorAll('.signed-in-device')];return rows.length===3&&rows.filter(r=>r.textContent.includes('本设备')).length===1&&rows.find(r=>r.textContent.includes('示例 Mac')).textContent.includes('离线')&&rows.find(r=>r.textContent.includes('示例笔记本')).textContent.includes('在线')})()")) throw new Error("Login device list/presence/current marker mismatch");
+  if (!await second.evaluate("(()=>{const rows=[...document.querySelectorAll('.signed-in-device')];return rows.length===3&&rows.filter(r=>r.textContent.includes('当前设备')).length===1&&rows.find(r=>r.textContent.includes('示例 Mac')).textContent.includes('离线')&&rows.find(r=>r.textContent.includes('示例笔记本')).textContent.includes('在线')})()")) throw new Error("Login device list/presence/current marker mismatch");
   cases.push("login-device-list-presence-without-executor-records");
   mkdirSync(path.resolve("release/client-executor-verification"), { recursive: true });
   await second.evaluate("document.activeElement?.blur();new Promise(resolve=>setTimeout(resolve,250))");
