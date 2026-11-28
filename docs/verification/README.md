@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [Mac / iOS 原生 NexAgent 工作台补齐与 Mac 应用内更新修复 · 0.2.56 与 Core 发布记录（2026-11-28）](apple-nexagent-workbench-release-0256-20261128.md)
+
 - [NexAgent 无时间限制与真实原生归档/删除、全端终端升级与分支选择 · 0.9.63 四端发布记录（2026-11-28）](nexagent-native-manage-release-0963-20261128.md)
 
 - [助手全权限放开、内置 web.fetch、后台任务对话修复与 ZCode/Windows 更新改进 · 0.9.62 四端发布记录（2026-11-27）](unrestricted-web-fetch-zcode-release-0962-20261127.md)
