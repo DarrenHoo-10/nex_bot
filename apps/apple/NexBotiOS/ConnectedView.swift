@@ -46,21 +46,21 @@ struct ConnectedView: View {
     }
 
     private var lifecycleBoundContacts: some View {
-        agentStreamBoundContacts
-            .onChange(of: scenePhase) { previous, next in
-                syncAgentStream(reconnect: previous == .background && next == .active)
-            }
-            .onChange(of: agents.notificationsOn) { _, _ in syncAgentStream() }
-            .onChange(of: model.credential?.token) { (old: String?, new: String?) in
-                if old != nil, new != nil, old != new { syncAgentStream(reconnect: true, forceReplace: true) }
-            }
+        sceneBoundContacts
+            .onChange(of: model.credential?.token, initial: false, handleTokenChange)
             .onAppear(perform: configureLifecycle)
+    }
+
+    private var sceneBoundContacts: some View {
+        agentStreamBoundContacts
+            .onChange(of: scenePhase, initial: false, handleScenePhaseChange)
+            .onChange(of: agents.notificationsOn, initial: false, handleNotificationsChange)
     }
 
     private var agentStreamBoundContacts: some View {
         workspaceBoundContacts
-            .onChange(of: nav.agentMode) { _, _ in syncAgentStream() }
-            .onChange(of: nav.path) { _, _ in syncAgentStream() }
+            .onChange(of: nav.agentMode, initial: false, handleNavAgentModeChange)
+            .onChange(of: nav.path, initial: false, handleNavPathChange)
     }
 
     private var workspaceBoundContacts: some View {
@@ -69,10 +69,40 @@ struct ConnectedView: View {
                 syncAgentStream()
                 if workspace.connection == .connected { await workspace.loadFinanceAssistant() }
             }
-            .onChange(of: chatVisible, initial: true) { _, visible in workspace.setChatVisible(visible) }
-            .onChange(of: workspace.contentCacheScope) { (old: String?, new: String?) in
-                if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
-            }
+            .onChange(of: chatVisible, initial: true, handleChatVisibleChange)
+            .onChange(of: workspace.contentCacheScope, initial: false, handleCacheScopeChange)
+    }
+
+    private func handleScenePhaseChange(_ previous: ScenePhase, _ next: ScenePhase) {
+        syncAgentStream(reconnect: previous == .background && next == .active)
+    }
+
+    private func handleNotificationsChange(_: Bool, _: Bool) {
+        syncAgentStream()
+    }
+
+    private func handleTokenChange(_ old: String?, _ new: String?) {
+        if old != nil, new != nil, old != new {
+            syncAgentStream(reconnect: true, forceReplace: true)
+        }
+    }
+
+    private func handleNavAgentModeChange(_: Bool, _: Bool) {
+        syncAgentStream()
+    }
+
+    private func handleNavPathChange(_: [Navigation.Route], _: [Navigation.Route]) {
+        syncAgentStream()
+    }
+
+    private func handleChatVisibleChange(_: Bool, _ visible: Bool) {
+        workspace.setChatVisible(visible)
+    }
+
+    private func handleCacheScopeChange(_ old: String?, _ new: String?) {
+        if old != nil || new != nil {
+            agents.invalidateCachedTranscripts(waitForScope: new == nil)
+        }
     }
 
     private func configureLifecycle() {
