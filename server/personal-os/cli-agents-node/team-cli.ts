@@ -68,20 +68,13 @@ export function isLeadAllowedTempFilePath(
   if (!raw || raw.includes("\0") || raw.startsWith("~") || /^[\\/]{2}/.test(raw)) return false;
 
   const pathApi = platform === "win32" ? path.win32 : path.posix;
-  // Allow POSIX `/tmp/...` paths (e.g. Git Bash on Windows) when lexically clean without `..`.
-  if (raw.startsWith("/tmp/") || raw.startsWith("/var/tmp/")) {
+  // Allow Git Bash POSIX `/tmp/...` paths on Windows when lexically clean without `..`.
+  if (platform === "win32" && (raw.startsWith("/tmp/") || raw.startsWith("/var/tmp/"))) {
     const normalizedPosix = path.posix.normalize(raw);
-    if (
+    return (
       (normalizedPosix.startsWith("/tmp/") && normalizedPosix.length > 5) ||
       (normalizedPosix.startsWith("/var/tmp/") && normalizedPosix.length > 9)
-    ) {
-      if (platform !== "win32") {
-        const root = normalizedPosix.startsWith("/var/tmp/") ? "/var/tmp" : "/tmp";
-        return ancestorInsideRoot(normalizedPosix, root, path.posix, platform);
-      }
-      return true;
-    }
-    return false;
+    );
   }
 
   let candidate: string;
@@ -92,21 +85,34 @@ export function isLeadAllowedTempFilePath(
     candidate = pathApi.resolve(sessionCwd, raw);
   }
 
-  const allowedRoots: Array<{ root: string; baseReal?: string }> = [];
+  const isSameDir = (a: string, b: string) =>
+    pathApi.relative(platform === "win32" ? a.toLowerCase() : a, platform === "win32" ? b.toLowerCase() : b) === "";
+
+  // If the candidate lies inside the active workspace, ONLY allow files strictly inside
+  // `<sessionCwd>/.nex-team/` — never fall through to OS temp roots even when the workspace
+  // itself resides under `/tmp` or `%TEMP%`.
   if (sessionCwd && pathApi.isAbsolute(sessionCwd)) {
-    allowedRoots.push({ root: pathApi.join(pathApi.resolve(sessionCwd), ".nex-team"), baseReal: pathApi.resolve(sessionCwd) });
-  }
-  if (tmpDir && pathApi.isAbsolute(tmpDir)) {
-    allowedRoots.push({ root: pathApi.resolve(tmpDir) });
+    const resolvedCwd = pathApi.resolve(sessionCwd);
+    if (isInsideDir(resolvedCwd, candidate, platform)) {
+      const teamDir = pathApi.join(resolvedCwd, ".nex-team");
+      if (!isInsideDir(teamDir, candidate, platform) || isSameDir(teamDir, candidate)) {
+        return false;
+      }
+      return ancestorInsideRoot(candidate, teamDir, pathApi, platform, resolvedCwd);
+    }
   }
 
-  for (const { root, baseReal } of allowedRoots) {
-    if (!isInsideDir(root, candidate, platform)) continue;
-    // Never allow overwriting the allowed directory itself.
-    if (pathApi.relative(platform === "win32" ? root.toLowerCase() : root, platform === "win32" ? candidate.toLowerCase() : candidate) === "") {
-      return false;
+  const tmpRoots: string[] = [];
+  if (tmpDir && pathApi.isAbsolute(tmpDir)) tmpRoots.push(pathApi.resolve(tmpDir));
+  if (platform !== "win32") {
+    for (const posixTmp of ["/tmp", "/var/tmp"]) {
+      if (!tmpRoots.includes(posixTmp)) tmpRoots.push(posixTmp);
     }
-    if (ancestorInsideRoot(candidate, root, pathApi, platform, baseReal)) return true;
+  }
+
+  for (const root of tmpRoots) {
+    if (!isInsideDir(root, candidate, platform) || isSameDir(root, candidate)) continue;
+    if (ancestorInsideRoot(candidate, root, pathApi, platform)) return true;
   }
   return false;
 }
