@@ -5,9 +5,10 @@ import {
   CLI_LIMITS, CLI_MODEL_LIMITS, CLI_EFFORTS, SUMMARY_MAX,
   cliRef, isCliEffort, parseDeviceCliMessage, truncateUtf8,
   type CliErrorCode, type CliItem, type CliLaunchOptions, type CliModelCatalog,
-  type CliOpArgs, type CliRequestResolvedBy, type CliRequestWire, type CliTurnReason, type DeviceCliMessage,
+  type CliOpArgs, type CliRequestResolvedBy, type CliRequestWire, type CliTeamDeviceConfig, type CliTeamStartMeta, type CliTurnReason, type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
 import { CLI_IMAGE_PREFIX, mapCliImageLinks } from "../../../shared/cli-images.ts";
+import { isInsideDir, isSafeAutoApproveNexCommand, leadInstruction } from "./team-cli.ts";
 import { execCli } from "../../procs.ts";
 import { AgyAcp, AgyAcpError } from "./agy-acp.ts";
 import {
@@ -42,6 +43,9 @@ interface AgyOptions {
   changed: () => void;
   emit: (message: DeviceCliMessage) => void;
   ended: (id: string, turn: number, reason: CliTurnReason, error?: string) => void;
+  teamConfig?: () => CliTeamDeviceConfig;
+  teamEnv?: (sessionId: string) => Promise<Record<string, string>>;
+  onTeamBound?: (pendingId: string, realId: string) => void;
 }
 
 interface Session {
@@ -50,6 +54,7 @@ interface Session {
   cwd: string;
   at: number;
   settings: CliLaunchOptions;
+  isWorker: boolean;
   title: string;
   model?: string;
   acp?: AgyAcp;
@@ -278,6 +283,8 @@ export class AgyRuntime {
 
   hasRequest(id: string): boolean { return this.requests.has(id); }
 
+  hasManagedSession(id: string): boolean { return this.sessions.has(id); }
+
   relink(): void {
     for (const { wire } of this.requests.values()) this.options.emit({ type: "cli.request", ...wire });
   }
@@ -316,8 +323,8 @@ export class AgyRuntime {
     });
   }
 
-  async start(cwd: string, settings: CliLaunchOptions): Promise<string> {
-    const session = this.session("", cwd, settings);
+  async start(cwd: string, settings: CliLaunchOptions, team?: CliTeamStartMeta): Promise<string> {
+    const session = this.session("", cwd, settings, this.options.dir, Boolean(team));
     await this.connect(session, false);
     this.sessions.set(session.id, session);
     this.armIdle(session);
@@ -419,19 +426,24 @@ export class AgyRuntime {
     return dir === this.options.desktopDir ? ["--app-data-dir=antigravity"] : [];
   }
 
-  private session(id: string, cwd: string, settings: CliLaunchOptions, dir = this.options.dir): Session {
-    return { id, dir, cwd, settings, at: Date.now(), title: "", tails: [], allowed: new Set(), version: 0, count: 0 };
+  private session(id: string, cwd: string, settings: CliLaunchOptions, dir = this.options.dir, isWorker = false): Session {
+    return { id, dir, cwd, settings, isWorker, at: Date.now(), title: "", tails: [], allowed: new Set(), version: 0, count: 0 };
   }
 
   private async connect(session: Session, resume: boolean): Promise<AgyAcp> {
     await session.closing;
     if (session.acp) return session.acp;
     if (!this.enabled || this.disposed) throw new AgyError("cli_missing", "请安装或更新到 Antigravity CLI 1.5.15 以上");
-    const [executable, proxy] = await Promise.all([this.options.executable(), this.proxyEnvironment()]);
+    const pendingId = session.id || randomUUID();
+    const [executable, proxy, teamEnv] = await Promise.all([
+      this.options.executable(),
+      this.proxyEnvironment(),
+      this.options.teamEnv ? this.options.teamEnv(pendingId).catch(() => ({})) : Promise.resolve({}),
+    ]);
     if (this.disposed) throw new AgyError("paused", "本机控制已暂停");
     let acp: AgyAcp;
     try {
-      acp = new AgyAcp(executable, session.cwd, { ...this.options.env, ...proxy },
+      acp = new AgyAcp(executable, session.cwd, { ...this.options.env, ...proxy, ...teamEnv },
         (method, params, request) => this.onRpc(session, acp, method, params, request),
         () => this.disconnected(session, acp), this.profileArgs(session.dir));
     } catch (error) {
@@ -441,11 +453,15 @@ export class AgyRuntime {
     session.acp = acp;
     try {
       await acp.initialize();
-      const base = { cwd: session.cwd, mcpServers: [] };
+      const base: Record<string, unknown> = { cwd: session.cwd, mcpServers: [] };
       const native = agyRecord(acp.capabilities.sessionCapabilities);
       const method = resume && native.resume && typeof native.resume === "object" ? "session/resume" : "session/load";
       if (resume && method === "session/load" && acp.capabilities.loadSession !== true) {
         throw new AgyError("invalid", "此 Antigravity CLI 版本无法续接会话");
+      }
+      if (!resume && !session.isWorker) {
+        const prompt = leadInstruction(this.options.teamConfig?.().dispatchMode ?? "prompt");
+        if (prompt) base._meta = { antigravity: { systemPrompt: { append: prompt } } };
       }
       const response = resume
         ? await acp.request(method, { ...base, sessionId: session.id })
@@ -453,6 +469,7 @@ export class AgyRuntime {
       if (!resume) {
         if (!isAgyId(response.sessionId)) throw new AgyError("invalid", "Antigravity CLI 返回了无效会话");
         session.id = response.sessionId;
+        if (pendingId !== session.id) this.options.onTeamBound?.(pendingId, session.id);
       }
       await this.configure(session, acp, session.settings, response, !resume);
       return acp;
@@ -525,7 +542,7 @@ export class AgyRuntime {
     session.idle = setTimeout(() => {
       if (session.active) return;
       void this.retire(session).then(() => {
-        if (!session.active && !session.acp && session.count === 0 && !this.native.get(session.id)?.row.transcript) {
+        if (!session.isWorker && !session.active && !session.acp && session.count === 0 && !this.native.get(session.id)?.row.transcript) {
           this.sessions.delete(session.id);
           this.options.changed();
         }
@@ -693,7 +710,20 @@ export class AgyRuntime {
     if (session.active?.stopping) { void reply(cancelled).catch(() => {}); return; }
     const input = toolCall.rawInput === undefined ? "" : JSON.stringify(toolCall.rawInput);
     const key = input.length > 0 && input.length <= CLI_LIMITS.requestDetail ? `${agyString(toolCall.title)}\n${input}` : "";
-    if (allow && (session.settings.permissions === "full" || (key && session.allowed.has(key)))) {
+    const rawInput = agyRecord(toolCall.rawInput);
+    const toolKind = agyString(toolCall.kind);
+    const cmdLine = agyString(rawInput.CommandLine);
+    const cmdShort = agyString(rawInput.command);
+    const consistentCmd = !cmdLine || !cmdShort || cmdLine === cmdShort;
+    const rawCmd = consistentCmd ? (cmdLine || cmdShort) : "";
+    const cmdCwd = agyString(rawInput.Cwd ?? rawInput.cwd);
+    const cwdAllowed = !cmdCwd || isInsideDir(session.cwd, cmdCwd, this.options.platform);
+    const allowNex =
+      (this.options.teamConfig?.().allowNexInAsk ?? true) &&
+      (!toolKind || toolKind === "execute") &&
+      cwdAllowed &&
+      isSafeAutoApproveNexCommand(rawCmd, cmdCwd || session.cwd, this.options.platform);
+    if (allow && (session.settings.permissions === "full" || allowNex || (key && session.allowed.has(key)))) {
       void reply(selected(allow)).catch(() => {});
       return;
     }

@@ -1271,4 +1271,28 @@ describe("launch options, search and attachments", () => {
     expect(await t.call("attach", { ref: `claude:${CID(1)}`, name: "big.bin", data: big })).toMatchObject({ ok: false, error: { code: "too_large" } });
     expect(existsSync(path.join(root, "attachments", `claude-${CID(1)}`))).toBe(false);
   });
+
+  it("replaces multiline team envelopes with a fixed nex inbox pointer on terminal fallback and replays op replies on resync", async () => {
+    claudeWritesTranscript();
+    const t = setup();
+    await t.start();
+    const started = await t.call("start", { engine: "claude", cwd: workDir }, "start-team-1");
+    expect(started.ok).toBe(true);
+    const { ref, terminal: address } = started.result as { ref: CliOpArgs["send"]["ref"]; terminal: string };
+
+    // 1. Managed Claude without a native inbox route must never receive raw multiline team text in PTY.
+    const multilineEnvelope = `<!-- nexagent-team:{"kind":"report","heading":"agy-1"} -->\nline 1\nline 2\nline 3`;
+    const sent = await t.call("send", { ref, text: multilineEnvelope }, "send-team-1");
+    expect(sent.ok).toBe(true);
+    expect(hc.terminals.get(address)!.sent).toEqual(["[NexAgent] You have a new team message. Run `nex inbox`."]);
+
+    // 2. Reconnecting with `cli.resync { reconcileOps }` replays stored done op replies so Core can recover lost start receipts.
+    t.messages.length = 0;
+    t.bridge.handle({ type: "cli.resync", reconcileOps: ["start-team-1"] });
+    await until(() => t.messages.some((m) => m.type === "cli.reply" && m.opId === "start-team-1"));
+    expect(t.messages.find((m) => m.type === "cli.reply" && m.opId === "start-team-1")).toMatchObject({
+      ok: true,
+      result: { ref, terminal: address },
+    });
+  });
 });

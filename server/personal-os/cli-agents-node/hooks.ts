@@ -12,6 +12,7 @@
 // again once Core is back, so the card still reaches the phone.
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import {
   CLI_LIMITS,
   cliRef,
+  parseCliRef,
   type CliOpArgs,
   type CliRequestQuestion,
   type CliRequestResolvedBy,
@@ -26,6 +28,7 @@ import {
   type CliTurnReason,
   type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
+import { isSafeAutoApproveNexCommand } from "./team-cli.ts";
 import { clipUnits, summarizeInput } from "./items.ts";
 
 /** A request stays open this long. Claude Code ends the hook at 1800 s (hooks.json), so ours ends first. */
@@ -58,6 +61,7 @@ export function locateHookPlugin(options: { env?: NodeJS.ProcessEnv; moduleUrl?:
 /** The hook events of the plugin and how each runs (as in plugin/hooks/hooks.json). */
 const HOOK_EVENTS = [
   { event: "PreToolUse", mode: "question", matcher: "AskUserQuestion", timeout: 1800, async: false },
+  { event: "PreToolUse", mode: "nex_pre", matcher: "Bash|PowerShell", timeout: 10, async: false },
   { event: "PermissionRequest", mode: "permission", matcher: "*", timeout: 1800, async: false },
   { event: "PostToolUse", mode: "post", matcher: "*", timeout: 10, async: true },
   { event: "Stop", mode: "stop", matcher: undefined, timeout: 10, async: true },
@@ -72,12 +76,10 @@ export function windowsHooksJson(): string {
   const hooks: Record<string, unknown[]> = {};
   for (const entry of HOOK_EVENTS) {
     const command = `if ($env:NEXBOT_HOOK_NODE) { $env:ELECTRON_RUN_AS_NODE = '1'; & $env:NEXBOT_HOOK_NODE "\${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs" ${entry.mode} }; exit 0`;
-    hooks[entry.event] = [
-      {
-        ...(entry.matcher ? { matcher: entry.matcher } : {}),
-        hooks: [{ type: "command", shell: "powershell", command, ...(entry.async ? { async: true } : {}), timeout: entry.timeout }],
-      },
-    ];
+    (hooks[entry.event] ??= []).push({
+      ...(entry.matcher ? { matcher: entry.matcher } : {}),
+      hooks: [{ type: "command", shell: "powershell", command, ...(entry.async ? { async: true } : {}), timeout: entry.timeout }],
+    });
   }
   return JSON.stringify({ hooks }, null, 2) + "\n";
 }
@@ -89,10 +91,12 @@ export function platformPlugin(source: string, dataDir: string, platform: NodeJS
   if (platform !== "win32") return source;
   const target = path.join(dataDir, "cli-agents-plugin");
   try {
+    const skillSource = path.join(source, "skills", "nex", "SKILL.md");
     const files: Array<{ to: string; text: string }> = [
       { to: path.join(".claude-plugin", "plugin.json"), text: readFileSync(path.join(source, ".claude-plugin", "plugin.json"), "utf8") },
       { to: path.join("hooks", "hook.mjs"), text: readFileSync(path.join(source, "hooks", "hook.mjs"), "utf8") },
       { to: path.join("hooks", "hooks.json"), text: windowsHooksJson() },
+      ...(existsSync(skillSource) ? [{ to: path.join("skills", "nex", "SKILL.md"), text: readFileSync(skillSource, "utf8") }] : []),
     ];
     for (const file of files) {
       const to = path.join(target, file.to);
@@ -167,6 +171,14 @@ export class TurnTracker {
 // ---------------------------------------------------------------------------
 // The hook server
 
+export interface HookTeamResult {
+  ok: boolean;
+  text?: string;
+  data?: Record<string, unknown>;
+  error?: string;
+  uncertain?: boolean;
+}
+
 export interface HookServerOptions {
   /** Where `hook-secret` lives. */
   dir: string;
@@ -178,6 +190,16 @@ export interface HookServerOptions {
   linked?: () => boolean;
   /** The session runs in a live nex_bot terminal. A token of any other session is refused. */
   isLive: (ref: CliSessionRef) => boolean;
+  /** Live sessions allowed to call `nex` (includes ACP / Codex terminals). Defaults to `isLive`. */
+  isTeamLive?: (ref: CliSessionRef) => boolean;
+  /** Authoritative working directory of a live session (for ask-mode `--file` scope checks). */
+  sessionCwd?: (ref: CliSessionRef) => string | undefined;
+  /** Whether ask-mode auto-allows standalone `nex` commands in Claude Bash|PowerShell PreToolUse. */
+  allowNexInAsk?: () => boolean;
+  /** Forwarded `nex` collaboration command from a managed session to Core. */
+  teamCall?: (ref: CliSessionRef, command: string, args: Record<string, unknown>) => Promise<HookTeamResult>;
+  /** Bind a loopback HTTP fallback on 127.0.0.1:0 (used when Windows restricted sandbox blocks named pipes). */
+  enableHttpFallback?: boolean;
   platform?: NodeJS.Platform;
   /** Directory of the unix socket. Default: the temp directory. */
   socketDir?: string;
@@ -206,6 +228,7 @@ interface Pending {
 type Reply = { decision: "allow" | "deny" | "pass"; message?: string; answers?: Record<string, string>; always?: boolean };
 
 interface HookInput {
+  cwd?: unknown;
   tool_name?: unknown;
   tool_use_id?: unknown;
   tool_input?: unknown;
@@ -276,7 +299,10 @@ export class HookServer {
   /** closes Core did not hear because the link was down; sent by relink() */
   private readonly unsent: Array<{ id: string; by: CliRequestResolvedBy }> = [];
   private readonly sockets = new Set<net.Socket>();
+  private readonly refAliases = new Map<string, CliSessionRef>();
   private server: net.Server | null = null;
+  private httpServer: http.Server | null = null;
+  private httpAddress: string | null = null;
   private starting: Promise<void> | null = null;
   private closed = false;
   private refused = 0;
@@ -288,9 +314,14 @@ export class HookServer {
     this.pipePath = this.platform === "win32" ? `\\\\.\\pipe\\${name}` : path.join(options.socketDir ?? os.tmpdir(), `${name}.sock`);
   }
 
-  /** The address hook.mjs connects to (NEXBOT_HOOK_PIPE). */
+  /** The address hook.mjs and `nex` connect to (NEXBOT_HOOK_PIPE / NEX_PIPE). */
   get pipe(): string {
     return this.pipePath;
+  }
+
+  /** Optional loopback HTTP fallback URL (NEX_HTTP) for restricted sandboxes. */
+  get httpUrl(): string | null {
+    return this.httpAddress;
   }
 
   /** How many connections were turned away for a bad token. */
@@ -325,9 +356,14 @@ export class HookServer {
     return createHmac("sha256", this.secret).update(`nexbot-hook\0${purpose}\0${value}`).digest("hex");
   }
 
-  /** The token of one session: `<mac>.<native id>`. It is only good while the session's terminal lives. */
+  /** The token of one session: `<mac>.<native id>` (Claude hooks). It is only good while the session's terminal lives. */
   tokenFor(ref: CliSessionRef): string {
     return `${this.mac("token", ref)}.${ref.slice(ref.indexOf(":") + 1)}`;
+  }
+
+  /** Engine-qualified session credential for `NEX_SESSION` (works for claude, codex, and agy). */
+  sessionTokenFor(ref: CliSessionRef): string {
+    return `${this.mac("session", ref)}.${ref}`;
   }
 
   /** The variables the terminal of a Claude session gets. */
@@ -349,6 +385,34 @@ export class HookServer {
     const expected = Buffer.from(this.mac("token", ref));
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
     return ref;
+  }
+
+  /** Maps a pre-assigned launch ref (e.g. AGY before session/new returns) to its final session ref. */
+  aliasSession(from: CliSessionRef, to: CliSessionRef): void {
+    if (this.refAliases.size >= 500 && !this.refAliases.has(from)) {
+      const oldest = this.refAliases.keys().next().value;
+      if (oldest !== undefined) this.refAliases.delete(oldest);
+    }
+    this.refAliases.set(from, to);
+  }
+
+  /** Validates either an engine-qualified `NEX_SESSION` token or a legacy Claude hook token. */
+  refForSession(token: unknown): CliSessionRef | null {
+    if (typeof token !== "string" || token.length > 512) return null;
+    const dot = token.indexOf(".");
+    if (dot !== 64) return null;
+    const rest = token.slice(dot + 1);
+    const parsed = parseCliRef(rest);
+    if (parsed) {
+      const ref = cliRef(parsed.engine, parsed.nativeId);
+      const given = Buffer.from(token.slice(0, dot));
+      const expected = Buffer.from(this.mac("session", ref));
+      if (given.length === expected.length && timingSafeEqual(given, expected)) {
+        return this.refAliases.get(ref) ?? ref;
+      }
+    }
+    const legacy = this.refFor(token);
+    return legacy ? (this.refAliases.get(legacy) ?? legacy) : null;
   }
 
   // -- listening ------------------------------------------------------------------
@@ -385,6 +449,73 @@ export class HookServer {
       return;
     }
     this.server = server;
+    if (this.options.enableHttpFallback ?? this.platform === "win32") {
+      await this.listenHttpFallback().catch((error) => this.log("debug", `http fallback unavailable: ${String(error)}`));
+    }
+  }
+
+  private async listenHttpFallback(): Promise<void> {
+    if (this.closed) return;
+    const server = http.createServer((req, res) => {
+      void this.onHttpRequest(req, res);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === "string" || this.closed) {
+      server.close();
+      return;
+    }
+    this.httpServer = server;
+    this.httpAddress = `http://127.0.0.1:${addr.port}`;
+  }
+
+  private async onHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const send = (status: number, body: Record<string, unknown>) => {
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(JSON.stringify(body));
+    };
+    if (req.method !== "POST" || req.url !== "/team") {
+      send(404, { ok: false, error: "Not found" });
+      return;
+    }
+    const auth = req.headers.authorization;
+    const token = typeof auth === "string" && auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+    const ref = this.refForSession(token);
+    if (!ref || !(this.options.isTeamLive ?? this.options.isLive)(ref)) {
+      this.refused += 1;
+      send(401, { ok: false, error: "只能在 NexBot 启动的会话里使用 nex 命令" });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buf.length;
+      if (size > LINE_LIMIT) {
+        send(413, { ok: false, error: "请求内容过大" });
+        return;
+      }
+      chunks.push(buf);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      send(400, { ok: false, error: "请求格式无效" });
+      return;
+    }
+    if (!isRec(parsed) || typeof parsed.command !== "string" || !isRec(parsed.args)) {
+      send(400, { ok: false, error: "缺少 command 或 args" });
+      return;
+    }
+    const result = await this.invokeTeam(ref, parsed.command, parsed.args);
+    send(200, { v: 1, ...result });
   }
 
   /** A socket file left by a crashed client blocks `listen`; a live one must stay. */
@@ -411,6 +542,10 @@ export class HookServer {
     const server = this.server;
     this.server = null;
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    const httpServer = this.httpServer;
+    this.httpServer = null;
+    this.httpAddress = null;
+    if (httpServer) await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     if (this.platform !== "win32") {
       try {
         unlinkSync(this.pipePath);
@@ -478,7 +613,15 @@ export class HookServer {
       socket.destroy();
       return;
     }
-    if (!isRec(message) || message.v !== 1 || !isRec(message.input) || typeof message.event !== "string") {
+    if (!isRec(message) || message.v !== 1) {
+      socket.destroy();
+      return;
+    }
+    if (message.kind === "team") {
+      this.onTeamPipe(socket, message);
+      return;
+    }
+    if (!isRec(message.input) || typeof message.event !== "string") {
       socket.destroy();
       return;
     }
@@ -490,6 +633,24 @@ export class HookServer {
     }
     const input = message.input as HookInput;
     switch (message.event) {
+      case "nex_pre": {
+        if ((this.options.allowNexInAsk?.() ?? true) && this.options.active()) {
+          const toolInput = isRec(input.tool_input) ? input.tool_input : null;
+          const hasCmd = toolInput && typeof toolInput.command === "string";
+          const hasCmdLine = toolInput && typeof toolInput.CommandLine === "string";
+          const consistent = !hasCmd || !hasCmdLine || toolInput.command === toolInput.CommandLine;
+          const cmd = consistent ? (hasCmd ? String(toolInput.command) : hasCmdLine ? String(toolInput.CommandLine) : "") : "";
+          const cwd = this.options.sessionCwd
+            ? this.options.sessionCwd(ref)
+            : typeof input.cwd === "string" ? input.cwd : undefined;
+          if (cmd && isSafeAutoApproveNexCommand(cmd, cwd, this.platform)) {
+            this.reply(socket, { decision: "allow" });
+            return;
+          }
+        }
+        this.reply(socket, { decision: "pass" });
+        return;
+      }
       case "question":
         // A pre-tool hook runs before Claude can show its own question. Fall through
         // to the native interaction immediately when remote answering is unavailable.
@@ -512,6 +673,34 @@ export class HookServer {
         return;
       default:
         this.reply(socket, { decision: "pass" });
+    }
+  }
+
+  private onTeamPipe(socket: net.Socket, message: Record<string, unknown>): void {
+    const replyTeam = (result: HookTeamResult) => {
+      if (socket.destroyed || !socket.writable) return;
+      socket.end(JSON.stringify({ v: 1, ...result }) + "\n");
+    };
+    const ref = this.refForSession(message.token);
+    if (!ref || !(this.options.isTeamLive ?? this.options.isLive)(ref)) {
+      this.refused += 1;
+      replyTeam({ ok: false, error: "只能在 NexBot 启动的会话里使用 nex 命令" });
+      return;
+    }
+    if (typeof message.command !== "string" || !isRec(message.args)) {
+      replyTeam({ ok: false, error: "协作命令参数无效" });
+      return;
+    }
+    void this.invokeTeam(ref, message.command, message.args).then(replyTeam);
+  }
+
+  private async invokeTeam(ref: CliSessionRef, command: string, args: Record<string, unknown>): Promise<HookTeamResult> {
+    if (this.closed || !this.options.active()) return { ok: false, error: "本机控制已暂停" };
+    if (!this.options.teamCall) return { ok: false, error: "协作功能未就绪" };
+    try {
+      return await this.options.teamCall(ref, command, args);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "协作命令执行失败" };
     }
   }
 

@@ -13,7 +13,7 @@ interface Draft {
 /** What a production side chat reads from Core's workbench rows. */
 export interface SideChatHost {
   /** Core's rows by native key: kind, parent session and display title */
-  meta:ReadonlyMap<CliSessionKey,{title:string;parent?:CliSessionKey|null;kind?:"fork"|"side"}>;
+  meta:ReadonlyMap<CliSessionKey,{title:string;parent?:CliSessionKey|null;kind?:"fork"|"side"|"worker"}>;
   /** a row or a session was created: read the tree and the session list again */
   refresh():void;
 }

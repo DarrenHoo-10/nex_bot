@@ -3,8 +3,8 @@
 // queues or steers, stopping pauses the outbox in Core, and edit-and-resend
 // records the revised message.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
-import { cliPermissionModes, cliQuestionToSteer, modelFailureReason, unwrapPastedContent, type CliItem, type CliAnswerDecision, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { ArrowLeft, List, MessageSquare, Network, Share2 } from "lucide-react";
+import { cliPermissionLabel, cliPermissionModes, cliQuestionToSteer, modelFailureReason, unwrapPastedContent, type CliItem, type CliAnswerDecision, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { privateCliImageLinks } from "../../../shared/cli-images";
 import { ModelFailureDialog } from "./ModelFailureDialog";
 import { CliApiError, continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
@@ -21,6 +21,8 @@ import { SessionInfoCard } from "./SessionInfoCard";
 import type { GuideMessage } from "./transcript";
 import { TranscriptView } from "./TranscriptView";
 import { isVisibleQueueEntry, useCliQueue } from "./use-queue";
+import { TeamPanel } from "./TeamPanel";
+import { isRunLive, isWorkerWorking, TEAM_WORKER_STATUS_LABEL, type CliTeamRunView, type TeamWorkerBinding } from "./team";
 import type { BackStep } from "../android-back";
 
 export interface SessionPaneProps {
@@ -49,6 +51,17 @@ export interface SessionPaneProps {
   features?: readonly string[];
   /** the first message of a session just started from NexAgent, until its records hold it */
   echo?: LaunchEcho;
+  /** collaboration runs led by this session (active first, then historical) */
+  teamRuns?: readonly CliTeamRunView[];
+  /** present when this session is a worker spawned by a lead session */
+  workerBinding?: TeamWorkerBinding;
+  /** display title of the lead session, for the worker's back-to-lead header bar */
+  leadTitle?: string;
+  onSelectSession?(key: CliSessionKey): void;
+  onTeamPause?(runId: string): Promise<void>;
+  onTeamResume?(runId: string): Promise<void>;
+  onTeamCancel?(runId: string): Promise<void>;
+  onTeamStopWorker?(runId: string, workerName: string): Promise<void>;
 }
 
 const NO_REQUESTS: readonly RequestRecord[] = [];
@@ -78,14 +91,18 @@ export function settlePending(list: readonly PendingSend[], items: readonly CliI
   return next.length === list.length ? list as PendingSend[] : next;
 }
 
-export function SessionPane({ session, stream, onKeyChange, onBack, back, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onBranchReply, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features, echo }: SessionPaneProps) {
+export function SessionPane({ session, stream, onKeyChange, onBack, back, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onBranchReply, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features, echo, teamRuns, workerBinding, leadTitle, onSelectSession, onTeamPause, onTeamResume, onTeamCancel, onTeamStopWorker }: SessionPaneProps) {
   const review=useReview();
   const details=review?.records[session.key];
   const heading=unwrapPastedContent(details?.title||title?.trim()||"")||sessionTitle(session);
   const [workspaceOpen,setWorkspaceOpen]=useState(false);
+  const [teamOpen,setTeamOpen]=useState(false);
   const workspaceId=useId();
+  const teamPanelId=useId();
   const workspaceToggle=useRef<HTMLButtonElement>(null);
   const workspaceLayer=useRef<HTMLDivElement>(null);
+  const teamToggle=useRef<HTMLButtonElement>(null);
+  const teamLayer=useRef<HTMLDivElement>(null);
   useEffect(()=>{
     if(!workspaceOpen)return;
     const closeOutside=(event:MouseEvent)=>{
@@ -95,6 +112,15 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
     document.addEventListener("click",closeOutside,true);
     return ()=>document.removeEventListener("click",closeOutside,true);
   },[workspaceOpen]);
+  useEffect(()=>{
+    if(!teamOpen)return;
+    const closeOutside=(event:MouseEvent)=>{
+      const clicked=event.composedPath();
+      if(!clicked.some(target=>target===teamLayer.current||target===teamToggle.current))setTeamOpen(false);
+    };
+    document.addEventListener("click",closeOutside,true);
+    return ()=>document.removeEventListener("click",closeOutside,true);
+  },[teamOpen]);
   // Core keeps the notes; the isolated review fixture keeps them in the tab
   const {notes,update:updateNotes,error:noteError,dismissError:dismissNoteError}=useNotes(session.key,!review);
   const [items,setItems]=useState<CliItem[]>([]);
@@ -144,6 +170,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
   useEffect(() => {
     if (!back) return;
     back.current = () => {
+      if (teamOpen) { setTeamOpen(false); return true; }
       if (workspaceOpen) { setWorkspaceOpen(false); return true; }
       if (revision) { cancelEdit(); return true; }
       return false;
@@ -294,6 +321,19 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
   /** Stopping pauses this session's queue in Core before the interrupt leaves. */
   const stop = () => stopSession(session.key, crypto.randomUUID());
   const resume = () => resumeQueue(session.key);
+  const activeTeamRun = teamRuns?.find((run) => isRunLive(run.status));
+  const teamDotTone = !activeTeamRun ? null
+    : activeTeamRun.workers.some((worker) => worker.status === "failed") ? "failed"
+      : activeTeamRun.limitHit || activeTeamRun.heldCount || activeTeamRun.workers.some((worker) => worker.status === "waiting") ? "alert"
+        : activeTeamRun.status === "paused" ? "paused"
+          : activeTeamRun.workers.some((worker) => isWorkerWorking(worker.status)) ? "running"
+            : null;
+  const workerStatusTone = !workerBinding ? null
+    : pendingRequests.length > 0 || shown.state === "waiting" || workerBinding.worker.status === "waiting" ? "waiting"
+      : shown.online && (shown.state === "running" || workerBinding.worker.status === "starting") ? "running"
+        : workerBinding.worker.status === "failed" ? "failed"
+          : workerBinding.worker.status === "reported" ? "reported"
+            : "stopped";
 
   return (
     <section className="cli-pane" aria-label={heading}>
@@ -304,18 +344,88 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
 
         </div>
         {(!shown.online||shown.state==="running")?<span className="cli-chip" data-tone={sessionTone(shown)}>{sessionStatusLabel(shown)}</span>:null}
+        {!compact && teamRuns && teamRuns.length > 0 ? (
+          <button
+            type="button"
+            ref={teamToggle}
+            className="na-team-trigger"
+            data-muted={activeTeamRun ? undefined : "1"}
+            aria-controls={teamPanelId}
+            aria-expanded={teamOpen}
+            aria-label={activeTeamRun ? `协作 ${activeTeamRun.workers.length}` : "协作记录"}
+            title={activeTeamRun ? "协作详情" : "历史协作"}
+            onClick={() => { setWorkspaceOpen(false); setTeamOpen((open) => !open); }}
+          >
+            <Network size={14} aria-hidden="true" />
+            <span>{activeTeamRun ? `协作 ${activeTeamRun.workers.length}` : "协作"}</span>
+            {teamDotTone ? <i className="na-team-trigger-dot" data-tone={teamDotTone} aria-hidden="true" /> : null}
+          </button>
+        ) : null}
         {sideCount>0 && onSideOpen && !compact ? <button type="button" className="cli-open-local na-side-count" title="侧边会话" aria-label={"侧边会话 "+sideCount} onClick={()=>void onSideOpen()}><MessageSquare size={14}/>{sideCount}</button> : null}
         {onFork ? <button type="button" className="cli-open-local na-square" title="交给助手" aria-label="交给助手" onClick={onFork}><Share2 size={15} /></button> : null}
         {!compact && <button type="button" ref={workspaceToggle} className="na-workspace-toggle"
           aria-label="Git 工作区" aria-controls={workspaceId} aria-expanded={workspaceOpen}
-          title={workspaceOpen?"收起 Git 工作区":"展开 Git 工作区"} onClick={()=>setWorkspaceOpen(open=>!open)}>
+          title={workspaceOpen?"收起 Git 工作区":"展开 Git 工作区"} onClick={()=>{setTeamOpen(false);setWorkspaceOpen(open=>!open)}}>
           <List size={18}/>
         </button>}
       </header>
+      {!compact && workerBinding ? (
+        <div className="na-worker-banner" role="region" aria-label="协作工人信息">
+          <button
+            type="button"
+            className="na-worker-back"
+            title="返回主会话"
+            onClick={() => onSelectSession?.(workerBinding.run.leadKey)}
+          >
+            <Network size={13.5} aria-hidden="true" />
+            <span>协作 · 来自</span>
+            <strong title={leadTitle || workerBinding.run.title}>{leadTitle || workerBinding.run.title}</strong>
+          </button>
+          <div className="na-worker-banner-meta">
+            {workerBinding.worker.role ? <><span>{workerBinding.worker.role}</span><span className="na-team-meta-sep" aria-hidden="true">·</span></> : null}
+            <span className={workerBinding.worker.permissions === "readonly" ? "na-team-perm-readonly" : undefined}>
+              {cliPermissionLabel(workerBinding.worker.engine, workerBinding.worker.permissions)}
+            </span>
+            <span className="na-team-meta-sep" aria-hidden="true">·</span>
+            <code>{workerBinding.worker.name}</code>
+            {workerStatusTone ? (
+              <>
+                <span className="na-team-meta-sep" aria-hidden="true">·</span>
+                <span className="na-team-status" data-tone={workerStatusTone}>
+                  {workerStatusTone === "waiting" ? "等你处理" : workerStatusTone === "running" ? "工作中" : TEAM_WORKER_STATUS_LABEL[workerBinding.worker.status]}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} guides={guides} queueEntries={queue?.entries} pending={[...visibleEchoes.filter(row => !guides.some(guide => guide.id === row.queueId)), ...(uploadPreview ? [{ id: "upload", text: uploadPreview }] : [])]} deliveryLabel={deliveryLabel} working={working} onItems={setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} guides={guides} queueEntries={queue?.entries} pending={[...visibleEchoes.filter(row => !guides.some(guide => guide.id === row.queueId)), ...(uploadPreview ? [{ id: "upload", text: uploadPreview }] : [])]} deliveryLabel={deliveryLabel} working={working} onItems={setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} onSelectSession={onSelectSession} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        {!compact && teamRuns && teamRuns.length > 0 ? (
+          <div
+            ref={teamLayer}
+            id={teamPanelId}
+            className="na-workspace-layer na-team-layer"
+            data-open={teamOpen}
+            inert={!teamOpen}
+            aria-hidden={!teamOpen}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") { setTeamOpen(false); teamToggle.current?.focus(); }
+            }}
+          >
+            <TeamPanel
+              runs={teamRuns}
+              selectedKey={session.key}
+              onOpenSession={(key) => { setTeamOpen(false); onSelectSession?.(key); }}
+              onPause={onTeamPause ?? (async () => {})}
+              onResume={onTeamResume ?? (async () => {})}
+              onCancel={onTeamCancel ?? (async () => {})}
+              onStopWorker={onTeamStopWorker ?? (async () => {})}
+            />
+          </div>
+        ) : null}
         {!compact && <div ref={workspaceLayer} id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>

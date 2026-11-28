@@ -31,6 +31,7 @@
 @import "./cli-agents/cli-model-menu.css" layer(legacy);
 @import "./cli-agents/new-session-composer.css" layer(legacy);
 @import "./cli-agents/session-info.css" layer(legacy);
+@import "./cli-agents/team.css" layer(legacy);
 @import "./cli-agents/tokendance/marks.css" layer(legacy);
 
 @custom-variant dark (&:where([data-dark="1"], [data-dark="1"] *));

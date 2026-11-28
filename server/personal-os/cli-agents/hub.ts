@@ -56,6 +56,9 @@ import {
   type CliWorkbenchSessionView,
   type CliSessionView,
   type CliSessionWire,
+  type CliTeamDeviceConfig,
+  type CliTeamRunView,
+  type CliTeamStartMeta,
   type CliTurnReason,
   type DeviceCliMessage,
   type CoreCliMessage,
@@ -92,6 +95,17 @@ export interface CliTurnEvent {
   endedAt: number;
   reason: CliTurnReason;
   error?: string;
+}
+
+/** A previously unknown mutating op whose late `cli.reply` just arrived from the device. */
+export interface CliOpSettledEvent {
+  opId: string;
+  deviceId: string;
+  op: CliOp;
+  ok: boolean;
+  result?: CliOpResult[CliOp];
+  sessionKey?: CliSessionKey | null;
+  errorCode?: CliErrorCode;
 }
 
 /** What the Git card says when the computer runs an executor without the `git` op. */
@@ -176,11 +190,18 @@ const asKey = (value: string) => value as CliSessionKey;
  * They never reach the device: an answer goes to the handler set with onCoreAnswer, not to the hook. */
 export const CORE_REQUEST_PREFIX = "nexbot:";
 export type CoreAnswerHandler = (request: CliRequestView, decision: "allow" | "deny", answers: Record<string, string> | undefined, actor: string) => Promise<{ outcome: string }>;
+export type TeamCallHandler = (
+  deviceId: string,
+  ref: CliSessionRef,
+  command: string,
+  args: Record<string, unknown>,
+) => Promise<{ ok: boolean; text?: string; data?: Record<string, unknown>; error?: string }>;
 
 /** The workbench module answers this for the hub: which outbox belongs to a
  * native session key, so a browser that just subscribed gets the queue too. */
 export interface WorkbenchSink {
   queueForSessionKey(key: string): CliQueueView | null;
+  list?(): CliWorkbenchSessionView[];
 }
 
 function privateImageItem(item: CliItem): CliItem {
@@ -228,9 +249,14 @@ export class CliAgentHub {
   private readonly deviceOnlineListeners = new Set<(deviceId: string) => void>();
   /** Set by the workbench module; queue snapshots ride on session subscribes. */
   workbench: WorkbenchSink | null = null;
-  private coreAnswer: CoreAnswerHandler | null = null;
+  /** Set by the team scheduler; collaboration runs ride on list subscribes. */
+  teamSnapshot: (() => CliTeamRunView[]) | null = null;
+  private readonly coreAnswerHandlers = new Map<string, CoreAnswerHandler>();
+  private teamCallHandler: TeamCallHandler | null = null;
   private readonly queueListeners = new Set<(message: ServerMessage) => void>();
   private readonly workbenchListeners = new Set<(message: ServerMessage) => void>();
+  private readonly teamListeners = new Set<(message: ServerMessage) => void>();
+  private readonly opSettledListeners = new Set<(event: CliOpSettledEvent) => void>();
   private readonly lastTurns = new Map<string, CliTurnEvent>();
   private readonly sweepTimer: NodeJS.Timeout;
   private readonly byBrowser = new Map<number, StreamEntry>();
@@ -279,8 +305,12 @@ export class CliAgentHub {
     this.summaryListeners.clear();
     this.requestListeners.clear();
     this.turnListeners.clear();
+    this.teamListeners.clear();
+    this.opSettledListeners.clear();
     this.startRequests.clear();
-    this.coreAnswer = null;
+    this.coreAnswerHandlers.clear();
+    this.teamCallHandler = null;
+    this.teamSnapshot = null;
   }
 
   // -------------------------------------------------------------------------
@@ -292,7 +322,12 @@ export class CliAgentHub {
     this.caps.set(deviceId, cap);
     this.lastCaps.set(deviceId, cap);
     this.seqs.delete(deviceId);
-    try { this.link.sendCli(deviceId, { type: "cli.resync" }); } catch { /* the link dropped again; the offline path cleans up */ }
+    const reconcileOps = this.store
+      .all("SELECT id FROM cli_agent_ops WHERE device_id=? AND status='unknown' ORDER BY created_at DESC LIMIT 50", deviceId)
+      .map((row) => String(row.id));
+    try {
+      this.link.sendCli(deviceId, reconcileOps.length ? { type: "cli.resync", reconcileOps } : { type: "cli.resync" });
+    } catch { /* the link dropped again; the offline path cleans up */ }
     for (const key of this.watchers.keys()) {
       const parsed = parseCliKey(key);
       if (parsed?.deviceId === deviceId) this.watchOp("watch", key);
@@ -395,7 +430,39 @@ export class CliAgentHub {
         } else entry.sink.error(message.code, undefined, `sid ${entry.browserSid}`);
         break;
       }
+      case "cli.team.call":
+        this.onTeamCallMessage(deviceId, message);
+        break;
     }
+  }
+
+  private onTeamCallMessage(deviceId: string, message: Extract<DeviceCliMessage, { type: "cli.team.call" }>) {
+    const handler = this.teamCallHandler;
+    if (!handler) {
+      try {
+        this.link.sendCli(deviceId, { type: "cli.team.result", callId: message.callId, ok: false, error: "协作调度器未就绪" });
+      } catch { /* device link dropped */ }
+      return;
+    }
+    void handler(deviceId, message.ref, message.command, message.args)
+      .catch((error): Awaited<ReturnType<TeamCallHandler>> => ({
+        ok: false,
+        error: error instanceof Error ? error.message.slice(0, CLI_LIMITS.message) : "协作命令处理失败",
+      }))
+      .then((result) => {
+        if (this.closed || !this.caps.has(deviceId)) return;
+        const reply: Extract<CoreCliMessage, { type: "cli.team.result" }> = {
+          type: "cli.team.result",
+          callId: message.callId,
+          ok: result.ok,
+          ...(result.text !== undefined ? { text: result.text } : {}),
+          ...(result.data !== undefined ? { data: result.data } : {}),
+          ...(!result.ok ? { error: (result.error || "协作命令失败").slice(0, CLI_LIMITS.message) } : {}),
+        };
+        try {
+          this.link.sendCli(deviceId, reply);
+        } catch { /* device link dropped */ }
+      });
   }
 
   fromDeviceBinary(deviceId: string, bytes: Uint8Array) {
@@ -677,7 +744,8 @@ export class CliAgentHub {
     if (Number(row.expires_at) <= now()) { this.expireRequests(); throw new CliOpError("not_found", "request expired"); }
     const view = this.requestView(row);
     const core = view.tool.startsWith(CORE_REQUEST_PREFIX);
-    if (core && !this.coreAnswer) throw new CliOpError("not_found", "nothing handles this request");
+    const coreHandler = core ? this.resolveCoreAnswerHandler(view.tool) : undefined;
+    if (core && !coreHandler) throw new CliOpError("not_found", "nothing handles this request");
     // "always" only means something for a permission the device offered it for
     const forSession = always === true && decision === "allow" && view.kind === "permission" && view.always === true;
     let chosen: Record<string, string> | undefined;
@@ -693,7 +761,7 @@ export class CliAgentHub {
     if (!claimed) throw new CliOpError("not_found", "request is closed");
     try {
       const result = core
-        ? await this.coreAnswer!(view, decision, chosen, actor)
+        ? await coreHandler!(view, decision, chosen, actor)
         : await this.op(actor, parsed.deviceId, key, "answer", {
           id: requestId, decision, ...(forSession ? { always: true } : {}), ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}),
         });
@@ -727,19 +795,62 @@ export class CliAgentHub {
     return requestId;
   }
 
-  /** Closes the pending requests of Core's own for a session (the question went stale). */
-  closeCoreRequests(key: string, by: CliRequestResolvedBy): number {
+  /** Closes the pending requests of Core's own matching `toolPrefix` for a session (the question went stale). */
+  closeCoreRequests(key: string, by: CliRequestResolvedBy, toolPrefix = CORE_REQUEST_PREFIX): number {
     let count = 0;
-    for (const row of this.store.all("SELECT id FROM cli_agent_requests WHERE session_key=? AND status='pending' AND tool LIKE ?", key, CORE_REQUEST_PREFIX + "%")) {
+    for (const row of this.store.all("SELECT id FROM cli_agent_requests WHERE session_key=? AND status='pending' AND tool LIKE ?", key, toolPrefix + "%")) {
       if (this.closeRequest(String(row.id), key, "resolved", by)) count++;
     }
     return count;
   }
 
-  /** The one handler answers to Core's own requests go to; returns how to remove it. */
-  onCoreAnswer(handler: CoreAnswerHandler): () => void {
-    this.coreAnswer = handler;
-    return () => { if (this.coreAnswer === handler) this.coreAnswer = null; };
+  /** Closes one pending Core request by id (e.g., when a team run or worker stops). */
+  closeCoreRequest(requestId: string, by: CliRequestResolvedBy): boolean {
+    const row = this.store.get("SELECT session_key, tool FROM cli_agent_requests WHERE id=? AND status='pending'", requestId);
+    if (!row || !String(row.tool).startsWith(CORE_REQUEST_PREFIX)) return false;
+    return this.closeRequest(requestId, String(row.session_key), "resolved", by);
+  }
+
+  private resolveCoreAnswerHandler(tool: string): CoreAnswerHandler | undefined {
+    let bestPrefix = "";
+    let best: CoreAnswerHandler | undefined;
+    for (const [prefix, handler] of this.coreAnswerHandlers) {
+      if (tool.startsWith(prefix) && prefix.length >= bestPrefix.length) {
+        bestPrefix = prefix;
+        best = handler;
+      }
+    }
+    return best;
+  }
+
+  /** Registers an answer handler for Core's own requests matching `toolPrefix` (default `nexbot:`). */
+  onCoreAnswer(handler: CoreAnswerHandler, toolPrefix = CORE_REQUEST_PREFIX): () => void {
+    this.coreAnswerHandlers.set(toolPrefix, handler);
+    return () => { if (this.coreAnswerHandlers.get(toolPrefix) === handler) this.coreAnswerHandlers.delete(toolPrefix); };
+  }
+
+  onTeamCall(handler: TeamCallHandler): () => void {
+    this.teamCallHandler = handler;
+    return () => { if (this.teamCallHandler === handler) this.teamCallHandler = null; };
+  }
+
+  sendTeamConfig(deviceId: string, config: CliTeamDeviceConfig): void {
+    if (this.closed || !this.caps.has(deviceId)) return;
+    try {
+      this.link.sendCli(deviceId, { type: "cli.team.config", config });
+    } catch { /* device link dropped */ }
+  }
+
+  notifyTeam(payload: { runs?: CliTeamRunView[]; run?: CliTeamRunView }): void {
+    const message: ServerMessage = { type: "cli.team", ...payload };
+    for (const listener of [...this.teamListeners]) {
+      try { listener(message); } catch { /* ignore a broken listener */ }
+    }
+  }
+
+  onTeam(listener: (message: ServerMessage) => void): () => void {
+    this.teamListeners.add(listener);
+    return () => { this.teamListeners.delete(listener); };
   }
 
   onRequests(listener: (message: ServerMessage) => void): () => void {
@@ -756,6 +867,18 @@ export class CliAgentHub {
   onDeviceOnline(listener: (deviceId: string) => void): () => void {
     this.deviceOnlineListeners.add(listener);
     return () => { this.deviceOnlineListeners.delete(listener); };
+  }
+
+  /** Fires whenever a late `cli.reply` settles a previously `unknown` mutating op. */
+  onOpSettled(listener: (event: CliOpSettledEvent) => void): () => void {
+    this.opSettledListeners.add(listener);
+    return () => { this.opSettledListeners.delete(listener); };
+  }
+
+  private emitOpSettled(event: CliOpSettledEvent) {
+    for (const listener of [...this.opSettledListeners]) {
+      try { listener(event); } catch { /* a broken listener must not stop the others */ }
+    }
   }
 
   /** Whether a mutating operation is in flight for the session; the queue
@@ -828,7 +951,10 @@ export class CliAgentHub {
           this.markOp(pending.opId, "unknown", "invalid_result");
           pending.reject(new CliOpError("unknown", "device answer was malformed"));
         } else {
-          this.markOp(pending.opId, "succeeded");
+          const sessionKey = (pending.op === "start" || pending.op === "continue") && "ref" in result && typeof result.ref === "string"
+            ? cliKey(deviceId, result.ref)
+            : null;
+          this.markOp(pending.opId, "succeeded", undefined, sessionKey);
           pending.resolve(result);
         }
       } else {
@@ -838,15 +964,34 @@ export class CliAgentHub {
       }
       return;
     }
-    // A late answer to an op Core already gave up on settles the record only.
-    const row = this.store.get("SELECT status FROM cli_agent_ops WHERE id=? AND device_id=?", message.opId, deviceId);
+    // A late answer to an op Core already gave up on settles the record and notifies reconciliation listeners.
+    const row = this.store.get("SELECT op, status FROM cli_agent_ops WHERE id=? AND device_id=?", message.opId, deviceId);
     if (row?.status !== "unknown") return;
-    if (message.ok) this.markOp(message.opId, "succeeded");
-    else this.markOp(message.opId, "failed", message.error?.code ?? "unknown");
+    const op = String(row.op) as CliOp;
+    if (message.ok) {
+      const parsed = parseCliOpResult(op, message.result ?? {});
+      if (!parsed) {
+        this.markOp(message.opId, "unknown", "invalid_result");
+        return;
+      }
+      const sessionKey = (op === "start" || op === "continue") && "ref" in parsed && typeof parsed.ref === "string"
+        ? cliKey(deviceId, parsed.ref)
+        : null;
+      this.markOp(message.opId, "succeeded", undefined, sessionKey);
+      this.emitOpSettled({ opId: message.opId, deviceId, op, ok: true, result: parsed, sessionKey });
+    } else {
+      const code = message.error?.code ?? "unknown";
+      this.markOp(message.opId, "failed", code);
+      this.emitOpSettled({ opId: message.opId, deviceId, op, ok: false, errorCode: code });
+    }
   }
 
-  private markOp(opId: string, status: "succeeded" | "failed" | "unknown", errorCode?: string) {
-    this.store.run("UPDATE cli_agent_ops SET status=?,error_code=?,finished_at=? WHERE id=?", status, errorCode ?? null, now(), opId);
+  private markOp(opId: string, status: "succeeded" | "failed" | "unknown", errorCode?: string, sessionKey?: CliSessionKey | null) {
+    if (sessionKey) {
+      this.store.run("UPDATE cli_agent_ops SET status=?,error_code=?,session_key=COALESCE(?,session_key),finished_at=? WHERE id=?", status, errorCode ?? null, sessionKey, now(), opId);
+    } else {
+      this.store.run("UPDATE cli_agent_ops SET status=?,error_code=?,finished_at=? WHERE id=?", status, errorCode ?? null, now(), opId);
+    }
   }
 
   private release(pending: Pending) {
@@ -885,7 +1030,14 @@ export class CliAgentHub {
     }
   }
 
-  private beginOp<K extends CliOp>(actor: string, deviceId: string, sessionKey: string | null, op: K, args: unknown): { opId: string; promise: Promise<CliOpResult[K]> } {
+  private beginOp<K extends CliOp>(
+    actor: string,
+    deviceId: string,
+    sessionKey: string | null,
+    op: K,
+    args: unknown,
+    onOpId?: (opId: string) => void,
+  ): { opId: string; promise: Promise<CliOpResult[K]> } {
     const mutating = CLI_OP_MUTATING.has(op);
     if (this.closed || !this.caps.has(deviceId)) return { opId: "", promise: Promise.reject(new CliOpError("device_offline")) };
     const parsed = parseCliOpArgs(op, args) as CliOpArgs[K] | null;
@@ -905,6 +1057,7 @@ export class CliAgentHub {
         status: "sent", error_code: null, created_by: actor, created_at: now(), finished_at: null,
       });
     }
+    try { onOpId?.(opId); } catch { /* caller persistence hook must not break op */ }
     const promise = new Promise<CliOpResult[K]>((resolve, reject) => {
       const pending: Pending = {
         opId, deviceId, op, sessionKey, resolve: resolve as (value: unknown) => void, reject,
@@ -928,26 +1081,28 @@ export class CliAgentHub {
 
   /** `forkFrom` starts the session from that session's context. An executor that does not list the
    * engine in `forkEngines` would ignore the field and open a blank session, so it is refused here. */
-  async start(actor: string, deviceId: string, engine: CliEngine, cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}, createDir = false, branch?: string): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
+  async start(actor: string, deviceId: string, engine: CliEngine, cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}, createDir = false, branch?: string, team?: CliTeamStartMeta, onOpId?: (opId: string) => void): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
     if (forkFrom) {
       const caps = this.caps.get(deviceId);
       if (caps && !caps.forkEngines?.includes(engine)) throw new CliOpError("invalid", FORK_UNSUPPORTED);
     }
     if (createDir) this.requireFeature(deviceId, "dirs");
     if (branch) this.requireFeature(deviceId, "gitBranch");
+    if (team) this.requireFeature(deviceId, "team");
     const options = this.launchOptions(deviceId, launch);
-    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}), ...(createDir ? { createDir: true } : {}), ...(branch ? { branch } : {}), ...options });
+    const result = await this.beginOp(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}), ...(createDir ? { createDir: true } : {}), ...(branch ? { branch } : {}), ...(team ? { team } : {}), ...options }, onOpId).promise;
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
   }
 
   /** Starts a session inside a fresh worktree of the repository at `cwd`; Core
    * and the device both dedup by requestId, so a retry after a slow checkout or
    * lost HTTP response returns the same session instead of launching a second one. */
-  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}, baseBranch?: string): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
+  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}, baseBranch?: string, team?: CliTeamStartMeta, onOpId?: (opId: string) => void): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
     if (baseBranch) this.requireFeature(deviceId, "gitBranch");
+    if (team) this.requireFeature(deviceId, "team");
     const options = this.launchOptions(deviceId, launch);
     const dedupKey = `${deviceId}\0${requestId}`;
-    const fingerprint = JSON.stringify({ engine, cwd, branch, ...(baseBranch ? { baseBranch } : {}), options });
+    const fingerprint = JSON.stringify({ engine, cwd, branch, ...(baseBranch ? { baseBranch } : {}), ...(team ? { team } : {}), options });
     const ts = now();
     for (const [key, entry] of this.startRequests) {
       if (!entry.promise && entry.expiresAt <= ts) this.startRequests.delete(key);
@@ -958,11 +1113,12 @@ export class CliAgentHub {
       if (existing.promise) return existing.promise;
       if (existing.result && existing.expiresAt > ts) return existing.result;
     }
-    const promise = this.op(actor, deviceId, null, "start", {
+    const promise = this.beginOp(actor, deviceId, null, "start", {
       engine, cwd,
       worktree: { branch, requestId, ...(baseBranch ? { baseBranch } : {}) },
+      ...(team ? { team } : {}),
       ...options,
-    })
+    }, onOpId).promise
       .then((result) => {
         const started = { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
         this.startRequests.set(dedupKey, { fingerprint, result: started, expiresAt: now() + START_DEDUP_MS });

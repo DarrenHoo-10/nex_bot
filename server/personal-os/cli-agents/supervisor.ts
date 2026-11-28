@@ -361,7 +361,8 @@ export class CliAgentSupervisor {
   private onTurn(event: CliTurnEvent) {
     if (this.closed) return;
     // A question card raised for an earlier turn is stale: the session moved on.
-    this.hub.closeCoreRequests(event.key, "terminal");
+    // Scope to supervisor triage cards so team boundary confirmations survive turn end.
+    this.hub.closeCoreRequests(event.key, "terminal", TRIAGE_TOOL);
     // A different turn than the one an action waits for means someone or something moved on.
     for (const row of this.store.all("SELECT id,turn,ended_at FROM cli_agent_supervision_actions WHERE session_key=? AND status='pending'", event.key)) {
       if (Number(row.turn) !== event.turn || Number(row.ended_at) !== event.endedAt) this.finish(String(row.id), "cancelled", "newer_turn");

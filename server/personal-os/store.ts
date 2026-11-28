@@ -22,7 +22,7 @@ import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 import { todoSchema } from "./todo-schema.ts";
-import { cliAgentNotesSchema, cliAgentRequestSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./cli-agents/schema.ts";
+import { cliAgentNotesSchema, cliAgentRequestSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentTeamSchema, cliAgentWorkbenchSchema, cliAgentWorkbenchWorkerRebuild } from "./cli-agents/schema.ts";
 import { jobSchema } from "./job-schema.ts";
 import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
 import { reasoningLevels, parseReasoningChoice, parseReasoningLevels, resolveReasoning } from "./reasoning.ts";
@@ -645,6 +645,23 @@ CREATE TABLE personal_connector_deliveries (
       this.db.exec(schema);
       this.insert("schema_migrations", { version: 61, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=62")) {
+      // Multi-agent collaboration ("协作"): widen cli_agent_workbench.kind to include 'worker'
+      // and create the collaboration ledger and settings tables.
+      this.db.exec("PRAGMA foreign_keys=OFF");
+      try {
+        this.transaction(() => {
+          const before = Number(this.get("SELECT COUNT(*) n FROM cli_agent_workbench")?.n ?? 0);
+          this.db.exec(cliAgentWorkbenchWorkerRebuild);
+          const after = Number(this.get("SELECT COUNT(*) n FROM cli_agent_workbench")?.n ?? 0);
+          if (before !== after) throw new Error(`cli_agent_workbench rebuild lost rows (${before} -> ${after})`);
+          this.db.exec(cliAgentTeamSchema);
+          this.insert("schema_migrations", { version: 62, checksum: hash(cliAgentWorkbenchWorkerRebuild + cliAgentTeamSchema), applied_at: now() });
+        });
+      } finally {
+        this.db.exec("PRAGMA foreign_keys=ON");
+      }
+    }
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

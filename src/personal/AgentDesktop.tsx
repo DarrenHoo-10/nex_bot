@@ -140,8 +140,18 @@ const afterMessage = (last: RecordRow | undefined): HistoryCursor => ({ after: N
 export function AgentDesktop() {
   const { status: accountStatus, logout } = useAccount();
   const [state, setState] = useState<State>();
-  const [page, setPage] = useState(() => new URLSearchParams(window.location.search).get("settings") === "feishu" ? "settings" : new URLSearchParams(location.search).get("workspace") === "nexagent-review" && agentSection ? "cli" : "agent");
-  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>(page === "settings" ? "connectors" : "account");
+  const [page, setPage] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("settings") === "feishu" || params.get("settings") === "team") return "settings";
+    if ((params.get("workspace") === "nexagent-review" || params.get("page") === "cli") && agentSection) return "cli";
+    return "agent";
+  });
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>(() => {
+    const target = new URLSearchParams(window.location.search).get("settings");
+    if (target === "feishu") return "connectors";
+    if (target === "team") return "team";
+    return "account";
+  });
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [financeBotId,setFinanceBotId]=useState<string>();
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");

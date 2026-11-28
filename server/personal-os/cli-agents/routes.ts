@@ -34,6 +34,7 @@ import { parseSettings, type CliAgentSupervisor } from "./supervisor.ts";
 import { MAX_TRANSLATION_SOURCE, CliTranslation } from "./translation.ts";
 import type { CliAgentWorkbench, WaitingSteer } from "./workbench.ts";
 import type { CliImages } from "./images.ts";
+import type { CliAgentTeamScheduler } from "./team.ts";
 
 export interface CliRouteRequest {
   method: string;
@@ -92,6 +93,8 @@ export interface CliRouteExtras {
   /** the workbench queue: present when Core runs the workbench contracts */
   workbench?: CliAgentWorkbench;
   images?: CliImages;
+  /** multi-agent collaboration scheduler */
+  teams?: CliAgentTeamScheduler;
 }
 
 export class CliAgentRoutes {
@@ -108,7 +111,12 @@ export class CliAgentRoutes {
     const { method, pathname } = request;
     if (!pathname.startsWith("/api/cli-agents")) return null;
     const get = method === "GET", post = method === "POST", put = method === "PUT";
-    if (!(get && GET_ROUTES.has(pathname)) && !(post && POST_ROUTES.has(pathname)) && !(put && pathname === "/api/cli-agents/supervision")) return null;
+    const teamPost = post ? parseTeamPostRoute(pathname) : null;
+    if (
+      !(get && GET_ROUTES.has(pathname))
+      && !(post && (POST_ROUTES.has(pathname) || teamPost !== null))
+      && !(put && PUT_ROUTES.has(pathname))
+    ) return null;
     if (!request.owner) return { status: 403, body: { error: "此账号没有使用 Agent 会话的权限" } };
     try {
       if (get) {
@@ -118,6 +126,8 @@ export class CliAgentRoutes {
           case "/api/cli-agents/requests": return this.requests(request);
           case "/api/cli-agents/queue": return this.queue(request);
           case "/api/cli-agents/supervision": return this.supervision();
+          case "/api/cli-agents/teams": return this.teamsList(request);
+          case "/api/cli-agents/team-settings": return this.teamSettings();
           case "/api/cli-agents/sessions/git": return await this.gitInfo(request);
           case "/api/cli-agents/notes": return this.notes(request);
           case "/api/cli-agents/search": return await this.search(request);
@@ -131,12 +141,17 @@ export class CliAgentRoutes {
               ...this.hub.list(),
               requests: this.hub.requests(),
               ...(this.extras.workbench ? { workbench: this.extras.workbench.list(), queues: this.extras.workbench.queues() } : {}),
+              ...(this.extras.teams ? { teams: this.extras.teams.listRuns() } : {}),
             },
           };
         }
       }
       const data = request.data ?? {};
-      if (put) return this.putSupervision(data);
+      if (put) {
+        if (pathname === "/api/cli-agents/team-settings") return this.putTeamSettings(data);
+        return this.putSupervision(data);
+      }
+      if (teamPost) return await this.handleTeamPost(request, teamPost);
       switch (pathname) {
         case "/api/cli-agents/translation-settings": return { status: 200, body: this.translation.saveSettings(data) };
         case "/api/cli-agents/translate": return await this.translate(data);
@@ -290,11 +305,21 @@ export class CliAgentRoutes {
     }
     const wantArchived = action === "archive";
     const current = existing ? (workbench.find(String(existing.id)) ?? existing) : workbench.resolve(ref);
-    if ((current.archived === 1) === wantArchived) {
-      return { status: 200, body: { session: workbench.viewOf(current) } };
+    const updatedRow = (current.archived === 1) === wantArchived
+      ? current
+      : workbench.setArchived(String(current.id), wantArchived, Number(current.version));
+    // Archiving or restoring a lead cascades to all its collaboration workers (design §11.2).
+    if (sessionKey && this.extras.teams) {
+      for (const workerKey of this.extras.teams.workerKeysForLead(sessionKey)) {
+        if (workerKey === sessionKey) continue;
+        await this.hub.archive(request.sessionId, workerKey, wantArchived).catch(() => undefined);
+        const workerWb = workbench.find(workerKey);
+        if (workerWb && (workerWb.archived === 1) !== wantArchived) {
+          try { workbench.setArchived(String(workerWb.id), wantArchived, Number(workerWb.version)); } catch { /* ignore */ }
+        }
+      }
     }
-    const row = workbench.setArchived(String(current.id), wantArchived, Number(current.version));
-    return { status: 200, body: { session: workbench.viewOf(row) } };
+    return { status: 200, body: { session: workbench.viewOf(updatedRow) } };
   }
 
   /** Annotations of one conversation, by native key or logical id. */
@@ -386,6 +411,36 @@ export class CliAgentRoutes {
     this.store.audit("cli.answer", "cli_request", id, { sessionId: request.sessionId, decision, ...(always === true ? { always: true } : {}) });
     const result = await this.hub.answer(request.sessionId, id, decision, chosen, message, always === true);
     return { status: 200, body: { outcome: result.outcome } };
+  }
+
+  private teamsList(request: CliRouteRequest): CliRouteResult {
+    const teams = this.extras.teams;
+    if (!teams) return { status: 200, body: { runs: [] } };
+    const lead = request.search.get("lead");
+    if (lead !== null && !this.key(lead)) return cliErrorResult("invalid");
+    return { status: 200, body: { runs: teams.listRuns(lead ?? undefined) } };
+  }
+
+  private teamSettings(): CliRouteResult {
+    const teams = this.extras.teams;
+    if (!teams) return cliErrorResult("not_found");
+    return { status: 200, body: { settings: teams.settings() } };
+  }
+
+  private putTeamSettings(data: Record<string, unknown>): CliRouteResult {
+    const teams = this.extras.teams;
+    if (!teams) return cliErrorResult("not_found");
+    const patch = data.settings !== undefined ? data.settings : data;
+    return { status: 200, body: { settings: teams.saveSettings(patch) } };
+  }
+
+  private async handleTeamPost(request: CliRouteRequest, route: TeamPostRoute): Promise<CliRouteResult> {
+    const teams = this.extras.teams;
+    if (!teams) return cliErrorResult("not_found");
+    if (route.action === "stop-worker") return { status: 200, body: { run: await teams.stopWorkerByUser(request.sessionId, route.runId, route.workerName) } };
+    if (route.action === "pause") return { status: 200, body: { run: teams.pauseRun(request.sessionId, route.runId) } };
+    if (route.action === "resume") return { status: 200, body: { run: teams.resumeRun(request.sessionId, route.runId) } };
+    return { status: 200, body: { run: await teams.cancelRun(request.sessionId, route.runId) } };
   }
 
   private supervision(): CliRouteResult {
@@ -625,6 +680,7 @@ export class CliAgentRoutes {
     if (text.length > MAX_SEND_TEXT || utf8ByteLength(text) > MAX_SEND_TEXT) return cliErrorResult("too_large");
     // The audit row records how much was sent, never the text itself.
     this.store.audit("cli.send", "cli_session", key, { sessionId: request.sessionId, length: text.length });
+    this.extras.teams?.recordUserInput(key);
     const workbench = this.extras.workbench;
     const delivery = data.delivery;
     const contract = typeof data.clientMessageId === "string" || typeof data.requestId === "string" || delivery !== undefined;
@@ -722,6 +778,8 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/requests",
   "/api/cli-agents/queue",
   "/api/cli-agents/supervision",
+  "/api/cli-agents/teams",
+  "/api/cli-agents/team-settings",
   "/api/cli-agents/sessions/git",
   "/api/cli-agents/notes",
   "/api/cli-agents/search",
@@ -730,6 +788,26 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/dirs",
   "/api/cli-agents/branches",
 ]);
+
+const PUT_ROUTES = new Set([
+  "/api/cli-agents/supervision",
+  "/api/cli-agents/team-settings",
+]);
+
+type TeamPostRoute =
+  | { action: "pause" | "resume" | "cancel"; runId: string }
+  | { action: "stop-worker"; runId: string; workerName: string };
+
+const TEAM_RUN_ACTION_RE = /^\/api\/cli-agents\/teams\/([A-Za-z0-9._-]{1,128})\/(pause|resume|cancel)$/;
+const TEAM_WORKER_STOP_RE = /^\/api\/cli-agents\/teams\/([A-Za-z0-9._-]{1,128})\/workers\/([a-z0-9._-]{1,64})\/stop$/;
+
+function parseTeamPostRoute(pathname: string): TeamPostRoute | null {
+  const runMatch = TEAM_RUN_ACTION_RE.exec(pathname);
+  if (runMatch) return { action: runMatch[2] as "pause" | "resume" | "cancel", runId: decodeURIComponent(runMatch[1]!) };
+  const workerMatch = TEAM_WORKER_STOP_RE.exec(pathname);
+  if (workerMatch) return { action: "stop-worker", runId: decodeURIComponent(workerMatch[1]!), workerName: decodeURIComponent(workerMatch[2]!) };
+  return null;
+}
 
 /** The delivery a workbench submit carries; absent means the legacy contract. */
 function isCliDelivery(value: unknown): value is CliDeliveryAction {

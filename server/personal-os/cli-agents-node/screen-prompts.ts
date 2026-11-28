@@ -51,8 +51,8 @@ export interface ScreenPrompt {
 const OPTION_RE = /^\s*(?:[❯›>▶►→*]\s*)?(\d{1,2})[.)]\s+(.+?)\s*$/u;
 const RULE_RE = /^[\s─━═╌┄┈╍┅┉\-_~·•]+$/u;
 const BOX_EDGE_RE = /^[\s│┃|╭╮╰╯┌┐└┘]+|[\s│┃|╭╮╰╯┌┐└┘]+$/gu;
-const YES_RE = /^(yes|allow|approve|proceed|run|是|允许|同意|确定|继续)\b/iu;
-const NO_RE = /^(no|deny|reject|decline|cancel|否|拒绝|取消|不)\b/iu;
+const YES_RE = /^(yes|allow|approve|proceed|run|trust|是|允许|同意|确定|继续|信任)\b/iu;
+const NO_RE = /^(no|deny|reject|decline|cancel|否|拒绝|取消|不)\b|without trusting/iu;
 const ALWAYS_RE = /don.?t ask again|during this session|for (?:this|the) session|for the rest of|always allow|本次会话|本会话|不再询问/iu;
 const NOT_ALWAYS_RE = /auto mode|switch to|bypass|自动模式/iu;
 const QUESTION_RE = /[?？]\s*$/u;
@@ -99,9 +99,14 @@ export function parsePromptScreen(text: string): ScreenPrompt | null {
   }
   if (found.length < 2 || found[0]!.number !== "1") return null;
   const options = found.map((entry) => ({ ...entry, key: keyOf(entry.number, entry.label) }));
-  const allow = options[0]!;
-  if (!YES_RE.test(allow.label)) return null;
-  const deny = options.find((option) => NO_RE.test(option.label));
+  // Standard prompts put Yes first; workspace trust dialogs (e.g. Claude new worktree) put "1. No, exit" before "2. Yes, I trust this folder".
+  const allow = YES_RE.test(options[0]!.label)
+    ? options[0]!
+    : NO_RE.test(options[0]!.label)
+      ? options.find((option) => YES_RE.test(option.label))
+      : undefined;
+  if (!allow) return null;
+  const deny = options.find((option) => option !== allow && NO_RE.test(option.label));
   if (!deny) return null;
   const always = options.find((option) => option !== allow && option !== deny && YES_RE.test(option.label) && ALWAYS_RE.test(option.label) && !NOT_ALWAYS_RE.test(option.label));
   // the dialog above the options, up to its top rule

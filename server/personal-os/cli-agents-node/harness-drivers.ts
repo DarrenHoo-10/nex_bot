@@ -334,7 +334,7 @@ export function createDefaultHarnessDrivers(host: HarnessDriverHost): Map<CliEng
       return host.agy.page(row.nativeId, before ? { before } : {}, limit);
     },
     async start(args, cwd, budget) {
-      const id = await host.agy.start(cwd, launchOptionsOf(args, "ask"));
+      const id = await host.agy.start(cwd, launchOptionsOf(args, "ask"), args.team);
       const ref = cliRef("agy", id);
       await host.awaitRow(ref, budget - 1000);
       return { ref, cwd };

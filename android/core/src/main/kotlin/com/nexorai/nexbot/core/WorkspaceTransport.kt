@@ -44,6 +44,7 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         if (preview && old?.etag != null) builder.header("If-None-Match", old.etag)
         when {
             method == "GET" -> builder.get()
+            method == "PUT" -> builder.put(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             route == "/api/cli-agents/images" || route == "/api/cli-agents/attach" -> {
                 val isImage = route == "/api/cli-agents/images"
                 val maxBytes = if (isImage) 5 * 1024 * 1024 else 8 * 1024 * 1024
@@ -130,7 +131,7 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         private val groupAvatarQuery = Regex("^id=[a-zA-Z0-9-]+&chat=[a-zA-Z0-9_-]+&v=[a-f0-9]{16}$")
         fun isGroupAvatar(path: String, query: String?) = path == "/api/feishu/group-avatar" && query != null && groupAvatarQuery.matches(query)
         fun validate(path: String, method: String) {
-            require(method == "GET" || method == "POST") { "不支持的请求方法" }
+            require(method == "GET" || method == "POST" || method == "PUT") { "不支持的请求方法" }
             require(path.startsWith("/api/") && !path.contains('\\') && !path.contains('#') && !path.any { it.code < 32 }) { "不支持的请求地址" }
             val route = path.substringBefore('?')
             require(!route.contains('%') && !route.contains("..") && !route.contains("//")) { "不支持的请求地址" }

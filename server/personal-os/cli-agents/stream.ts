@@ -56,6 +56,8 @@ interface Connection {
   offList: (() => void) | null;
   offSummary: (() => void) | null;
   offRequests: (() => void) | null;
+  offWorkbench: (() => void) | null;
+  offTeam: (() => void) | null;
   sink: StreamSink;
 }
 
@@ -131,7 +133,8 @@ export class CliAgentStream {
 
   private attach(ws: WebSocket, sessionId: string, token: string) {
     const connection: Connection = {
-      ws, sessionId, token, lastSeen: Date.now(), subscriptions: new Map(), offList: null, offSummary: null, offRequests: null,
+      ws, sessionId, token, lastSeen: Date.now(), subscriptions: new Map(),
+      offList: null, offSummary: null, offRequests: null, offWorkbench: null, offTeam: null,
       sink: undefined as unknown as StreamSink,
     };
     connection.sink = this.sinkFor(connection);
@@ -149,6 +152,8 @@ export class CliAgentStream {
     connection.offList?.();
     connection.offSummary?.();
     connection.offRequests?.();
+    connection.offWorkbench?.();
+    connection.offTeam?.();
     this.hub.closeSink(connection.sink);
   }
 
@@ -212,14 +217,24 @@ export class CliAgentStream {
     connection.offList?.();
     connection.offSummary?.();
     connection.offRequests?.();
+    connection.offWorkbench?.();
+    connection.offTeam?.();
     connection.offList = this.hub.onList((delta) => this.send(connection, { type: "list.delta", ...delta }));
     connection.offSummary = this.hub.onSummary((summary) => this.send(connection, { type: "summary", ...summary }));
+    connection.offWorkbench = this.hub.onWorkbench((message) => this.send(connection, message));
+    connection.offTeam = this.hub.onTeam((message) => this.send(connection, message));
     const { devices, sessions } = this.hub.list();
     const [first = [], ...rest] = groups(sessions);
     this.send(connection, { type: "list", devices, sessions: first });
     // The rest of a very long list follows as upserts: the browser merges them the same way.
     for (const more of rest) this.send(connection, { type: "list.delta", upserts: more, removes: [] });
     this.send(connection, { type: "summary", ...this.hub.summary() });
+    if (this.hub.workbench?.list) {
+      this.send(connection, { type: "workbench", sessions: this.hub.workbench.list() });
+    }
+    if (this.hub.teamSnapshot) {
+      this.send(connection, { type: "cli.team", runs: this.hub.teamSnapshot() });
+    }
     // Pending permission and question cards, one message per session that has any.
     connection.offRequests = this.hub.onRequests((message) => {
       if (message.type !== "requests" && message.type !== "request.resolved") return;

@@ -33,6 +33,13 @@ import {
 } from "../../../shared/cli-agents";
 import { compressPickedImage } from "./image-preview";
 import { cliImageId } from "../../../shared/cli-images";
+import {
+  parseTeamRun,
+  parseTeamRuns,
+  parseTeamSettings,
+  type CliTeamRunView,
+  type CliTeamSettings,
+} from "./team";
 
 import { httpErrorText, isTechnicalMessage, readJson, userErrorText } from "../../lib/http-errors";
 
@@ -289,7 +296,7 @@ export interface CliWorkbenchSession {
   engine?: CliEngine | null;
   cwd: string;
   parentId?: string | null;
-  kind: "main" | "fork" | "side";
+  kind: "main" | "fork" | "side" | "worker";
   title: string;
   archived: boolean;
   version: number;
@@ -337,7 +344,7 @@ function parseWorkbench(value: unknown): CliWorkbenchSession | null {
     engine: isCliEngine(row.engine) ? row.engine : null,
     cwd: typeof row.cwd === "string" ? row.cwd : "",
     parentId: typeof row.parentId === "string" ? row.parentId : null,
-    kind: row.kind === "fork" || row.kind === "side" ? row.kind : "main",
+    kind: row.kind === "fork" || row.kind === "side" || row.kind === "worker" ? row.kind : "main",
     title: typeof row.title === "string" ? row.title : "",
     archived: row.archived === true,
     version: typeof row.version === "number" ? row.version : 0,
@@ -509,4 +516,46 @@ export async function fetchSupervision(): Promise<SupervisionView> {
 /** Changes some switches for every folder; the answer is the new state. */
 export async function saveSupervision(settings: Partial<SupervisionSettings>): Promise<SupervisionView> {
   return parseSupervision(await call<unknown>("/supervision", { settings }, "PUT"));
+}
+
+// ---------------------------------------------------------------------------
+// Multi-agent collaboration ("协作")
+
+export async function fetchTeams(lead?: CliSessionKey): Promise<CliTeamRunView[]> {
+  const query = lead ? `?lead=${encodeURIComponent(lead)}` : "";
+  const data = await call<{ runs?: unknown }>(`/teams${query}`, undefined, "GET");
+  return parseTeamRuns(data.runs);
+}
+
+export async function pauseTeam(runId: string): Promise<CliTeamRunView | null> {
+  const data = await call<{ run?: unknown }>(`/teams/${encodeURIComponent(runId)}/pause`, {});
+  return parseTeamRun(data.run);
+}
+
+export async function resumeTeam(runId: string): Promise<CliTeamRunView | null> {
+  const data = await call<{ run?: unknown }>(`/teams/${encodeURIComponent(runId)}/resume`, {});
+  return parseTeamRun(data.run);
+}
+
+export async function cancelTeam(runId: string): Promise<CliTeamRunView | null> {
+  const data = await call<{ run?: unknown }>(`/teams/${encodeURIComponent(runId)}/cancel`, {});
+  return parseTeamRun(data.run);
+}
+
+export async function stopTeamWorker(runId: string, workerName: string): Promise<CliTeamRunView | null> {
+  const data = await call<{ run?: unknown }>(
+    `/teams/${encodeURIComponent(runId)}/workers/${encodeURIComponent(workerName)}/stop`,
+    {},
+  );
+  return parseTeamRun(data.run);
+}
+
+export async function fetchTeamSettings(): Promise<CliTeamSettings> {
+  const data = await call<{ settings?: unknown }>("/team-settings", undefined, "GET");
+  return parseTeamSettings(data.settings ?? data);
+}
+
+export async function saveTeamSettings(patch: Partial<CliTeamSettings>): Promise<CliTeamSettings> {
+  const data = await call<{ settings?: unknown }>("/team-settings", { settings: patch }, "PUT");
+  return parseTeamSettings(data.settings ?? data);
 }

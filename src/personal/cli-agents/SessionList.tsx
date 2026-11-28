@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, ChevronDown, ChevronRight, Clock3, Ellipsis, Monitor, Plus, Search, X } from "lucide-react";
 import { unwrapPastedContent, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { AGENT_LABEL, RECENT_MS, askedSession, projectOf, forkParentKey, foldHistory, matchesTerms, moveProject, orderProjects, projectGroups, rememberProjects, sessionStatusLabel, sessionTone, sessionTitle, treeParents, type DeviceGroup } from "./session-model";
+import { activeWorkingWorkers, isRunLive, TEAM_RUN_STATUS_LABEL, TEAM_WORKER_STATUS_LABEL, type CliTeamRunView, type TeamIndex, type TeamWorkerBinding } from "./team";
 import { searchSessions } from "./api";
 import { copyText } from "../../lib/copy-text";
 import {HarnessMark} from "./tokendance/HarnessMark";
@@ -14,7 +15,7 @@ import type { BackStep } from "../android-back";
 export interface WorkbenchMeta {
   title: string;
   parent?: CliSessionKey | null;
-  kind?: "fork" | "side";
+  kind?: "fork" | "side" | "worker";
   archived?: boolean;
   /** Core never lists a deleted row; only the review fixture carries this */
   deleted?: boolean;
@@ -39,6 +40,8 @@ export interface SessionListProps {
   pending?: ReadonlyMap<string, number>;
   /** logical-session rows from Core; absent in the isolated preview */
   workbench?: ReadonlyMap<CliSessionKey, WorkbenchMeta>;
+  /** collaboration runs index (leads and workers) */
+  teams?: TeamIndex;
   onWorkbenchAction?: WorkbenchActions;
   onSelect(key: CliSessionKey): void;
   /** `cwd` is the project the new session starts in, when it came from a project's + */
@@ -74,12 +77,14 @@ function readOrder():ProjectOrder{
 function writeOrder(order:ProjectOrder){try{localStorage.setItem(ORDER_KEY,JSON.stringify(order))}catch{/* the order lasts for the page */}}
 function readTimeSort(){try{return localStorage.getItem(TIME_KEY)==="1"}catch{return false}}
 const sameList=(a:readonly string[],b:readonly string[])=>a.length===b.length&&a.every((entry,i)=>entry===b[i]);
-export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAction,onSelect,onNew,onCreate,reloadSessions,back}:SessionListProps) {
+export function SessionList({groups,selectedKey,pending,workbench,teams,onWorkbenchAction,onSelect,onNew,onCreate,reloadSessions,back}:SessionListProps) {
   const review=useReview();
   const wbActions = review ? undefined : onWorkbenchAction;
   const [closed,setClosed]=useState<Set<string>>(()=>new Set());
   /** projects whose earlier history is expanded; collapsed by default */
   const [earlier,setEarlier]=useState<Set<string>>(()=>new Set());
+  /** lead sessions whose historical collaboration workers are expanded */
+  const [teamHistoryOpen,setTeamHistoryOpen]=useState<Set<CliSessionKey>>(()=>new Set());
   const [filter,setFilter]=useState(""),[archived,setArchived]=useState(false);
   const [searchOpen,setSearchOpen]=useState(false);
   /** sessions whose conversation matches the search, with the matching line */
@@ -129,7 +134,13 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     return () => doc.removeEventListener("pointerdown", clearOutsideSelection, true);
   }, []);
   const meta=(key:CliSessionKey)=>review?.records[key] ?? workbench?.get(key);
-  const label=(s:CliSessionView)=>{const own=meta(s.key);return (own&&"title" in own&&own.title?unwrapPastedContent(own.title):"")||sessionTitle(s)};
+  const workerBinding=(key:CliSessionKey):TeamWorkerBinding|undefined=>teams?.workerBySession.get(key);
+  const isWorker=(s:CliSessionView)=>meta(s.key)?.kind==="worker" || !!workerBinding(s.key);
+  const label=(s:CliSessionView)=>{
+    const own=meta(s.key);
+    const custom=own&&"title" in own&&own.title?unwrapPastedContent(own.title):"";
+    return custom || workerBinding(s.key)?.worker.title || sessionTitle(s);
+  };
   const deviceOf=(deviceId:string)=>groups.find(group=>group.device.id===deviceId)?.device;
   // Native archive state from `sessionManage`-capable devices is authoritative; legacy hidden/workbench flags remain as fallback.
   const isArchived=(s:CliSessionView)=>{
@@ -141,6 +152,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   const ownRow=(key:CliSessionKey)=>{const own=meta(key);return own&&"id" in own&&own.id?own as WorkbenchMeta:undefined};
   function toggle(id:string){setClosed(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next})}
   function toggleEarlier(id:string){setEarlier(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next})}
+  function toggleTeamHistory(leadKey:CliSessionKey){setTeamHistoryOpen(previous=>{const next=new Set(previous);if(next.has(leadKey))next.delete(leadKey);else next.add(leadKey);return next})}
   const query=filter.trim();
   useEffect(()=>{
     setContentHits(new Map());
@@ -223,37 +235,91 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       dismissDialog();
     } catch(e){setError(userErrorText(e))}finally{setBusy(false)}
   }
-  /** A row's tree parent: the workbench parent, else the session it was forked from (Core's `forkOf`). */
-  const parentOf=(s:CliSessionView)=>meta(s.key)?.parent||forkParentKey(s);
+  /** A row's tree parent: the workbench parent, else collaboration lead, else fork source (`forkOf`). */
+  const parentOf=(s:CliSessionView)=>meta(s.key)?.parent||workerBinding(s.key)?.run.leadKey||forkParentKey(s);
+  const workerLiveNow=(s:CliSessionView,binding:TeamWorkerBinding|undefined)=>{
+    const asked=pending?.get(s.key)||0;
+    const shown=askedSession(s,asked);
+    return asked>0 || (shown.online && (shown.state==="running"||shown.state==="waiting")) || binding?.worker.status==="waiting";
+  };
   function sessions(rows:CliSessionView[],parents:ReadonlyMap<CliSessionKey,CliSessionKey|null>,parent:CliSessionKey|null,depth:number,ancestors:Set<string>):ReactNode {
     const keys=new Set(rows.map(s=>s.key));
     // a parent outside `rows` leaves the row at the top level
     const actualParent=(s:CliSessionView)=>{const p=parents.get(s.key);return p&&keys.has(p)?p:null};
     const siblings=rows.filter(s=>actualParent(s)===parent&&!ancestors.has(s.key));
-    siblings.sort((a,b)=>b.lastActivityAt-a.lastActivityAt);
-    return siblings.map(s=>{
+    const primary:CliSessionView[]=[];
+    const historical:Array<{session:CliSessionView;binding:TeamWorkerBinding}>=[];
+    for(const entry of siblings){
+      const binding=workerBinding(entry.key);
+      if(parent && binding && !binding.inPrimaryGroup && !filter && !archived && entry.key!==selectedKey && !workerLiveNow(entry,binding)){
+        historical.push({session:entry,binding});
+      } else {
+        primary.push(entry);
+      }
+    }
+    primary.sort((a,b)=>b.lastActivityAt-a.lastActivityAt);
+    const renderNode=(s:CliSessionView,historyStyle=false)=>{
       const creatingChild=forking?.parent.key===s.key && !forkReady;
       const has=creatingChild || rows.some(c=>actualParent(c)===s.key);
       return <div key={s.key} className="na-node">
-        {row(s,has)}
+        {row(s,has,undefined,{historyStyle})}
         {has&&(filter||!closed.has(s.key))&&depth<24?<div className="na-branch">
           {creatingChild && <div className="na-node"><div className="cli-row" role="status" aria-label="正在创建分支"><span className="na-twist"/>
             <div className="cli-row-main"><LoaderCircle className="na-busy-icon" size={14}/><span className="cli-row-title">{forking.title}</span></div>
           </div></div>}
           {sessions(rows,parents,s.key,depth+1,new Set([...ancestors,s.key]))}
         </div>:null}
-      </div>
-    });
+      </div>;
+    };
+    const historyExpanded=!!parent && teamHistoryOpen.has(parent);
+    const historyByRun:Array<{run:CliTeamRunView;items:CliSessionView[]}>=[];
+    if(historical.length && historyExpanded){
+      const map=new Map<string,{run:CliTeamRunView;items:CliSessionView[]}>();
+      for(const {session:item,binding} of historical){
+        let bucket=map.get(binding.run.id);
+        if(!bucket){bucket={run:binding.run,items:[]};map.set(binding.run.id,bucket);historyByRun.push(bucket)}
+        bucket.items.push(item);
+      }
+      historyByRun.sort((a,b)=>(b.run.finishedAt??b.run.updatedAt)-(a.run.finishedAt??a.run.updatedAt));
+      for(const bucket of historyByRun)bucket.items.sort((a,b)=>b.lastActivityAt-a.lastActivityAt);
+    }
+    return <>
+      {primary.map(s=>renderNode(s,!!parent && !!workerBinding(s.key) && !workerBinding(s.key)!.isActiveRun))}
+      {historical.length && parent ? <>
+        <button type="button" className="na-older na-team-history-toggle" aria-expanded={historyExpanded} onClick={()=>toggleTeamHistory(parent)}>
+          {historyExpanded?<ChevronDown size={13}/>:<ChevronRight size={13}/>}
+          <span>历史协作 {historical.length}</span>
+        </button>
+        {historyExpanded ? historyByRun.map(({run,items})=><div key={`team-history:${run.id}`}>
+          <div className="na-team-history-head">
+            <span title={run.title}>{run.title}</span>
+            <small>{TEAM_RUN_STATUS_LABEL[run.status]}</small>
+          </div>
+          {items.map(item=>renderNode(item,true))}
+        </div>) : null}
+      </> : null}
+    </>;
   }
   /** One session row, and under it the conversation line a content search matched. */
-  function row(s:CliSessionView,has:boolean,context?:string):ReactNode {
+  function row(s:CliSessionView,has:boolean,context?:string,options?:{historyStyle?:boolean;activeSection?:boolean;teamSummary?:{working:number;paused:boolean}}):ReactNode {
       const asked=pending?.get(s.key)||0;
-      const shown=askedSession(s,asked), tone=sessionTone(shown);
-      const status=["waiting","running","offline"].includes(tone)?sessionStatusLabel(shown):"";
-      const waiting=asked>0 || tone==="waiting";
+      const binding=workerBinding(s.key);
+      const shown=askedSession(s,asked);
+      const baseTone=sessionTone(shown);
+      const workerState=binding?.worker.status;
+      const waiting=asked>0 || baseTone==="waiting" || workerState==="waiting";
+      const tone=waiting ? "waiting"
+        : baseTone==="running" || (binding && workerState==="starting" && shown.online) ? "running"
+        : binding && workerState==="failed" ? "failed"
+        : binding && workerState==="reported" ? "reported"
+        : baseTone;
+      const status=binding
+        ? (tone==="running"||tone==="waiting"||tone==="reported"||tone==="failed" ? TEAM_WORKER_STATUS_LABEL[tone==="running"?"running":tone==="waiting"?"waiting":tone==="reported"?"reported":"failed"] : baseTone==="offline"?"电脑离线":"")
+        : (["waiting","running","offline"].includes(baseTone)?sessionStatusLabel(shown):"");
       const snippet=query?contentHits.get(s.key):undefined;
+      const rowClass="cli-row "+(s.key===selectedKey?"is-selected":"")+(binding?" is-worker":"")+(options?.historyStyle?" is-team-history":"");
       return <>
-        <div className={"cli-row "+(s.key===selectedKey?"is-selected":"")} onContextMenu={e=>{e.preventDefault();trigger.current=e.currentTarget.querySelector(".na-more");setMenu({row:s,x:e.clientX,y:e.clientY})}}>
+        <div className={rowClass} onContextMenu={e=>{e.preventDefault();trigger.current=e.currentTarget.querySelector(".na-more");setMenu({row:s,x:e.clientX,y:e.clientY})}}>
           {has?twist(s.key,label(s)):<span className="na-twist"/>}
           {editing?.key===s.key ? <div className="cli-row-main na-editing-name">
             <HarnessMark agentId={s.engine} size="sm"/>
@@ -270,9 +336,14 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
             {/* the dot on the CLI's mark is the state: green breathing while it runs, amber while it waits for you */}
             <span className={"na-engine "+s.engine} data-tone={tone} title={AGENT_LABEL[s.engine]+(status?" · "+status:"")}><HarnessMark agentId={s.engine} size="sm"/></span>
             <span className="cli-row-title">{label(s)}</span>
-            {status&&tone!=="waiting"?<span className="na-sr cli-chip" data-tone={tone}>{status}</span>:null}
+            {binding?.worker.role && !options?.activeSection && !waiting && tone!=="failed" ? <span className="na-worker-role">{binding.worker.role}</span> : null}
+            {status&&tone!=="waiting"&&!(binding&&(tone==="reported"||tone==="failed"))?<span className="na-sr cli-chip" data-tone={tone}>{status}</span>:null}
             {context?<small className="na-row-context">{context}</small>:null}
-            {waiting?<span className="cli-chip cli-waiting-tag" data-tone="waiting">{asked>1?`等你处理 ${asked}`:"等你处理"}</span>:null}
+            {options?.teamSummary?.working ? <span className="cli-chip cli-waiting-tag" data-tone="team">{options.teamSummary.working} 个工人工作中</span>
+              : options?.teamSummary?.paused ? <span className="cli-chip cli-waiting-tag" data-tone="paused">协作已暂停</span>
+              : waiting ? <span className="cli-chip cli-waiting-tag" data-tone="waiting">{asked>1?`等你处理 ${asked}`:"等你处理"}</span>
+              : binding && tone==="failed" ? <span className="cli-chip cli-waiting-tag" data-tone="failed">失败</span>
+              : null}
           </button>}
           <button type="button" className="icon-button na-more" title="会话操作" aria-haspopup="menu" aria-expanded={menu?.row.key===s.key} aria-label={label(s)+"的操作"} onClick={e=>{if(menu?.row.key===s.key){setMenu(null);return}trigger.current=e.currentTarget;const b=e.currentTarget.getBoundingClientRect();setMenu({row:s,x:b.right,y:b.bottom})}}><Ellipsis size={15}/></button>
         </div>
@@ -288,25 +359,40 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     return s.key===selectedKey || (shown.online && (shown.state==="running"||shown.state==="waiting")) || now-s.lastActivityAt<=RECENT_MS;
   };
   const actions:Record<Action,string>={fork:"创建分支",archive:"归档会话",delete:"删除会话",id:"查看会话 ID"};
-  /** What a search looks at without asking the computers: names, folders, harness and branch. */
-  const haystack=(s:CliSessionView,project:{label:string;root:string})=>[label(s),project.label,project.root,s.cwd,AGENT_LABEL[s.engine],checkout(s).worktree,checkout(s).branch].join(" ");
+  /** What a search looks at without asking the computers: names, folders, harness, role and branch. */
+  const haystack=(s:CliSessionView,project:{label:string;root:string})=>{
+    const binding=workerBinding(s.key);
+    return [label(s),project.label,project.root,s.cwd,AGENT_LABEL[s.engine],checkout(s).worktree,checkout(s).branch,binding?.worker.role,binding?.worker.name,binding?.run.title].filter(Boolean).join(" ");
+  };
   const found=(s:CliSessionView,project:{label:string;root:string})=>!query||matchesTerms(haystack(s,project),query)||contentHits.has(s.key);
   // The device may publish an unlabelled new session before the fork response identifies it.
   const visibleDuringFork=(s:CliSessionView)=>!forking || forking.known.has(s.key) ||
     s.deviceId!==forking.parent.deviceId || s.engine!==forking.parent.engine || s.cwd!==forking.parent.cwd ||
     (forking.key ? s.key!==forking.key || forkReady : !!meta(s.key)?.parent && meta(s.key)?.parent!==forking.parent.key);
   const listed=(agents:DeviceGroup["agents"])=>agents.flatMap(a=>a.sessions).filter(visibleDuringFork).filter(s=>!meta(s.key)?.deleted && meta(s.key)?.kind!=="side" && !s.sideOf && isArchived(s)===archived);
+  const allListedSessions=groups.flatMap(({agents})=>listed(agents));
+  const sessionsByKey=new Map(allListedSessions.map(s=>[s.key,s]));
   /** new projects to remember in front, per computer, once this render is on screen */
   const remembered:ProjectOrder={};
   useEffect(()=>{
     const changed=Object.entries(remembered).filter(([device,next])=>!sameList(next,order[device]??[]));
     if(changed.length)setOrder(current=>{const all={...current,...Object.fromEntries(changed)};writeOrder(all);return all});
   });
-  const flat=byTime?groups.flatMap(({agents})=>listed(agents)).filter(s=>found(s,{label:"",root:""})).sort((a,b)=>b.lastActivityAt-a.lastActivityAt):[];
-  /** running or waiting sessions on every computer, pinned above the projects */
-  const active=byTime||archived||query?[]:groups.flatMap(({agents})=>listed(agents)).filter(s=>{
-    const shown=askedSession(s,pending?.get(s.key)||0);
-    return shown.online&&(shown.state==="running"||shown.state==="waiting");
+  const flat=byTime?allListedSessions.filter(s=>found(s,{label:"",root:""})).sort((a,b)=>b.lastActivityAt-a.lastActivityAt):[];
+  /** running or waiting sessions on every computer, pinned above the projects.
+   * Normally working collaboration workers fold into their lead row; waiting workers stay pinned. */
+  const active=byTime||archived||query?[]:allListedSessions.filter(s=>{
+    const asked=pending?.get(s.key)||0;
+    const shown=askedSession(s,asked);
+    const binding=workerBinding(s.key);
+    if(binding){
+      return asked>0 || (shown.online && shown.state==="waiting") || binding.worker.status==="waiting";
+    }
+    if(shown.online&&(shown.state==="running"||shown.state==="waiting"))return true;
+    const activeRun=teams?.activeRunByLead.get(s.key);
+    if(!activeRun || !isRunLive(activeRun.status))return false;
+    const counts=activeWorkingWorkers(activeRun,sessionsByKey,pending);
+    return counts.working>0 || activeRun.status==="paused";
   }).sort((a,b)=>b.lastActivityAt-a.lastActivityAt);
   // one computer that is online needs no computer row: its projects are the list
   const single=groups.length===1&&groups[0].device.online;
@@ -323,16 +409,43 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       <button type="button" className="na-section-head" aria-expanded={!activeFolded} onClick={toggleActive} title={activeFolded?"展开进行中":"收起进行中"}>
         {activeFolded?<ChevronRight size={13}/>:<ChevronDown size={13}/>}<span>进行中</span>
         {/* folded, the heading still says what is moving */}
-        {activeFolded&&active.some(s=>askedSession(s,pending?.get(s.key)||0).state==="waiting")?<i className="na-dot" data-tone="waiting" aria-label="有会话等你处理"/>:null}
+        {activeFolded&&active.some(s=>askedSession(s,pending?.get(s.key)||0).state==="waiting" || workerBinding(s.key)?.worker.status==="waiting")?<i className="na-dot" data-tone="waiting" aria-label="有会话等你处理"/>:null}
         <small>{active.length}</small>
       </button>
-      {activeFolded?null:active.map(s=><div key={"active:"+s.key} className="na-node">{row(s,false,projectOf(s,review?.checkouts?.[s.cwd]?.project).label)}</div>)}
+      {activeFolded?null:active.map(s=>{
+        const binding=workerBinding(s.key);
+        const leadSession=binding?sessionsByKey.get(binding.run.leadKey):undefined;
+        const activeRun=teams?.activeRunByLead.get(s.key);
+        const counts=activeRun?activeWorkingWorkers(activeRun,sessionsByKey,pending):{working:0,waiting:0};
+        const teamSummary=activeRun&&isRunLive(activeRun.status)&&(counts.working>0||activeRun.status==="paused")
+          ? {working:counts.working,paused:activeRun.status==="paused"} : undefined;
+        const workerSub=binding ? `协作 · 来自 ${leadSession?label(leadSession):binding.run.title}` : undefined;
+        const ctx=binding || teamSummary ? undefined : projectOf(s,review?.checkouts?.[s.cwd]?.project).label;
+        return <div key={"active:"+s.key} className="na-node">
+          {row(s,false,ctx,{activeSection:true,teamSummary})}
+          {workerSub ? <small className="na-row-sub" title={workerSub}>{workerSub}</small> : null}
+        </div>;
+      })}
     </section>:null}
-    {byTime?<div className="na-flat">{flat.map(s=><div key={s.key} className="na-node">{row(s,false)}</div>)}
+    {byTime?<div className="na-flat">{flat.map(s=>{
+      const binding=workerBinding(s.key);
+      const ctx=binding?(binding.worker.role?`协作 · ${binding.worker.role}`:"协作"):undefined;
+      return <div key={s.key} className="na-node">{row(s,false,ctx)}</div>;
+    })}
       {!flat.length&&!archived?<p className="cli-empty">{query?"没有匹配的会话":"暂无会话"}</p>:null}
     </div>:groups.map(({device,agents})=>{
       const all=listed(agents);
-      const grouped=projectGroups(all,s=>review?.checkouts?.[s.cwd]?.project);
+      const byKey=new Map(all.map(s=>[s.key,s]));
+      const grouped=projectGroups(
+        all,
+        s=>review?.checkouts?.[s.cwd]?.project,
+        s=>{
+          if(!isWorker(s))return undefined;
+          const leadKey=parentOf(s);
+          const lead=leadKey?byKey.get(leadKey):undefined;
+          return lead?projectOf(lead,review?.checkouts?.[lead.cwd]?.project):undefined;
+        },
+      );
       const saved=order[device.id]??[];
       if(!archived)remembered[device.id]=rememberProjects(grouped,saved);
       const projects=orderProjects(grouped,saved);
@@ -388,7 +501,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
         const manageHint=!dev?.online?"电脑离线":"电脑端版本过旧，升级后可用";
         return <button role="menuitem" disabled={manageBlocked} title={manageBlocked?manageHint:undefined} onClick={()=>{const run=review?review.run("restore",menu.row.key):wbActions!.archive(menu.row,ownRow(menu.row.key),false);void run.then(()=>setArchived(false)).catch(e=>setError(e.message));setMenu(null)}}><ArchiveRestore size={14}/>恢复会话</button>;
       })():null}
-      {(["id",...((review||wbActions)?(archived?["delete"]:["fork","archive","delete"]):[])] as Action[]).map(action=>{
+      {(["id",...((review||wbActions)?(archived?["delete"]:isWorker(menu.row)?["archive","delete"]:["fork","archive","delete"]):[])] as Action[]).map(action=>{
         const p=meta(menu.row.key)?.parent,limit=action==="fork"&&p&&meta(p)?.parent;
         const dev=deviceOf(menu.row.deviceId);
         // a real fork needs an executor that lists the engine; an older one would open a blank session
@@ -411,7 +524,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     }} aria-label={actions[dialog.action]} onSubmit={e=>{e.preventDefault();void submit()}}>
       <h3>{actions[dialog.action]}</h3><p>{AGENT_LABEL[dialog.row.engine]} · {label(dialog.row)}</p>
       {dialog.action==="id"?<code>{dialog.row.nativeId}</code>:null}
-      {dialog.action==="delete"||dialog.action==="archive"?<small>{review?"本次操作作用于隔离评审会话。子会话单独保留。":dialog.action==="archive"?"归档后会同步隐藏电脑上的原生会话，可在「已归档」中恢复。":"将永久删除电脑上的原生会话记录，无法恢复；子会话移到上一级。"}</small>:null}
+      {dialog.action==="delete"||dialog.action==="archive"?<small>{review?"本次操作作用于隔离评审会话。子会话单独保留。":dialog.action==="archive"?(teams?.workerKeysByLead.get(dialog.row.key)?.length?"归档后会同步归档其协作工人会话，可在「已归档」中一起恢复。":"归档后会同步隐藏电脑上的原生会话，可在「已归档」中恢复。"):"将永久删除电脑上的原生会话记录，无法恢复；子会话移到上一级。"}</small>:null}
       {error?<p role="alert">{error}</p>:null}
       <footer><button type="button" autoFocus disabled={busy} onClick={dismissDialog}>关闭</button>{dialog.action==="id"?<button type="button" onClick={()=>void copyText(dialog.row.nativeId).then(result=>result==="copied"?dismissDialog():setError("请选中 ID 复制"))}>复制 ID</button>:<button className={dialog.action==="delete"?"na-confirm-delete":"primary"} disabled={busy}>{busy?"处理中…":actions[dialog.action]}</button>}</footer>
     </form></div>,document.body)}

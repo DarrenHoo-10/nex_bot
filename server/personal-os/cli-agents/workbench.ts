@@ -23,7 +23,7 @@ import {
   parseCliKey,
 } from "../../../shared/cli-agents.ts";
 import { id, now, type CoreStore, type Row } from "../store.ts";
-import { CliOpError, TrackedOpError, type CliAgentHub, type CliTurnEvent } from "./hub.ts";
+import { CliOpError, TrackedOpError, type CliAgentHub, type CliOpSettledEvent, type CliTurnEvent } from "./hub.ts";
 import type { CliImages } from "./images.ts";
 
 export interface WaitingSteer {
@@ -140,9 +140,10 @@ export class CliAgentWorkbench {
     private readonly store: CoreStore,
     private readonly images?: CliImages,
   ) {
-    hub.workbench = { queueForSessionKey: (key) => this.queueForSessionKey(key) };
+    hub.workbench = { queueForSessionKey: (key) => this.queueForSessionKey(key), list: () => this.list() };
     this.detach.add(hub.onTurnEnd((event) => this.onTurnEnd(event)));
     this.detach.add(hub.onDeviceOnline((deviceId) => this.onDeviceOnline(deviceId)));
+    this.detach.add(hub.onOpSettled((event) => this.onOpSettled(event)));
     this.detach.add(hub.onList((delta) => this.onListDelta(delta)));
   }
 
@@ -923,28 +924,71 @@ export class CliAgentWorkbench {
       const workbenchId = String(row.id);
       // a restart lost the turn the last dispatch opened: reconnect ends the wait
       this.awaitingTurnEnd.delete(workbenchId);
-      this.reconcileUncertain(workbenchId);
+      const reconciled = this.reconcileUncertain(workbenchId);
       const state = this.queueState(workbenchId);
       if (state.paused && state.pauseReason === "device_offline") {
         this.store.run("UPDATE cli_agent_queue_state SET paused=0,pause_reason=NULL,updated_at=? WHERE workbench_id=?", now(), workbenchId);
       }
+      if (reconciled) this.pushQueue(workbenchId);
       this.pump(workbenchId);
     }
   }
 
+  /** Reconciles any uncertain outbox rows for a session against settled `cli_agent_ops`. */
+  reconcileUncertainForSession(key: string): boolean {
+    const row = this.store.get("SELECT id FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", key);
+    if (!row) return false;
+    const workbenchId = String(row.id);
+    const changed = this.reconcileUncertain(workbenchId);
+    if (changed) this.pushQueue(workbenchId);
+    return changed;
+  }
+
+  /** Clears a queue pause caused by a resolved team-mail entry when no uncertain/failed entries remain. */
+  clearTeamPause(key: string, reason: "uncertain" | "failed"): boolean {
+    const row = this.store.get("SELECT id FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", key);
+    if (!row) return false;
+    const workbenchId = String(row.id);
+    const state = this.queueState(workbenchId);
+    if (!state.paused || state.pauseReason !== reason) return false;
+    const blocking = Number(
+      this.store.get("SELECT COUNT(*) n FROM cli_agent_outbox WHERE workbench_id=? AND status IN ('uncertain','failed')", workbenchId)?.n ?? 0,
+    );
+    if (blocking > 0) return false;
+    this.store.run("UPDATE cli_agent_queue_state SET paused=0,pause_reason=NULL,updated_at=? WHERE workbench_id=?", now(), workbenchId);
+    this.pushQueue(workbenchId);
+    this.pump(workbenchId);
+    return true;
+  }
+
+  private onOpSettled(event: CliOpSettledEvent) {
+    const rows = this.store.all("SELECT DISTINCT workbench_id FROM cli_agent_outbox WHERE op_id=? AND status='uncertain'", event.opId);
+    for (const row of rows) {
+      const workbenchId = String(row.workbench_id);
+      if (this.reconcileUncertain(workbenchId)) {
+        this.pushQueue(workbenchId);
+        if (!this.queueState(workbenchId).paused) this.pump(workbenchId);
+      }
+    }
+  }
+
   /** An uncertain entry whose op row settled while nobody watched moves to its
-   * real outcome; nobody is ever re-sent here. */
-  private reconcileUncertain(workbenchId: string) {
+   * real outcome; nobody is ever re-sent here. Still-unknown ops remain
+   * `uncertain` until a late reply arrives. */
+  private reconcileUncertain(workbenchId: string): boolean {
+    let changed = false;
     for (const row of this.store.all("SELECT * FROM cli_agent_outbox WHERE workbench_id=? AND status='uncertain' AND op_id IS NOT NULL", workbenchId)) {
       const op = this.store.get("SELECT status,error_code FROM cli_agent_ops WHERE id=?", String(row.op_id));
-      if (!op || String(op.status) === "sent") continue;
+      if (!op || op.status === "sent" || op.status === "unknown") continue;
       const settled = op.status === "succeeded" ? "sent" : "failed";
-      this.store.run(
+      const updated = Number(this.store.run(
         "UPDATE cli_agent_outbox SET status=?,error_code=?,version=version+1,updated_at=? WHERE id=? AND status='uncertain'",
         settled, settled === "failed" ? (op.error_code ?? "unknown") : null, now(), row.id,
-      );
+      ).changes);
+      if (updated) changed = true;
       if (settled === "failed") this.pause(workbenchId, "failed");
     }
+    return changed;
   }
 
   /** Harnesses without turn events still end turns: their session row flips to

@@ -106,10 +106,14 @@ const NAME_KEY = "\u0000name:";
 /** Rows grouped by project: real projects by latest activity, the scratch group last. Folders that show the same name
  * are one project, wherever they are (two `workspace` folders list once); it starts new sessions in the folder used
  * last. A project of one folder keeps that folder's key, so its saved place and fold state stay as they were. */
-export function projectGroups(rows: readonly CliSessionView[], rootOf?: (row: CliSessionView) => string | undefined): ProjectGroup[] {
+export function projectGroups(
+  rows: readonly CliSessionView[],
+  rootOf?: (row: CliSessionView) => string | undefined,
+  projectOverride?: (row: CliSessionView) => ProjectRef | undefined,
+): ProjectGroup[] {
   const groups = new Map<string, ProjectGroup>();
   for (const row of rows) {
-    const ref = projectOf(row, rootOf?.(row));
+    const ref = projectOverride?.(row) ?? projectOf(row, rootOf?.(row));
     const name = ref.scratch ? ref.key : NAME_KEY + ref.label.toLocaleLowerCase();
     let group = groups.get(name);
     if (!group) groups.set(name, (group = { ...ref, rows: [], latest: 0, members: [], roots: [] }));

@@ -7,6 +7,17 @@
 // extra keys are dropped and nothing from the wire is aliased.
 //
 // Design: docs/design/agent-mode.md. Plan: docs/plans/2026-11-15-agent-mode-implementation.md.
+import {
+  parseTeamDeviceConfig,
+  parseTeamRun,
+  parseTeamRuns,
+  parseTeamStartMeta,
+  type CliTeamDeviceConfig,
+  type CliTeamRunView,
+  type CliTeamStartMeta,
+} from "./cli-team.ts";
+
+export type { CliTeamDeviceConfig, CliTeamRunView, CliTeamStartMeta };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -550,10 +561,10 @@ export interface CliError {
 /** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first.
  * `gitBranch`: list local branches/dirty state (`branches`), switch `cwd` to a branch on `start`, and set `worktree.baseBranch`.
  * `sessionManage`: the executor natively archives, restores and deletes sessions (`archive`, `delete`). */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes" | "skills" | "gitBranch" | "sessionManage";
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes" | "skills" | "gitBranch" | "sessionManage" | "team";
 /** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask".
  * `permissionModes`: it also takes each CLI's other permission modes (cliPermissionModes); without it only "full" and "ask". */
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch", "sessionManage"];
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch", "sessionManage", "team"];
 
 export const CLI_BRANCH_RE = /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/;
 export const CLI_BRANCH_LIMIT = 200;
@@ -796,6 +807,8 @@ export interface CliOpArgs {
     effort?: string;
     /** only sent to executors that list `permissions`; absent means full access for a new session */
     permissions?: CliPermissionMode;
+    /** multi-agent collaboration metadata when Core starts a worker; only sent to executors that list `team` */
+    team?: CliTeamStartMeta;
   };
   /** `permissions` absent: the CLI keeps its own settings */
   continue: { ref: CliSessionRef; cols?: number; rows?: number; model?: string; effort?: string; permissions?: CliPermissionMode };
@@ -928,7 +941,7 @@ export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
  * bound to over its life: it survives a resume that changed the key, carries
  * the user's display name and the tree relation. Old data has no row until the
  * workbench touches the session; such a session reads as a root `main`. */
-export type CliWorkbenchKind = "main" | "fork" | "side";
+export type CliWorkbenchKind = "main" | "fork" | "side" | "worker";
 
 export interface CliWorkbenchSessionView {
   id: string;
@@ -993,7 +1006,8 @@ export type DeviceCliMessage =
   | { type: "cli.term.opened"; sid: number; cols: number; rows: number; observe: boolean }
   | { type: "cli.term.size"; sid: number; cols: number; rows: number }
   | { type: "cli.term.closed"; sid: number; reason: string; exitCode?: number }
-  | { type: "cli.term.error"; sid: number; code: CliErrorCode };
+  | { type: "cli.term.error"; sid: number; code: CliErrorCode }
+  | { type: "cli.team.call"; callId: string; ref: CliSessionRef; command: string; args: Record<string, unknown> };
 
 /** Core -> device. `deadlineMs` is how long the device has, counted from receipt. */
 export type CoreCliMessage =
@@ -1002,7 +1016,9 @@ export type CoreCliMessage =
   | { type: "cli.term.resize"; sid: number; cols: number; rows: number }
   | { type: "cli.term.credit"; sid: number; bytes: number }
   | { type: "cli.term.close"; sid: number }
-  | { type: "cli.resync" };
+  | { type: "cli.resync"; reconcileOps?: string[] }
+  | { type: "cli.team.result"; callId: string; ok: boolean; text?: string; data?: Record<string, unknown>; error?: string }
+  | { type: "cli.team.config"; config: CliTeamDeviceConfig };
 
 // ---------------------------------------------------------------------------
 // Browser <-> Core WebSocket (plan 5.5)
@@ -1033,6 +1049,8 @@ export type ServerMessage =
   | { type: "queue"; queue: CliQueueView }
   /** the workbench tree; a full snapshot, rare enough not to need a delta */
   | { type: "workbench"; sessions: CliWorkbenchSessionView[] }
+  /** collaboration runs snapshot (`runs`) or single-run update (`run`) */
+  | { type: "cli.team"; runs?: CliTeamRunView[]; run?: CliTeamRunView }
   | { type: "pong" };
 
 // ---------------------------------------------------------------------------
@@ -1396,12 +1414,12 @@ function workbenchSession(value: unknown): CliWorkbenchSessionView {
   const o = rec(value);
   return pick({
     id: str(o.id, 128, 1),
-    sessionKey: present(o, "sessionKey") ? key(o.sessionKey) : null,
-    deviceId: present(o, "deviceId") ? deviceIdOf(o.deviceId) : null,
-    engine: present(o, "engine") ? oneOf(o.engine, CLI_ENGINES) : null,
+    sessionKey: o.sessionKey != null ? key(o.sessionKey) : null,
+    deviceId: o.deviceId != null ? deviceIdOf(o.deviceId) : null,
+    engine: o.engine != null ? oneOf(o.engine, CLI_ENGINES) : null,
     cwd: str(o.cwd, CLI_LIMITS.cwd),
-    parentId: present(o, "parentId") ? str(o.parentId, 128, 1) : null,
-    kind: oneOf(o.kind, ["main", "fork", "side"] as const),
+    parentId: o.parentId != null ? str(o.parentId, 128, 1) : null,
+    kind: oneOf(o.kind, ["main", "fork", "side", "worker"] as const),
     title: str(o.title, CLI_LIMITS.title),
     archived: bool(o.archived),
     deleted: bool(o.deleted),
@@ -1576,6 +1594,12 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     }
     const createDir = present(o, "createDir") ? bool(o.createDir) || undefined : undefined;
     if (branch && (worktree || forkFrom || createDir)) fail();
+    let team: CliTeamStartMeta | undefined;
+    if (present(o, "team")) {
+      const parsed = parseTeamStartMeta(o.team);
+      if (!parsed || forkFrom) fail();
+      team = parsed;
+    }
     return pick({
       engine,
       cwd,
@@ -1585,6 +1609,7 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
       branch,
       forkFrom,
       createDir,
+      team,
       ...launchOptions(o, engine),
     });
   },
@@ -1945,6 +1970,14 @@ export function parseDeviceCliMessage(value: unknown): DeviceCliMessage | null {
         });
       case "cli.term.error":
         return { type: "cli.term.error", sid: sid(o.sid), code: oneOf(o.code, CLI_ERROR_CODES) };
+      case "cli.team.call":
+        return {
+          type: "cli.team.call",
+          callId: str(o.callId, CLI_LIMITS.opId, 1),
+          ref: ref(o.ref),
+          command: str(o.command, 64, 1),
+          args: plainJson(rec(o.args), 0) as Record<string, unknown>,
+        };
       default:
         return fail();
     }
@@ -1982,7 +2015,32 @@ export function parseCoreCliMessage(value: unknown): CoreCliMessage | null {
       case "cli.term.close":
         return { type: "cli.term.close", sid: sid(o.sid) };
       case "cli.resync":
-        return { type: "cli.resync" };
+        return pick({
+          type: "cli.resync" as const,
+          reconcileOps: present(o, "reconcileOps")
+            ? arr(o.reconcileOps, 50).map((entry) => str(entry, CLI_LIMITS.opId, 1))
+            : undefined,
+        });
+      case "cli.team.result": {
+        const ok = bool(o.ok);
+        const text = optStr(o, "text", ITEM_TEXT_MAX);
+        const data = present(o, "data") ? (plainJson(rec(o.data), 0) as Record<string, unknown>) : undefined;
+        const error = optStr(o, "error", CLI_LIMITS.message);
+        if (!ok && !error) fail();
+        return pick({
+          type: "cli.team.result" as const,
+          callId: str(o.callId, CLI_LIMITS.opId, 1),
+          ok,
+          text,
+          data,
+          error,
+        });
+      }
+      case "cli.team.config": {
+        const config = parseTeamDeviceConfig(o.config);
+        if (!config) fail();
+        return { type: "cli.team.config", config };
+      }
       default:
         return fail();
     }
@@ -2089,6 +2147,17 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
         return { type: "queue", queue: queueView(o.queue) };
       case "workbench":
         return { type: "workbench", sessions: arr(o.sessions, CLI_LIMITS.listSessions).map(workbenchSession) };
+      case "cli.team": {
+        if (present(o, "runs")) {
+          return { type: "cli.team", runs: parseTeamRuns(o.runs) };
+        }
+        if (present(o, "run")) {
+          const run = parseTeamRun(o.run);
+          if (!run) fail();
+          return { type: "cli.team", run };
+        }
+        fail();
+      }
       case "pong":
         return { type: "pong" };
       default:

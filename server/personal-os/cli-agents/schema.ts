@@ -207,3 +207,138 @@ CREATE TABLE cli_agent_notes (
 ) STRICT;
 CREATE INDEX cli_agent_notes_session ON cli_agent_notes(workbench_id, created_at, id);
 `;
+
+// Migration 62: NexAgent multi-agent collaboration ("协作", code name `team`).
+// Rebuilds `cli_agent_workbench` so `kind` accepts 'worker' (rows and FKs are
+// preserved with foreign_keys=OFF during the swap), and adds the collaboration
+// ledger tables and settings table (docs/design/nexagent-multi-agent.md §8.1).
+// Sensitive text (task specs, reports, mail bodies, run summaries) is encrypted
+// at rest via CoreStore.encrypt() like transcript items and outbox bodies.
+export const cliAgentWorkbenchWorkerRebuild = `
+CREATE TABLE cli_agent_workbench_m62 (
+  id TEXT PRIMARY KEY,
+  session_key TEXT,
+  device_id TEXT,
+  engine TEXT,
+  cwd TEXT NOT NULL DEFAULT '',
+  parent_id TEXT REFERENCES cli_agent_workbench(id),
+  kind TEXT NOT NULL DEFAULT 'main' CHECK (kind IN ('main','fork','side','worker')),
+  title TEXT NOT NULL DEFAULT '',
+  archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0,1)),
+  deleted_at INTEGER,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO cli_agent_workbench_m62
+  SELECT id,session_key,device_id,engine,cwd,parent_id,kind,title,archived,deleted_at,version,created_at,updated_at
+  FROM cli_agent_workbench;
+DROP TABLE cli_agent_workbench;
+ALTER TABLE cli_agent_workbench_m62 RENAME TO cli_agent_workbench;
+CREATE INDEX cli_agent_workbench_key ON cli_agent_workbench(session_key);
+CREATE INDEX cli_agent_workbench_children ON cli_agent_workbench(parent_id, created_at);
+`;
+
+export const cliAgentTeamSchema = `
+CREATE TABLE cli_team_runs (
+  id TEXT PRIMARY KEY,
+  lead_key TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  limits_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active','paused','finished','cancelled')),
+  limit_hit TEXT,
+  summary TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  finished_at INTEGER
+) STRICT;
+CREATE INDEX cli_team_runs_lead ON cli_team_runs(lead_key, created_at DESC);
+CREATE UNIQUE INDEX cli_team_runs_one_live ON cli_team_runs(lead_key) WHERE status IN ('active','paused');
+
+CREATE TABLE cli_team_workers (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES cli_team_runs(id),
+  name TEXT NOT NULL,
+  engine TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  session_key TEXT,
+  workbench_id TEXT,
+  cwd TEXT NOT NULL,
+  base_ref TEXT,
+  role TEXT,
+  title TEXT NOT NULL DEFAULT '',
+  permissions TEXT NOT NULL,
+  model TEXT,
+  effort TEXT,
+  status TEXT NOT NULL CHECK (status IN ('starting','active','stopped','failed')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (run_id, name)
+) STRICT;
+CREATE INDEX cli_team_workers_session ON cli_team_workers(session_key);
+CREATE INDEX cli_team_workers_run ON cli_team_workers(run_id, created_at);
+
+CREATE TABLE cli_team_tasks (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES cli_team_runs(id),
+  worker_id TEXT REFERENCES cli_team_workers(id),
+  role TEXT,
+  title TEXT NOT NULL,
+  spec TEXT NOT NULL,
+  launch_json TEXT,
+  after_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL CHECK (status IN ('waiting','ready','running','succeeded','failed','blocked','cancelled')),
+  rounds INTEGER NOT NULL DEFAULT 0,
+  result TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX cli_team_tasks_run ON cli_team_tasks(run_id, created_at);
+
+CREATE TABLE cli_team_dispatches (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES cli_team_tasks(id),
+  worker_id TEXT NOT NULL REFERENCES cli_team_workers(id),
+  start_op_id TEXT,
+  retry_of TEXT,
+  failures INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK (status IN ('starting','running','reported','failed','stopped','unknown')),
+  nudged_turn INTEGER,
+  last_action_turn INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  settled_at INTEGER
+) STRICT;
+CREATE INDEX cli_team_dispatches_worker ON cli_team_dispatches(worker_id, created_at DESC);
+CREATE INDEX cli_team_dispatches_task ON cli_team_dispatches(task_id, created_at DESC);
+
+CREATE TABLE cli_team_mail (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES cli_team_runs(id),
+  seq INTEGER NOT NULL,
+  sender TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('task','report','question','answer','escalation','message','notice')),
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  payload_json TEXT,
+  status TEXT NOT NULL CHECK (status IN ('pending','queued','delivered','read','held')),
+  hold_reason TEXT,
+  outbox_id TEXT,
+  reply_to TEXT,
+  created_at INTEGER NOT NULL,
+  delivered_at INTEGER,
+  read_at INTEGER,
+  UNIQUE (run_id, seq)
+) STRICT;
+CREATE INDEX cli_team_mail_pending ON cli_team_mail(status, created_at);
+CREATE INDEX cli_team_mail_recipient ON cli_team_mail(run_id, recipient, seq);
+
+CREATE TABLE cli_team_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  settings_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+`;

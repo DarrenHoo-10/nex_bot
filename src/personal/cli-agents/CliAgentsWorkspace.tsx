@@ -16,8 +16,9 @@ import { LaunchPane } from "./LaunchPane";
 import { isLaunchKey, launchRow, useLaunches } from "./use-launches";
 import { newRequests, newlyWaiting, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
 import { pendingCounts, pendingViews } from "./requests";
-import { groupSessions, recentCwds } from "./session-model";
+import { groupSessions, recentCwds, sessionTitle } from "./session-model";
 import { useWorkbenchTree } from "./use-workbench";
+import { useCliTeams } from "./use-teams";
 import type { WorkbenchMeta } from "./SessionList";
 import { archiveWorkbenchSession, branchSession, deleteWorkbenchSession, renameWorkbenchSession, startSession, type WorkbenchRef } from "./api";
 import { useCliRequests } from "./use-requests";
@@ -31,7 +32,11 @@ import { CLOSE_UNAUTHORIZED, CliStream, type StreamStatus } from "./stream";
 const SELECTED_KEY = "nexbot.cliSelected";
 
 function readSelected(): CliSessionKey | null {
-  try { return (localStorage.getItem(SELECTED_KEY) as CliSessionKey | null) || null; } catch { return null; }
+  try {
+    const fromQuery = new URLSearchParams(location.search).get("select") as CliSessionKey | null;
+    if (fromQuery) return fromQuery;
+    return (localStorage.getItem(SELECTED_KEY) as CliSessionKey | null) || null;
+  } catch { return null; }
 }
 
 function writeSelected(key: CliSessionKey | null): void {
@@ -153,6 +158,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
   const { devices, sessions, setSessions, loaded, error, setError, status, reload } = useCliList(stream, requests.merge);
   const [reloadToken, setReloadToken] = useState(0);
   const tree = useWorkbenchTree(stream, loaded, reloadToken);
+  const teams = useCliTeams(stream, loaded, reloadToken);
   /** What SessionList reads: display title, tree parent and the mutation handles. */
   const listMeta = useMemo(() => {
     const byId = new Map(tree.map((row) => [row.id, row]));
@@ -163,7 +169,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
       map.set(row.sessionKey, {
         title: row.title,
         parent: parent?.sessionKey ?? null,
-        kind: row.kind === "side" ? "side" : row.kind === "fork" ? "fork" : undefined,
+        kind: row.kind === "side" ? "side" : row.kind === "fork" ? "fork" : row.kind === "worker" ? "worker" : undefined,
         archived: row.archived,
         id: row.id,
         version: row.version,
@@ -326,6 +332,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
         selectedKey={selectedKey}
         pending={pending}
         workbench={review ? undefined : listMeta}
+        teams={teams.index}
         onWorkbenchAction={review ? undefined : {
           fork: (session, title) => runWorkbenchAction("fork", session, { title }),
           rename: async (session, row, title) => { await runWorkbenchAction("rename", session, { title, row: { id: row?.id, version: row?.version } }); },
@@ -335,6 +342,13 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
               if (!archived && session.hidden) await hide(session, false).catch(() => undefined);
             } else if (!archived && session.hidden) {
               await hide(session, false);
+            }
+            const workers = teams.index.workerKeysByLead.get(session.key) ?? [];
+            for (const workerKey of workers) {
+              const workerSession = sessions.find((entry) => entry.key === workerKey);
+              if (!workerSession) continue;
+              const workerRow = listMeta.get(workerKey);
+              await runWorkbenchAction(archived ? "archive" : "restore", workerSession, { row: { id: workerRow?.id, version: workerRow?.version } }).catch(() => undefined);
             }
           },
           remove: async (session, row) => {
@@ -388,11 +402,16 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
                 <LaunchPane key={launching.id} launch={launching} onBack={() => setMobileView("list")}
                   onRetry={() => launcher.retry(launching.id)}
                   onDismiss={() => { launcher.dismiss(launching.id); if (launching.target) select(launching.target); else select(null); }}/>
-              ) : selected ? (
+              ) : selected ? (() => {
+                const selectedWorker = teams.index.workerBySession.get(selected.key);
+                const selectedLead = selectedWorker ? sessions.find((entry) => entry.key === selectedWorker.run.leadKey) : undefined;
+                const leadTitle = selectedLead ? (listMeta.get(selectedLead.key)?.title || sessionTitle(selectedLead)) : selectedWorker?.run.title;
+                const selectedTeamRuns = teams.index.runsByLead.get(selected.key);
+                return (
                 <SessionPane
                   key={selected.key}
                   session={selected}
-                  title={listMeta.get(selected.key)?.title || (selected.title.trim() ? undefined : launcher.echo(selected.key)?.text.split("\n")[0])}
+                  title={listMeta.get(selected.key)?.title || selectedWorker?.worker.title || (selected.title.trim() ? undefined : launcher.echo(selected.key)?.text.split("\n")[0])}
                   onTerminalOpen={sideChats.openTerminal}
                   onSideOpen={canSide(selected)?(q,m)=>sideChats.open(selected,q,m):undefined}
                   sideCount={sideChats.selected?0:sideChats.tabs.filter(t=>t.id!==sideChats.terminalId).length}
@@ -407,8 +426,17 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
                   onBranchReply={bots?.length && onOpenTopic ? itemId => setForking({ session: selected, itemId }) : undefined}
                   features={devices.find(d => d.id===selected.deviceId)?.cliAgents?.features}
                   echo={launcher.echo(selected.key)}
+                  teamRuns={selectedTeamRuns}
+                  workerBinding={selectedWorker}
+                  leadTitle={leadTitle}
+                  onSelectSession={select}
+                  onTeamPause={teams.pause}
+                  onTeamResume={teams.resume}
+                  onTeamCancel={teams.cancel}
+                  onTeamStopWorker={teams.stopWorker}
                 />
-              ) : (
+                );
+              })() : (
                 <div className="cli-placeholder">选择一个会话</div>
               )}
             </div>

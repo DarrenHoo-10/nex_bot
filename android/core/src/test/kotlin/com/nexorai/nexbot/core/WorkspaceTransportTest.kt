@@ -89,6 +89,20 @@ class WorkspaceTransportTest {
         }
         assertFalse(WorkspaceTransport.usesLongTimeout("/api/state", null, "GET"))
     }
+    @Test fun `PUT requests forward json bodies for settings endpoints`() {
+        MockWebServer().use { server ->
+            val client = WorkspaceTransport(server.url("/").toString(), { "fixture" })
+            server.enqueue(MockResponse().setBody("{\"settings\":{\"dispatchMode\":\"auto\"}}"))
+            val body = "{\"settings\":{\"dispatchMode\":\"auto\"}}"
+            assertEquals(200, client.request("/api/cli-agents/team-settings", "PUT", body).status)
+            val request = server.takeRequest()
+            assertEquals("PUT", request.method)
+            assertEquals("/api/cli-agents/team-settings", request.path)
+            assertEquals("Bearer fixture", request.getHeader("Authorization"))
+            assertTrue(request.getHeader("Content-Type").orEmpty().startsWith("application/json"))
+            assertEquals(body, request.body.readUtf8())
+        }
+    }
     @Test fun `redirect never forwards bearer to another origin`() {
         MockWebServer().use { server ->
             MockWebServer().use { destination ->

@@ -23,7 +23,7 @@
 // for this prompt (permission_suggestions) for the rest of the session only.
 import net from "node:net";
 
-const MODES = new Set(["question", "permission", "post", "stop"]);
+const MODES = new Set(["question", "nex_pre", "permission", "post", "stop"]);
 const STDIN_LIMIT = 8 * 1024 * 1024;
 const REPLY_LIMIT = 256 * 1024;
 const DELIVER_WAIT_MS = 3000;
@@ -158,6 +158,20 @@ async function main() {
   }
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   if (mode === "question" && (input.hook_event_name !== "PreToolUse" || input.tool_name !== "AskUserQuestion")) return null;
+  if (mode === "nex_pre") {
+    if (input.hook_event_name !== "PreToolUse" || (input.tool_name !== "Bash" && input.tool_name !== "PowerShell")) return null;
+    // Validate raw command length BEFORE slim() so a >MAX_STRING payload can never be truncated into a false allow.
+    const rawToolInput = input.tool_input;
+    if (rawToolInput === null || typeof rawToolInput !== "object" || Array.isArray(rawToolInput)) return null;
+    const hasCmd = rawToolInput.command !== undefined;
+    const hasCmdLine = rawToolInput.CommandLine !== undefined;
+    if (!hasCmd && !hasCmdLine) return null;
+    if (hasCmd && typeof rawToolInput.command !== "string") return null;
+    if (hasCmdLine && typeof rawToolInput.CommandLine !== "string") return null;
+    if (hasCmd && hasCmdLine && rawToolInput.command !== rawToolInput.CommandLine) return null;
+    const rawCmd = hasCmd ? rawToolInput.command : rawToolInput.CommandLine;
+    if (!rawCmd || rawCmd.length > MAX_STRING) return null;
+  }
   const sent = {
     hook_event_name: input.hook_event_name,
     session_id: input.session_id,
@@ -171,7 +185,18 @@ async function main() {
   const interactive = mode === "permission" || mode === "question";
   const waitMs = interactive ? Number(process.env.NEXBOT_HOOK_TIMEOUT_MS) || DEFAULT_WAIT_MS : DELIVER_WAIT_MS;
   const reply = await exchange(pipe, line, waitMs, interactive);
-  if (!interactive || !reply || reply.v !== 1) return null;
+  if (!reply || reply.v !== 1) return null;
+  if (mode === "nex_pre") {
+    if (reply.decision !== "allow") return null;
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        permissionDecisionReason: "Allowed standalone nex collaboration command",
+      },
+    };
+  }
+  if (!interactive) return null;
   if (mode === "question") {
     if (reply.decision === "deny") {
       return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reply.message || "Question dismissed in NexBot." } };

@@ -43,9 +43,11 @@ import {
   type CliPermissionMode,
   type CliSessionRef,
   type CliSessionWire,
+  type CliTeamDeviceConfig,
   type CoreCliMessage,
   type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
+import { DEFAULT_TEAM_DEVICE_CONFIG } from "../../../shared/cli-team.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { AgyError, AgyRuntime } from "./agy.ts";
 import { agyConfigDir, type agyWriters } from "./agy-native.ts";
@@ -56,9 +58,10 @@ import { codexEmptyComposer, codexReceipt } from "./codex-first-input.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
 import { allHarnesses, harnessConfigEnv, harnessFor, type HarnessDriver, type HarnessWatchSource } from "./harness.ts";
 import { createDefaultHarnessDrivers } from "./harness-drivers.ts";
-import { HookError, HookServer, TurnTracker, locateHookPlugin, platformPlugin } from "./hooks.ts";
+import { HookError, HookServer, TurnTracker, locateHookPlugin, platformPlugin, type HookTeamResult } from "./hooks.ts";
 import { ScreenPromptError, ScreenPrompts, type ScreenTerminal } from "./screen-prompts.ts";
-import { InboxError } from "./inbox.ts";
+import { InboxError, sendToInbox } from "./inbox.ts";
+import { codexMcpArgs, ensureTeamBin, leadInstruction, prependPath, type TeamBinPaths } from "./team-cli.ts";
 import { clipUnits } from "./items.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import {
@@ -76,7 +79,7 @@ import {
   type HcState,
   type HcTerminal,
 } from "./hc.ts";
-import { LaunchError, PENDING_NATIVE_ID, clearCliCache, cliVersion, codexHasNoDaemonFlag, launchEnv, planLaunch, resolveCli, terminalName, validateCwd } from "./launch.ts";
+import { LaunchError, PENDING_NATIVE_ID, clearCliCache, cliVersion, codexHasNoDaemonFlag, isCmdScript, launchEnv, planLaunch, resolveCli, terminalName, validateCwd } from "./launch.ts";
 import { CliLocalStore, type StoredReply } from "./local-store.ts";
 import { compressImagePreview, maxImageSourceBytes } from "../image-preview.ts";
 import { TranscriptReader } from "./reader.ts";
@@ -229,6 +232,7 @@ const TERMINAL_CHANGES = new Set(["created", "lost", "restarted", "finished", "r
 const REGISTER_GRACE_MS = 5000;
 const REPLY_RESULT_LIMIT = 900_000;
 const ITEMS_MESSAGE_BYTES = 1024 * 1024;
+const TEAM_TERMINAL_INBOX_LINE = "[NexAgent] You have a new team message. Run `nex inbox`.";
 
 const normalizeDir = (dir: string, platform: NodeJS.Platform): string => {
   const resolved = (platform === "win32" ? path.win32 : path.posix).resolve(dir).replace(/[\\/]+$/, "");
@@ -246,6 +250,7 @@ export class CliAgentBridge {
   private readonly terminals = new Map<string, TerminalInfo>();
   private readonly pending: PendingClaim[] = [];
   private readonly inflight = new Map<string, Promise<StoredReply>>();
+  private readonly pendingReplies = new Map<string, StoredReply>();
   private readonly activeStarts = new Map<string, Promise<CliOpResult["start"]>>();
   private readonly busyRefs = new Set<string>();
   private readonly tasks = new Set<Promise<unknown>>();
@@ -271,6 +276,9 @@ export class CliAgentBridge {
   private hooks: HookServer | null = null;
   private hooksStarting: Promise<HookServer | null> | null = null;
   private pluginDir: string | null | undefined;
+  private teamConfig: CliTeamDeviceConfig = { ...DEFAULT_TEAM_DEVICE_CONFIG };
+  private teamBin: TeamBinPaths | null = null;
+  private readonly pendingTeamCalls = new Map<string, { resolve: (result: HookTeamResult) => void; timer: NodeJS.Timeout }>();
   private readonly turns: TurnTracker;
   private readonly states = new Map<string, CliSessionWire["state"]>();
   private readonly fallbackTimers = new Map<string, NodeJS.Timeout>();
@@ -304,6 +312,11 @@ export class CliAgentBridge {
           type: "cli.turn", ref: cliRef("agy", id), turn, reason, endedAt: Date.now(),
           ...(error ? { error: clipUnits(error, CLI_LIMITS.turnError) } : {}),
         });
+      },
+      teamConfig: () => this.teamConfig,
+      teamEnv: (sessionId) => this.teamSessionEnv(cliRef("agy", sessionId)),
+      onTeamBound: (pendingId, realId) => {
+        this.hooks?.aliasSession(cliRef("agy", pendingId), cliRef("agy", realId));
       },
     });
     this.zcode = new ZcodeRuntime({
@@ -482,6 +495,7 @@ export class CliAgentBridge {
     this.link_ = link;
     this.seq = 0;
     this.resync();
+    this.flushPendingReplies();
     void this.warm();
     // Core dropped its copies of open approvals with the old link
     for (const driver of this.drivers.values()) driver.relink?.();
@@ -498,6 +512,7 @@ export class CliAgentBridge {
     this.streams.closeAll("link_lost");
     this.closeWatches();
     this.hooks?.linkLost();
+    this.failPendingTeamCalls("设备与 Core 断开连接，请运行 `nex status` 确认状态");
   }
 
   /** Core asked for the whole list again, or the link was just re-established. */
@@ -532,6 +547,7 @@ export class CliAgentBridge {
     this.codexTails.clear();
     const hooks = this.hooks;
     this.hooks = null;
+    this.failPendingTeamCalls("本机控制已停止");
     if (hooks) this.track(hooks.close());
     for (const claim of this.pending.splice(0)) claim.waiter?.(null);
     for (const driver of this.drivers.values()) {
@@ -559,6 +575,7 @@ export class CliAgentBridge {
     switch (message.type) {
       case "cli.resync":
         this.resync();
+        if (message.reconcileOps?.length) this.reconcileOps(message.reconcileOps);
         return;
       case "cli.op":
         this.track(this.runOp(message));
@@ -575,7 +592,84 @@ export class CliAgentBridge {
       case "cli.term.close":
         this.streams.close(message.sid);
         return;
+      case "cli.team.config":
+        this.teamConfig = message.config;
+        return;
+      case "cli.team.result":
+        this.onTeamResult(message);
+        return;
     }
+  }
+
+  private onTeamResult(message: Extract<CoreCliMessage, { type: "cli.team.result" }>): void {
+    const entry = this.pendingTeamCalls.get(message.callId);
+    if (!entry) return;
+    this.pendingTeamCalls.delete(message.callId);
+    clearTimeout(entry.timer);
+    entry.resolve({
+      ok: message.ok,
+      ...(message.text !== undefined ? { text: message.text } : {}),
+      ...(message.data !== undefined ? { data: message.data } : {}),
+      ...(message.error !== undefined ? { error: message.error } : {}),
+    });
+  }
+
+  private failPendingTeamCalls(error: string, uncertain = true): void {
+    for (const [callId, entry] of Array.from(this.pendingTeamCalls)) {
+      this.pendingTeamCalls.delete(callId);
+      clearTimeout(entry.timer);
+      entry.resolve({ ok: false, ...(uncertain ? { uncertain: true } : {}), error });
+    }
+  }
+
+  private isTeamSessionLive(ref: CliSessionRef): boolean {
+    if (this.nexbotTerminals().has(ref)) return true;
+    if (ref.startsWith("agy:") && this.agy.hasManagedSession(ref.slice(4))) return true;
+    return false;
+  }
+
+  private callCoreTeam(ref: CliSessionRef, command: string, args: Record<string, unknown>): Promise<HookTeamResult> {
+    if (this.detached || !this.link_) {
+      return Promise.resolve({ ok: false, error: "当前电脑未连接到 Core" });
+    }
+    const callId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!this.pendingTeamCalls.delete(callId)) return;
+        resolve({ ok: false, uncertain: true, error: "Core 响应超时，请运行 `nex status` 确认状态" });
+      }, 60_000);
+      timer.unref?.();
+      this.pendingTeamCalls.set(callId, { resolve, timer });
+      const sent = this.sendJson({ type: "cli.team.call", callId, ref, command, args });
+      if (!sent) {
+        this.pendingTeamCalls.delete(callId);
+        clearTimeout(timer);
+        resolve({ ok: false, error: "当前电脑未连接到 Core" });
+      }
+    });
+  }
+
+  private ensureTeamBinPaths(): TeamBinPaths {
+    this.teamBin ??= ensureTeamBin(this.options.dir, this.options.hookNode ?? process.execPath, this.platform);
+    return this.teamBin;
+  }
+
+  private async teamSessionEnv(ref: CliSessionRef): Promise<Record<string, string>> {
+    const server = await this.ensureHooks();
+    if (!server) return {};
+    const { binDir } = this.ensureTeamBinPaths();
+    const baseEnv = this.options.env ?? process.env;
+    const pathKey = this.platform === "win32"
+      ? (Object.keys(baseEnv).find((k) => k.toLowerCase() === "path") ?? "PATH")
+      : "PATH";
+    const node = this.options.hookNode ?? process.execPath;
+    return {
+      [pathKey]: prependPath(binDir, baseEnv[pathKey], this.platform),
+      NEXBOT_HOOK_NODE: node,
+      NEX_PIPE: server.pipe,
+      ...(server.httpUrl ? { NEX_HTTP: server.httpUrl } : {}),
+      NEX_SESSION: server.sessionTokenFor(ref),
+    };
   }
 
   /** A binary DCP frame from Core: terminal input. */
@@ -625,12 +719,40 @@ export class CliAgentBridge {
   }
 
   private sendReply(opId: string, reply: StoredReply): void {
-    this.sendJson({
+    const sent = this.sendJson({
       type: "cli.reply",
       opId,
       ok: reply.ok,
       ...(reply.ok ? { result: reply.result ?? {} } : { error: reply.error as { code: CliErrorCode; message?: string } }),
     });
+    if (sent) {
+      this.pendingReplies.delete(opId);
+      return;
+    }
+    if (!this.pendingReplies.has(opId) && this.pendingReplies.size >= 200) {
+      const oldest = this.pendingReplies.keys().next().value;
+      if (oldest !== undefined) this.pendingReplies.delete(oldest);
+    }
+    this.pendingReplies.set(opId, reply);
+  }
+
+  private flushPendingReplies(): void {
+    if (!this.link_ || this.pendingReplies.size === 0) return;
+    for (const [opId, reply] of Array.from(this.pendingReplies.entries())) {
+      this.sendReply(opId, reply);
+      if (!this.link_) break;
+    }
+  }
+
+  private reconcileOps(opIds: string[]): void {
+    for (const opId of opIds) {
+      if (this.inflight.has(opId)) continue;
+      const entry = this.store.opEntry(opId);
+      if (entry?.state === "done") {
+        this.pendingReplies.delete(opId);
+        this.sendReply(opId, entry.reply);
+      }
+    }
   }
 
   private onDiscovery(diff: SessionsDiff): void {
@@ -774,7 +896,6 @@ export class CliAgentBridge {
           // Windows terminals get a copy whose hooks run in PowerShell (see platformPlugin)
           this.pluginDir = located ? platformPlugin(located, this.options.dir, this.platform) : located;
         }
-        if (!this.pluginDir) return null;
         const server = new HookServer({
           dir: this.options.dir,
           emit: (message) => this.sendJson(message),
@@ -782,6 +903,13 @@ export class CliAgentBridge {
           active: () => !this.detached,
           linked: () => this.link_ !== null && !this.detached,
           isLive: (ref) => this.nexbotTerminals().has(ref),
+          isTeamLive: (ref) => this.isTeamSessionLive(ref),
+          sessionCwd: (ref) => {
+            const addr = this.addressFor(ref);
+            return (addr ? this.terminals.get(addr)?.cwd : undefined) ?? this.discovery.get(ref)?.cwd;
+          },
+          allowNexInAsk: () => this.teamConfig.allowNexInAsk,
+          teamCall: (ref, command, args) => this.callCoreTeam(ref, command, args),
           platform: this.platform,
           ...(this.options.hookSocketDir ? { socketDir: this.options.hookSocketDir } : {}),
           ...(this.options.hookTtlMs ? { ttlMs: this.options.hookTtlMs } : {}),
@@ -1706,6 +1834,29 @@ export class CliAgentBridge {
     if (newCodex) plan.labels[FIRST_CODEX_INPUT] = "1";
     if (noDaemon) plan.argv.push("--no-daemon");
     if (codexHome) plan.env.CODEX_HOME = codexHome;
+    if (nativeId) {
+      const ref = cliRef(args.engine, nativeId);
+      const teamEnv = await this.teamSessionEnv(ref);
+      plan.env = { ...plan.env, ...teamEnv };
+      // Codex single-launch overrides: lead instructions + out-of-sandbox MCP bridge (Phase 0 verified).
+      if (args.engine === "codex" && !(this.platform === "win32" && isCmdScript(executable))) {
+        if (!args.team) {
+          const prompt = leadInstruction(this.teamConfig.dispatchMode);
+          if (prompt) plan.argv.push("-c", `developer_instructions=${JSON.stringify(prompt)}`);
+        }
+        if (teamEnv.NEX_PIPE && teamEnv.NEX_SESSION) {
+          const { mcpScript } = this.ensureTeamBinPaths();
+          plan.argv.push(...codexMcpArgs({
+            node: this.options.hookNode ?? process.execPath,
+            mcpScript,
+            pipe: teamEnv.NEX_PIPE,
+            httpUrl: teamEnv.NEX_HTTP,
+            sessionToken: teamEnv.NEX_SESSION,
+            allowInAsk: this.teamConfig.allowNexInAsk,
+          }));
+        }
+      }
+    }
     // the fork reads the parent from the config home the parent lives in
     if (fork) plan.env = { ...plan.env, ...this.launchEnvironment(args.engine, fork.row.configDir) };
     const launchedAt = Date.now();
@@ -1767,7 +1918,19 @@ export class CliAgentBridge {
       { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable, ...(hooks ? { hooks } : {}), ...launchOptions },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
-    plan.env = { ...plan.env, ...this.launchEnvironment(parsed.engine, row.configDir), ...extraEnv };
+    const teamEnv = await this.teamSessionEnv(args.ref);
+    plan.env = { ...plan.env, ...this.launchEnvironment(parsed.engine, row.configDir), ...extraEnv, ...teamEnv };
+    if (parsed.engine === "codex" && !(this.platform === "win32" && isCmdScript(executable)) && teamEnv.NEX_PIPE && teamEnv.NEX_SESSION) {
+      const { mcpScript } = this.ensureTeamBinPaths();
+      plan.argv.push(...codexMcpArgs({
+        node: this.options.hookNode ?? process.execPath,
+        mcpScript,
+        pipe: teamEnv.NEX_PIPE,
+        httpUrl: teamEnv.NEX_HTTP,
+        sessionToken: teamEnv.NEX_SESSION,
+        allowInAsk: this.teamConfig.allowNexInAsk,
+      }));
+    }
     const terminal = await this.runTerminal(hc, parsed.engine, plan, clampTermSize(args.cols ?? size.cols, args.rows ?? size.rows));
     this.register(terminal, parsed.engine, parsed.nativeId, plan.cwd);
     if (features?.unknownWriterCheck && writer === "unknown") await this.checkEarlyExit(hc, terminal.address);
@@ -1933,15 +2096,40 @@ export class CliAgentBridge {
       }
     }
     const address = this.terminalOf(args.ref);
+    // Managed Claude sessions with a live native inbox can receive multiline/team messages directly without PTY paste (Phase 0 verified).
+    if (!steer && args.ref.startsWith("claude:") && !args.text.trimStart().startsWith("/") && utf8ByteLength(args.text) <= 8192) {
+      const row = this.discovery.get(args.ref);
+      const route = this.discovery.routeFor(args.ref);
+      if (row && route?.via === "inbox" && args.text.includes("<!-- nexagent-team:")) {
+        try {
+          const receipt = await sendToInbox(route, args.text, {
+            platform: this.platform,
+            transcript: this.discovery.transcriptFor(args.ref),
+            state: row.state,
+            ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }),
+          });
+          return { turn: 0, started: false, delivery: receipt.delivery, ...(receipt.waiting ? { waiting: true } : {}) };
+        } catch (error) {
+          // Fall back to terminal only when no connection was established.
+          if (!(error instanceof InboxError) || (error.code !== "not_in_terminal" && error.code !== "stopped")) throw error;
+        }
+      }
+    }
     // Slash commands belong to the TUI; queueing one would send the literal command to the model.
     if (!steer && args.ref.startsWith("codex:") && !/^\/[\w-]+(?:\s|$)/.test(args.text.trimStart()) && await this.enqueueManagedCodex(args, address, deadline)) {
       return { turn: 0, started: false, delivery: "unconfirmed", nativeQueued: true };
     }
+    // Never paste free-form multiline team envelopes into a PTY when native inbox/queue delivery is unavailable;
+    // wake the session with the fixed 1-line `nex inbox` pointer so it reads the exact body from the team ledger.
+    const terminalText = !steer && args.text.startsWith("<!-- nexagent-team:")
+      ? TEAM_TERMINAL_INBOX_LINE
+      : args.text;
+    const terminalArgs = terminalText === args.text ? args : { ...args, text: terminalText };
     const gate = this.terminals.get(address)?.firstCodexInput;
-    if (gate && !gate.confirmed) return this.firstCodexSend(args, address, gate, deadline);
+    if (gate && !gate.confirmed) return this.firstCodexSend(terminalArgs, address, gate, deadline);
     const hc = await this.requireHc();
     try {
-      const result = await hc.sendGuarded({ terminal: address, text: args.text });
+      const result = await hc.sendGuarded({ terminal: address, text: terminalText });
       return { turn: Number.isSafeInteger(result.turn) && result.turn >= 0 ? result.turn : 0, started: result.started === true };
     } catch (error) {
       if ((error as { kind?: string }).kind === "hc_draft") throw new OpFailure("busy", "电脑上有人正在输入");

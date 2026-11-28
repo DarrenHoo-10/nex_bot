@@ -7,7 +7,7 @@ const EMPTY_COMPOSER = /^›(?:\s+(?:Explain this codebase|Summarize recent comm
 const IDLE_STATUS = /^(?:\d{1,3}% (?:context )?left\b|(?:gpt-|o[1-9]\b|codex-)[\w.:-]*(?:\s+[^·]*)?\s+·\s+\S)/i;
 const SHORTCUTS = /^(?:← for agents\s*·\s*)?\? for shortcuts$/i;
 const WARNING_BADGE = /(?:^|\s+)⚠\s*\d+ warnings?\s*·\s*f2 to view$/i;
-const DIALOG = /(?:^|\n)\s*(?:›\s*)?\d+[.)]\s|press enter to (?:continue|confirm)|enter to confirm|esc to (?:cancel|interrupt)|do you trust|update available/i;
+const DIALOG = /(?:^|\n)\s*(?:›\s*)?\d+[.)]\s|press enter to (?:continue|confirm)|enter to confirm|enter continue\s*·\s*esc back|esc to (?:cancel|interrupt)|do you trust|trust this folder|folder access|agent command center|update available/i;
 
 function idleStatus(rows: string[], cols: number): boolean {
   if (!rows.length || rows.length > 4) return false;

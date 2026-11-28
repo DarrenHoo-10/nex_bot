@@ -19,6 +19,8 @@ import type { CliStream } from "./stream";
 import { localCacheScope, queueLocalCache, readLocalCache } from "../local-content-cache";
 import type { CliQueueEntry } from "./api";
 import { guideTimeline, type GuideMessage, activityStats, groupItems, replyTails, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
+import { parseTeamCard } from "./team";
+import { TeamMessageCard } from "./TeamMessageCard";
 
 type StoredTail = { marks: string[]; items: CliItem[]; translationEnabled?: boolean | null };
 
@@ -289,11 +291,13 @@ function progressTimestamp(blocks: readonly Block[]): number | undefined {
   return latest > 0 ? latest : undefined;
 }
 
-function BlockView({ block, engine, translations, onEdit, guideStatus, byline = true, actions = true, local, core, onBranch, progress, annotate }: { block: Block; guideStatus?:string; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; actions?: boolean; local: boolean; core?: CoreReply; onBranch?(): void; progress?: ReactNode; annotate?: (node: ReactNode) => ReactNode }) {
+function BlockView({ block, engine, translations, onEdit, onSelectSession, guideStatus, byline = true, actions = true, local, core, onBranch, progress, annotate }: { block: Block; guideStatus?:string; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; onSelectSession?:(key:CliSessionKey)=>void; byline?: boolean; actions?: boolean; local: boolean; core?: CoreReply; onBranch?(): void; progress?: ReactNode; annotate?: (node: ReactNode) => ReactNode }) {
   // onEdit is passed only for a message that may still be revised
   switch (block.kind) {
-    case "user":
+    case "user": {
       if(isInterruptRecord(block.item.text))return <div className="cli-notice">你已中断本次请求</div>;
+      const teamCard = parseTeamCard(block.item.text);
+      if (teamCard) return <TeamMessageCard card={teamCard} onSelectSession={onSelectSession} />;
       return (
         <div className="cli-msg is-user" data-testid="cli-user">
           <UserMessageContent text={[block.item.text, ...(block.item.images ?? []).filter(path => path.startsWith("/api/cli-agents/images/") && !block.item.text.includes(path))].join("\n")}/>
@@ -302,6 +306,7 @@ function BlockView({ block, engine, translations, onEdit, guideStatus, byline = 
           {block.item.queued ? <small>排队中</small> : null}
         </div>
       );
+    }
     case "assistant": {
       const reply = <ReplyText key={block.item.text} actions={actions} onBranch={onBranch} source={block.item.text} local={local} core={core} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>;
       return (
@@ -314,8 +319,11 @@ function BlockView({ block, engine, translations, onEdit, guideStatus, byline = 
     }
     case "activity":
       return <div className="cli-msg is-activity"><Activity items={block.items} /></div>;
-    case "notice":
+    case "notice": {
+      const teamCard = parseTeamCard(block.text);
+      if (teamCard) return <TeamMessageCard card={teamCard} onSelectSession={onSelectSession} />;
       return <div className="cli-notice" data-level={block.level} role={block.level === "error" ? "alert" : undefined}>{block.text}</div>;
+    }
   }
 }
 
@@ -352,7 +360,7 @@ export function editableMessages(blocks: readonly Block[], now: number): { ids: 
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
     if (block.kind === "assistant" || block.kind === "activity") break;
-    if (block.kind !== "user" || isInterruptRecord(block.item.text)) continue;
+    if (block.kind !== "user" || isInterruptRecord(block.item.text) || parseTeamCard(block.item.text)) continue;
     const until = block.item.ts + EDIT_WINDOW_MS;
     if (until <= now) break;
     ids.add(block.id);
@@ -382,7 +390,7 @@ export function EchoMessage({ text }: { text: string }) {
   );
 }
 
-export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,onBranch,echo,guides,queueEntries,pending=NO_PENDING,hidden=NO_HIDDEN,working,deliveryLabel,active = false }: { deliveryLabel?:string; guides?:readonly GuideMessage[]; queueEntries?:readonly CliQueueEntry[]; active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; onBranch?(messageId: string): void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,onBranch,onSelectSession,echo,guides,queueEntries,pending=NO_PENDING,hidden=NO_HIDDEN,working,deliveryLabel,active = false }: { deliveryLabel?:string; guides?:readonly GuideMessage[]; queueEntries?:readonly CliQueueEntry[]; active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; onBranch?(messageId: string): void; onSelectSession?(key: CliSessionKey): void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState<boolean | null>();
@@ -627,7 +635,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
           const annotate = onNotes && !localOnly
             ? (node: ReactNode) => <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{node}</AnnotatedMessage>
             : undefined;
-          const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} actions={conclusion} onBranch={conclusion && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)} progress={progress} annotate={block.kind === "assistant" ? annotate : undefined}/>;
+          const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} onSelectSession={onSelectSession} actions={conclusion} onBranch={conclusion && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)} progress={progress} annotate={block.kind === "assistant" ? annotate : undefined}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
           return annotate && block.kind !== "assistant" ? annotate(message) : message;
   }
