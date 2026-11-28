@@ -130,7 +130,7 @@ struct ConversationView: View {
                             Text(topicUnread > 99 ? "99+" : "\(topicUnread)")
                                 .font(.system(size: 9, weight: .bold)).monospacedDigit()
                                 .foregroundStyle(Theme.primaryForeground)
-                                .padding(.horizontal, 4).frame(minWidth: 16, height: 16)
+                                .padding(.horizontal, 4).frame(minWidth: 16).frame(height: 16)
                                 .background(Theme.primary, in: Capsule())
                                 .offset(x: 4, y: -4)
                                 .allowsHitTesting(false)

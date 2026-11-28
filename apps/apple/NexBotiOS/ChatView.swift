@@ -36,6 +36,27 @@ struct ChatView: View {
         Dictionary(uniqueKeysWithValues: (workspace.state?.memories(botID: botID) ?? []).map { ($0.id, "\($0.version):\($0.updatedAt?.timeIntervalSince1970 ?? 0)") })
     }
 
+    @ViewBuilder
+    private var topicsButton: some View {
+        if workspace.hasTopics(for: botID) {
+            let topicUnread = bot?.topicUnreadCount ?? 0
+            RoundGlassButton(symbol: "bubble.left.and.text.bubble.right", label: topicUnread > 0 ? "话题（\(topicUnread) 条未读）" : "话题", size: 32) {
+                showTopics = true
+            }
+            .overlay(alignment: .topTrailing) {
+                if topicUnread > 0 {
+                    Text(topicUnread > 99 ? "99+" : "\(topicUnread)")
+                        .font(.system(size: 9, weight: .bold)).monospacedDigit()
+                        .foregroundStyle(Theme.primaryForeground)
+                        .padding(.horizontal, 4).frame(minWidth: 16).frame(height: 16)
+                        .background(Theme.primary, in: Capsule())
+                        .offset(x: 4, y: -4)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+
     var body: some View {
         let conv = conversation
         ScrollViewReader { proxy in
@@ -170,23 +191,7 @@ struct ChatView: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if workspace.hasTopics(for: botID) {
-                    let topicUnread = bot?.topicUnreadCount ?? 0
-                    RoundGlassButton(symbol: "bubble.left.and.text.bubble.right", label: topicUnread > 0 ? "话题（\(topicUnread) 条未读）" : "话题", size: 32) {
-                        showTopics = true
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if topicUnread > 0 {
-                            Text(topicUnread > 99 ? "99+" : "\(topicUnread)")
-                                .font(.system(size: 9, weight: .bold)).monospacedDigit()
-                                .foregroundStyle(Theme.primaryForeground)
-                                .padding(.horizontal, 4).frame(minWidth: 16, height: 16)
-                                .background(Theme.primary, in: Capsule())
-                                .offset(x: 4, y: -4)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                }
+                topicsButton
                 RoundGlassButton(symbol: "sidebar.right", label: "助手详情", size: 32) { nav.openAgentDetail(botID) }
             }
             ToolbarItem(placement: .principal) { titleView }
