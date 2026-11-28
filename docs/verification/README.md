@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [Mac / iPhone 全面功能与 UI 对齐、多 Agent 协作界面补齐与审查修复 · 0.9.67 四端与生产 Core 发布记录（2026-11-29）](apple-parity-release-0967-20261129.md)
+
 - [NexAgent 协作简报化、失败项隐藏与主控规划闭环 · 0.9.66 四端与生产 Core 发布记录（2026-11-28）](nexagent-collaborator-release-0966-20261128.md)
 
 - [NexAgent 多 Agent 协作（第 1 期）· 0.9.65 四端与生产 Core 发布记录（2026-11-28）](nexagent-multi-agent-release-0965-20261128.md)
