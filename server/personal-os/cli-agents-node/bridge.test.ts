@@ -452,6 +452,19 @@ describe("start", () => {
   });
 });
 
+/** Strips the single-launch NexAgent team overrides (`-c developer_instructions=...` and `-c mcp_servers.nex...`) appended to Codex argv. */
+function stripCodexTeamArgs(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "-c" && typeof argv[i + 1] === "string" && /^(developer_instructions=|mcp_servers\.nex\b)/.test(argv[i + 1])) {
+      i++;
+      continue;
+    }
+    out.push(argv[i]);
+  }
+  return out;
+}
+
 describe("Codex session mapping", () => {
   it("returns the saved native ID for a new chat before it has a first message", async () => {
     const t = setup({ codexReceiptMs: 30 });
@@ -460,8 +473,10 @@ describe("Codex session mapping", () => {
     expect(reply.ok).toBe(true);
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(9)}`);
+    expect(stripCodexTeamArgs(hc.terminals.get(result.terminal)!.argv)).toEqual([
+      "/fake/bin/codex", "resume", XID(9), "-m", "gpt-6.2", "-c", "model_reasoning_effort=high", "-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request", "-c", "check_for_update_on_startup=false", "--no-daemon",
+    ]);
     expect(hc.terminals.get(result.terminal)).toMatchObject({
-      argv: ["/fake/bin/codex", "resume", XID(9), "-m", "gpt-6.2", "-c", "model_reasoning_effort=high", "-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request", "-c", "check_for_update_on_startup=false", "--no-daemon"],
       labels: { "nexbot.native": XID(9) },
     });
     expect(t.sessions()).toContainEqual(expect.objectContaining({ nativeId: XID(9), terminal: result.terminal }));
@@ -630,7 +645,7 @@ describe("continue", () => {
     await t.start();
     const reply = await t.call("continue", { ref: `codex:${XID(1)}` });
     expect(reply.ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false"]);
+    expect(stripCodexTeamArgs(hc.last().argv)).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("passes a custom config directory to the CLI", async () => {
@@ -1043,7 +1058,7 @@ describe("Claude hooks and turn ends", () => {
     expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--effort", "high", "--plugin-dir", pluginUsed()]);
     expect(hc.last().env.NEXBOT_HOOK_TOKEN.endsWith(`.${CID(1)}`)).toBe(true);
     await t.call("continue", { ref: `codex:${XID(1)}` });
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false"]);
+    expect(stripCodexTeamArgs(hc.last().argv)).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false"]);
     expect(hc.last().env.NEXBOT_HOOK_PIPE).toBeUndefined();
   });
 
@@ -1138,7 +1153,7 @@ describe("launch options, search and attachments", () => {
   it("lists the features this executor has", async () => {
     const t = setup();
     await t.bridge.prepare();
-    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch", "sessionManage"]);
+    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills", "gitBranch", "sessionManage", "team"]);
   });
 
   it("starts and continues with the model and effort the user picked", async () => {
@@ -1151,7 +1166,7 @@ describe("launch options, search and attachments", () => {
     const id = (started.result as { ref: string }).ref.slice("claude:".length);
     expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", id, "--model", "opus", "--effort", "max", "--dangerously-skip-permissions"]);
     expect((await t.call("continue", { ref: `codex:${XID(1)}`, model: "gpt-6.2-sol", effort: "ultra" })).ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=ultra", "-c", "check_for_update_on_startup=false"]);
+    expect(stripCodexTeamArgs(hc.last().argv)).toEqual(["/fake/bin/codex", "resume", XID(1), "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=ultra", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("starts asking when the user chose ask, and continues with full access when asked", async () => {
@@ -1166,7 +1181,7 @@ describe("launch options, search and attachments", () => {
     expect((await t.call("continue", { ref: `claude:${CID(1)}`, permissions: "full" })).ok).toBe(true);
     expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--effort", "high", "--dangerously-skip-permissions"]);
     expect((await t.call("continue", { ref: `codex:${XID(1)}`, permissions: "full" })).ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
+    expect(stripCodexTeamArgs(hc.last().argv)).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("turns an approval dialog no hook reported into a card and answers it with the dialog's key", async () => {
@@ -1211,7 +1226,7 @@ describe("launch options, search and attachments", () => {
     }));
     await t.start();
     expect((await t.call("continue", { ref: `codex:${XID(1)}` })).ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=medium", "-c", "check_for_update_on_startup=false"]);
+    expect(stripCodexTeamArgs(hc.last().argv)).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=medium", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("refuses an effort the engine lacks, and fails cleanly when ZCode is unavailable", async () => {
@@ -1284,7 +1299,7 @@ describe("launch options, search and attachments", () => {
     const multilineEnvelope = `<!-- nexagent-team:{"kind":"report","heading":"agy-1"} -->\nline 1\nline 2\nline 3`;
     const sent = await t.call("send", { ref, text: multilineEnvelope }, "send-team-1");
     expect(sent.ok).toBe(true);
-    expect(hc.terminals.get(address)!.sent).toEqual(["[NexAgent] You have a new team message. Run `nex inbox`."]);
+    expect(hc.terminals.get(address)!.sent).toEqual([{ terminal: address, text: "[NexAgent] You have a new team message. Run `nex inbox`." }]);
 
     // 2. Reconnecting with `cli.resync { reconcileOps }` replays stored done op replies so Core can recover lost start receipts.
     t.messages.length = 0;

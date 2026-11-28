@@ -969,16 +969,16 @@ export class CliAgentHub {
     if (row?.status !== "unknown") return;
     const op = String(row.op) as CliOp;
     if (message.ok) {
-      const parsed = parseCliOpResult(op, message.result ?? {});
-      if (!parsed) {
+      const parsed = parseCliOpResult(op, message.result ?? {}) ?? undefined;
+      if (!parsed && (op === "start" || op === "continue")) {
         this.markOp(message.opId, "unknown", "invalid_result");
         return;
       }
-      const sessionKey = (op === "start" || op === "continue") && "ref" in parsed && typeof parsed.ref === "string"
+      const sessionKey = (op === "start" || op === "continue") && parsed && "ref" in parsed && typeof parsed.ref === "string"
         ? cliKey(deviceId, parsed.ref)
         : null;
       this.markOp(message.opId, "succeeded", undefined, sessionKey);
-      this.emitOpSettled({ opId: message.opId, deviceId, op, ok: true, result: parsed, sessionKey });
+      this.emitOpSettled({ opId: message.opId, deviceId, op, ok: true, ...(parsed ? { result: parsed } : {}), sessionKey });
     } else {
       const code = message.error?.code ?? "unknown";
       this.markOp(message.opId, "failed", code);

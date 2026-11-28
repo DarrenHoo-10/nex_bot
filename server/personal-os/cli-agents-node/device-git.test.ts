@@ -270,8 +270,10 @@ describe("branch listing and in-place switch", () => {
     expect(run(["branch", "--show-current"])).toBe("dev");
 
     // branch already checked out in another worktree: clear error
-    const other = path.join(repo, ".claude", "worktrees", "busy-wt");
-    run(["worktree", "add", "-b", "busy", other]);
+    const other = mkdtempSync(path.join(os.tmpdir(), "nex-device-git-busy-"));
+    cleanups.push(() => rmSync(other, { recursive: true, force: true }));
+    const busyTree = path.join(other, "busy-wt");
+    run(["worktree", "add", "-b", "busy", busyTree]);
     const busyResult = await git.switchBranch(repo, "busy");
     expect(busyResult.ok).toBe(false);
     if (!busyResult.ok) expect(busyResult.error).toContain("已在其他工作树中检出");

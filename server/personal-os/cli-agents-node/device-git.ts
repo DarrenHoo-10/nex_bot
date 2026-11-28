@@ -176,8 +176,9 @@ export class DeviceGit {
       await this.run(cwd, ["switch", branch]);
       return { ok: true };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/already used by worktree/i.test(message)) {
+      const stderr = typeof (error as { stderr?: unknown } | null)?.stderr === "string" ? (error as { stderr: string }).stderr : "";
+      const detail = `${error instanceof Error ? error.message : String(error)}\n${stderr}`;
+      if (/already (?:used by worktree|checked out at)/i.test(detail)) {
         return { ok: false, error: `分支 ${branch} 已在其他工作树中检出，请改用其他分支或新建 Worktree` };
       }
       return { ok: false, error: shortReason(error) };

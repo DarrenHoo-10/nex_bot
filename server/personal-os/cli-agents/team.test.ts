@@ -317,7 +317,7 @@ describe("pure nex command validator & worktree trust fixes", () => {
   it("builds single-launch Codex MCP flags and lead instructions", () => {
     expect(leadInstruction("off")).toBe("");
     expect(leadInstruction("prompt")).toContain("nex guide");
-    expect(leadInstruction("auto")).toContain("自行派活");
+    expect(leadInstruction("auto")).toContain("按需派活");
 
     const args = codexMcpArgs({
       node: "C:\\node\\node.exe",

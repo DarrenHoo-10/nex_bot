@@ -161,7 +161,7 @@ describe("cliArgs", () => {
     });
 
     it("refuses a model that is not a plain name, an effort the engine lacks, and any option for ZCode", () => {
-      for (const model of ["--yolo", "-m", "a b", "a;b", "a&b", "x".repeat(101)]) {
+      for (const model of ["--yolo", "-m", "a b", "a;b", "a&b", "x".repeat(201)]) {
         expect(() => cliArgs("claude", "new", { nativeId: UUID, model }), model).toThrow(LaunchError);
       }
       expect(() => cliArgs("claude", "new", { nativeId: UUID, effort: "ultra" })).toThrow(LaunchError);
