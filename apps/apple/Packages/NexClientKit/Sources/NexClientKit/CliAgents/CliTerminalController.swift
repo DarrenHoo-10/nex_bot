@@ -8,6 +8,8 @@ public final class CliTerminalController {
     public let key: CliSessionKey
     public private(set) var state: CliTermState
     public private(set) var connected: Bool
+    /// True when control was requested but the server only granted observe mode.
+    public private(set) var controlDeclined = false
 
     /// The terminal was opened (or reopened): reset it and size it to `cols` x `rows`.
     @ObservationIgnored public var onOpened: ((_ cols: Int, _ rows: Int) -> Void)?
@@ -25,6 +27,7 @@ public final class CliTerminalController {
     @ObservationIgnored private let input: AsyncStream<(UInt32, Data)>.Continuation
     @ObservationIgnored private let inputTask: Task<Void, Never>
     @ObservationIgnored private let resizeDelay: Double
+    @ObservationIgnored private var requestedObserve = false
 
     public init(stream: CliAgentStream, key: CliSessionKey, connected: Bool, mode: CliTermMode = .observe, resizeDelay: Double = 0.1) {
         self.stream = stream; self.key = key; self.connected = connected; self.resizeDelay = resizeDelay
@@ -45,13 +48,15 @@ public final class CliTerminalController {
     public func stop() {
         closeCurrent()
         resizeTask?.cancel()
+        controlDeclined = false
         state.apply(.stop)
     }
 
     /// The "重新连接" button.
-    public func reconnect() {
+    public func reconnect(mode: CliTermMode? = nil) {
         closeCurrent()
-        state.apply(.start(nil))
+        controlDeclined = false
+        state.apply(.start(mode))
         openIfNeeded()
     }
 
@@ -59,6 +64,7 @@ public final class CliTerminalController {
     public func setMode(_ mode: CliTermMode) {
         guard mode != state.want || state.sid == nil else { return }
         closeCurrent()
+        controlDeclined = false
         state.apply(.mode(mode))
         openIfNeeded()
     }
@@ -82,13 +88,24 @@ public final class CliTerminalController {
         input.yield((sid, bytes))
     }
 
+    public func sendText(_ text: String) {
+        guard !text.isEmpty else { return }
+        sendInput(Data(text.utf8))
+    }
+
+    public func sendKey(_ name: String, appCursor: Bool = false) {
+        if let bytes = CliTermKeyEncoder.encode(name, appCursor: appCursor) {
+            sendInput(bytes)
+        }
+    }
+
     // MARK: Stream events
 
     public func handle(_ event: CliAgentStream.Event) {
         switch event {
         case .status(let status):
             connected = status == .open
-            if connected { openIfNeeded() } else { state.apply(.disconnected) }
+            if connected { openIfNeeded() } else { controlDeclined = false; state.apply(.disconnected) }
         case .output(let sid, let data):
             guard sid == state.sid else { return }
             onOutput?(data)
@@ -97,6 +114,7 @@ public final class CliTerminalController {
             switch message {
             case .termOpened(let req, let sid, let cols, let rows, let observe):
                 guard req == state.req else { return }
+                controlDeclined = observe && !requestedObserve
                 state.apply(.opened(req: req, sid: sid, cols: cols, rows: rows, observe: observe))
                 meter = CliCreditMeter()
                 onOpened?(cols, rows)
@@ -107,10 +125,12 @@ public final class CliTerminalController {
                 onResize?(cols, rows)
             case .termClosed(let sid, let reason):
                 guard sid == state.sid else { return }
+                controlDeclined = false
                 state.apply(.closed(sid: sid, reason: reason))
                 openIfNeeded()
             case .error(let code, let req?, _):
                 guard req == state.req else { return }
+                controlDeclined = false
                 state.apply(.error(code: code, req: req))
             default: break
             }
@@ -124,6 +144,7 @@ public final class CliTerminalController {
         let req = UUID().uuidString.lowercased()
         state.apply(.requested(req))
         let observe = state.want == .observe
+        requestedObserve = observe
         let size = observe ? CliTermState.clampSize(cols: nil, rows: nil) : CliTermState.clampSize(cols: viewSize?.cols, rows: viewSize?.rows)
         let key = key
         Task { [stream] in

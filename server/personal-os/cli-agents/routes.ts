@@ -145,7 +145,7 @@ export class CliAgentRoutes {
         case "/api/cli-agents/send": return await this.send(request, data);
         case "/api/cli-agents/steer-waiting": return await this.steerWaiting(request, data);
         case "/api/cli-agents/interrupt": return await this.interrupt(request, data);
-        case "/api/cli-agents/open-local": return await this.openLocal(request, data);
+        case "/api/cli-agents/open-local": return { status: 410, body: { error: "「在电脑上打开」已下线，请使用远程终端并更新客户端", code: "unsupported" } };
         case "/api/cli-agents/answer": return await this.answer(request, data);
         case "/api/cli-agents/fork": return await this.fork(request, data);
         case "/api/cli-agents/fork-message": return await this.fork(request, data, true);
@@ -661,14 +661,6 @@ export class CliAgentRoutes {
     }
     const result = await this.hub.interrupt(request.sessionId, key);
     return { status: 200, body: { outcome: result.outcome } };
-  }
-
-  private async openLocal(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
-    const key = this.key(data.key);
-    if (!key) return cliErrorResult("invalid");
-    this.store.audit("cli.open_local", "cli_session", key, { sessionId: request.sessionId });
-    await this.hub.openLocal(request.sessionId, key);
-    return { status: 200, body: { ok: true } };
   }
 
   private hide(data: Record<string, unknown>): CliRouteResult {

@@ -16,7 +16,6 @@ import {
   type CliOpArgs,
   type CliPermissionMode,
   type CliSessionRef,
-  type CliSessionWire,
 } from "../../../shared/cli-agents.ts";
 import type { AgyRuntime } from "./agy.ts";
 import { supportsAgyAcp } from "./agy-native.ts";
@@ -56,7 +55,6 @@ export interface HarnessDriverHost {
   awaitRow(ref: CliSessionRef, ms: number): Promise<void>;
   scheduleRefresh(): void;
   setAgyNeedsUpdate(value: boolean): void;
-  openAgyLocalTerminal(row: CliSessionWire): Promise<string>;
 }
 
 function launchOptionsOf(args: CliLaunchOptions, fallback?: CliPermissionMode): CliLaunchOptions {
@@ -323,9 +321,6 @@ export function createDefaultHarnessDrivers(host: HarnessDriverHost): Map<CliEng
     async interruptOutside(_args, row) {
       if (row.sendVia !== "acp") return null;
       return host.agy.interrupt(row.nativeId);
-    },
-    prepareOpenLocal(_ref, row) {
-      return host.openAgyLocalTerminal(row);
     },
     models() {
       return host.agy.models();

@@ -143,8 +143,6 @@ export interface HarnessDriver {
   steer?(args: CliOpArgs["steer"], row: CliSessionWire, managedAddress: string | null, deadline: number): Promise<CliOpResult["steer"] | null>;
   /** Interrupt a session running outside nex_bot's managed terminals. */
   interruptOutside?(args: CliOpArgs["interrupt"], row: CliSessionWire): Promise<{ outcome: string } | null>;
-  /** Optional handoff that opens/attaches a managed terminal before `open_local`. */
-  prepareOpenLocal?(ref: CliSessionRef, row: CliSessionWire): Promise<string | null>;
   /** Custom model catalog provider (falls back to `cliModels(id, ...)`). */
   models?(): Promise<CliModelCatalog>;
   /** Skill catalog provider (returns null when unsupported). */

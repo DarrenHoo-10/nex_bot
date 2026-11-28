@@ -44,11 +44,13 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         if (preview && old?.etag != null) builder.header("If-None-Match", old.etag)
         when {
             method == "GET" -> builder.get()
-            route == "/api/cli-agents/images" -> {
-                val maxBytes = 5 * 1024 * 1024
-                require(body.length <= ((maxBytes + 2) / 3) * 4) { "图片不能超过 5 MB" }
+            route == "/api/cli-agents/images" || route == "/api/cli-agents/attach" -> {
+                val isImage = route == "/api/cli-agents/images"
+                val maxBytes = if (isImage) 5 * 1024 * 1024 else 8 * 1024 * 1024
+                val message = if (isImage) "图片不能超过 5 MB" else "附件不能超过 8 MB"
+                require(body.length <= ((maxBytes + 2) / 3) * 4) { message }
                 val bytes = Base64.getDecoder().decode(body)
-                require(bytes.size in 1..maxBytes) { "图片不能超过 5 MB" }
+                require(bytes.size in 1..maxBytes) { message }
                 builder.post(bytes.toRequestBody("application/octet-stream".toMediaType()))
             }
             else -> builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
@@ -112,7 +114,6 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
             "/api/cli-agents/queue/steer",
             "/api/cli-agents/translate",
             "/api/cli-agents/attach",
-            "/api/cli-agents/open-local",
             "/api/cli-agents/git",
             "/api/cli-agents/items",
         )

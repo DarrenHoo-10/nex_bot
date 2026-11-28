@@ -38,6 +38,13 @@ class WorkspaceTransportTest {
             assertEquals("Bearer fixture", request.getHeader("Authorization"))
             assertEquals("application/octet-stream", request.getHeader("Content-Type"))
             assertEquals("89504e47", request.body.readByteString().hex())
+            server.enqueue(MockResponse().setBody("{\"path\":\"/tmp/notes.txt\"}"))
+            val attachPath = "/api/cli-agents/attach?key=device%3Aclaude%3Asession&name=notes.txt"
+            assertEquals(200, client.request(attachPath, "POST", "aGk=").status)
+            val attachReq = server.takeRequest()
+            assertEquals(attachPath, attachReq.path)
+            assertEquals("application/octet-stream", attachReq.getHeader("Content-Type"))
+            assertEquals("hi", attachReq.body.readUtf8())
         }
     }
     @Test fun `a second viewer uses the private disk copy and logout blocks cache access`() {

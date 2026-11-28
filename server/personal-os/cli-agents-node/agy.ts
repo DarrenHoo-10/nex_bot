@@ -347,20 +347,6 @@ export class AgyRuntime {
     this.options.changed();
   }
 
-  /** Hand off an idle ACP conversation before opening it in a local terminal. */
-  async handoff(id: string, dir: string): Promise<void> {
-    const session = this.sessions.get(id);
-    if (session?.active) throw new AgyError("busy", "等当前轮结束后再在本机打开");
-    await this.requireAvailableWriter(id, dir);
-    if (!session) return;
-    if (!(await agyTranscript(session.dir, id))) throw new AgyError("busy", "等 Antigravity CLI 保存会话后再打开");
-    await this.scan();
-    clearTimeout(session.idle);
-    await this.retire(session);
-    this.sessions.delete(id);
-    this.options.changed();
-  }
-
   private async requireAvailableWriter(id: string, dir = this.sessionDir(id)): Promise<void> {
     await this.refreshWriters();
     if (dir === this.options.desktopDir) {

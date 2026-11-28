@@ -55,7 +55,6 @@ function setup(extra: Partial<CliAgentBridgeOptions> = {}) {
     resolveCli: async () => null,
     cliVersion: async () => "9.9.9",
     homedir: path.join(root, "home"),
-    hasWindowsTerminal: false,
     readerPollMs: 40,
     coalesceMs: 5,
     pluginDir: null,

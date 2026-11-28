@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import NexClientKit
 #if os(macOS)
 import AppKit
@@ -58,7 +59,6 @@ struct AgentSessionDetail: View {
     @State private var forking = false
     @State private var forkItemId: String?
     @State private var branchedChat: CliForkResult?
-    @State private var actionError = ""
     @State private var guides: [AgentGuide] = []
     @State private var pending: [AgentPendingSend] = []
     /// A model call that failed for good while this screen was open.
@@ -120,10 +120,6 @@ struct AgentSessionDetail: View {
         let cards = model.shownCards(key)
         return VStack(spacing: 0) {
             header(session, attach: attach, shown: shown)
-            if !actionError.isEmpty {
-                Text(actionError).font(.caption).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14).padding(.bottom, 6)
-            }
             Group {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
@@ -177,16 +173,12 @@ struct AgentSessionDetail: View {
     @ViewBuilder
     private func actions(_ session: CliSession) -> some View {
         let canFork = !workspace.bots.isEmpty
-        let canOpenLocal = session.online && session.engine != .zcode && (session.engine != .agy || CliSessions.canAttach(session) ||
-            (!session.writerUnknown && (session.state == .stopped || (session.state == .idle && session.sendVia == "acp"))))
         #if os(macOS)
         if canFork { Button("交给助手") { forking = true }.buttonStyle(.bordered) }
-        if canOpenLocal { Button("在电脑上打开") { Task { await openLocal() } }.buttonStyle(.bordered) }
         #else
-        if canFork || canOpenLocal {
+        if canFork {
             Menu {
-                if canFork { Button("交给助手") { forking = true } }
-                if canOpenLocal { Button("在电脑上打开") { Task { await openLocal() } } }
+                Button("交给助手") { forking = true }
             } label: { Image(systemName: "ellipsis.circle") }
         }
         #endif
@@ -207,11 +199,6 @@ struct AgentSessionDetail: View {
         for entry in fresh { failuresSeen?.insert(entry.id) }
         if let last = fresh.last { failure = last.reason }
     }
-
-    private func openLocal() async {
-        actionError = ""
-        do { try await model.openLocal(key) } catch { actionError = CliErrorText.text(for: error) }
-    }
 }
 
 // MARK: Terminal
@@ -219,19 +206,122 @@ struct AgentSessionDetail: View {
 private struct AgentTerminalPane: View {
     let model: CliAgentsModel
     let key: CliSessionKey
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(CliTerminalPrefKeys.theme) private var themeRaw = CliTermThemeID.ink.rawValue
+    @AppStorage(CliTerminalPrefKeys.fontSize) private var fontSize = CliTerminalPrefKeys.defaultFontSize
+    @AppStorage(CliTerminalPrefKeys.cursorStyle) private var cursorStyleRaw = CliTermCursorStyle.block.rawValue
+    @AppStorage(CliTerminalPrefKeys.cursorBlink) private var cursorBlink = true
+    @AppStorage(CliTerminalPrefKeys.keyBar) private var showKeyBar = CliTerminalPrefKeys.defaultKeyBar
+    @AppStorage(CliTerminalPrefKeys.optionAsMeta) private var optionAsMeta = true
+    @AppStorage(CliTerminalPrefKeys.shortcuts) private var shortcutsJSON = ""
+
     @State private var controller: CliTerminalController?
+    @State private var actions = CliTerminalActions()
+    @State private var mods = CliTermModifiers()
+    @State private var showSettings = false
+    @State private var pickingFile = false
+    @State private var uploadingText: String?
+    @State private var dropping = false
+    @State private var pendingPaste: String?
+    @State private var toastText: String?
+    @State private var toastError = false
+    @State private var toastTask: Task<Void, Never>?
+
+    private var style: CliTerminalStyle {
+        CliTerminalStyle(
+            theme: CliTermThemeID.named(themeRaw),
+            fontSize: CGFloat(fontSize),
+            cursorStyle: CliTermCursorStyle.named(cursorStyleRaw),
+            cursorBlink: cursorBlink,
+            optionAsMeta: optionAsMeta,
+            dark: colorScheme == .dark
+        )
+    }
 
     var body: some View {
+        let palette = style.palette
         VStack(spacing: 0) {
             if let controller {
                 toolbar(controller)
                 GeometryReader { proxy in
-                    CliTerminalView(controller: controller, width: proxy.size.width, control: controller.wantsControl)
-                        .padding(4)
+                    #if os(macOS)
+                    CliTerminalView(
+                        controller: controller,
+                        actions: actions,
+                        width: proxy.size.width,
+                        control: controller.wantsControl,
+                        style: style,
+                        transformInput: transformInput
+                    )
+                    .padding(6)
+                    #else
+                    CliTerminalView(
+                        controller: controller,
+                        actions: actions,
+                        width: proxy.size.width,
+                        control: controller.wantsControl,
+                        style: style,
+                        transformInput: transformInput,
+                        onPinchFontSize: { next in fontSize = Double(next) }
+                    )
+                    .padding(6)
+                    #endif
                 }
-                .background(Color.black)
+                .opacity(isStale(controller.status) ? 0.52 : 1)
+                .saturation(isStale(controller.status) ? 0.45 : 1)
+                .animation(.easeOut(duration: 0.2), value: controller.status)
+                .overlay(alignment: .top) {
+                    VStack(spacing: 6) {
+                        banners(controller)
+                    }
+                    .padding(8)
+                }
+                .overlay(alignment: .bottom) {
+                    if let toastText {
+                        Text(toastText)
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(toastError ? Theme.danger.opacity(0.95) : SwiftUI.Color.black.opacity(0.84), in: Capsule())
+                            .padding(.bottom, 12)
+                            .transition(.opacity)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .background(SwiftUI.Color(hex: palette.background))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(dropping ? Theme.nexAgentAccent : (palette.isDark ? SwiftUI.Color.white.opacity(0.08) : Theme.border), lineWidth: dropping ? 2 : 1)
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .padding(.horizontal, 14).padding(.bottom, 8)
+                .padding(.horizontal, 14)
+                .padding(.bottom, showKeyBar ? 6 : 8)
+                #if os(macOS)
+                .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
+                    handleFileDrop(providers, controller: controller)
+                }
+                #endif
+
+                if showKeyBar {
+                    CliTerminalKeyBar(
+                        mods: $mods,
+                        disabled: controller.status != .controlling,
+                        isDark: palette.isDark,
+                        shortcuts: CliTermShortcuts.decode(shortcutsJSON),
+                        onSendKey: { keyName in controller.sendKey(keyName, appCursor: actions.isAppCursor) },
+                        onSendBare: { keyName in controller.sendKey(keyName, appCursor: actions.isAppCursor) },
+                        onTypeCommand: { text, run in controller.sendText(run ? text + "\r" : text) },
+                        onCopy: {
+                            if actions.copySelection() { showToast("已复制到剪贴板") }
+                            else { showToast("请先选中终端文本", error: true) }
+                        },
+                        onPaste: { pasteClipboard(controller) },
+                        onPickFile: { pickingFile = true },
+                        onOpenSettings: { showSettings = true },
+                        onToggleKeyboard: { actions.toggleKeyboard() }
+                    )
+                    .padding(.horizontal, 14).padding(.bottom, 8)
+                }
             } else {
                 Text("正在连接").font(.footnote).foregroundStyle(Theme.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -239,31 +329,295 @@ private struct AgentTerminalPane: View {
         .onAppear { create() }
         .onChange(of: model.connected) { _, _ in create() }
         .onDisappear {
+            toastTask?.cancel()
             controller?.stop()
             model.attach(nil)
             controller = nil
         }
+        .sheet(isPresented: $showSettings) {
+            CliTerminalSettingsView()
+        }
+        .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            guard let controller else { return }
+            switch result {
+            case .failure(let cause):
+                showToast(cause.localizedDescription, error: true)
+            case .success(let urls):
+                Task { await uploadURLs(urls, controller: controller) }
+            }
+        }
+        .alert("粘贴多行内容？", isPresented: Binding(get: { pendingPaste != nil }, set: { if !$0 { pendingPaste = nil } })) {
+            Button("取消", role: .cancel) { pendingPaste = nil }
+            Button("粘贴") {
+                if let text = pendingPaste, let controller {
+                    controller.sendInput(CliTermPaste.pasteData(text))
+                }
+                pendingPaste = nil
+            }
+        } message: {
+            if let text = pendingPaste {
+                Text("即将粘贴 \(CliTermPaste.lineCount(text)) 行内容到终端。")
+            }
+        }
     }
 
     private func create() {
-        guard controller == nil, let made = model.makeTerminal(key: key) else { return }
+        guard controller == nil, let made = model.makeTerminal(key: key, mode: .control) else { return }
         controller = made
         model.attach(made)
+    }
+
+    private func isStale(_ status: CliTermStatus) -> Bool {
+        status == .reconnecting || status == .closed
+    }
+
+    private func statusColor(_ status: CliTermStatus) -> SwiftUI.Color {
+        switch status {
+        case .controlling: Theme.success
+        case .observing: Theme.brand
+        case .connecting, .reconnecting: Theme.approval
+        case .closed: Theme.danger
+        }
     }
 
     private func toolbar(_ controller: CliTerminalController) -> some View {
         let mode = Binding<CliTermMode>(get: { controller.wantsControl ? .control : .observe }, set: { controller.setMode($0) })
         let status = controller.status
-        var text = status.text
-        if status == .closed { let reason = CliTermState.closeReasonText(controller.state.reason); if !reason.isEmpty { text += " · " + reason } }
-        return HStack(spacing: 10) {
-            PillTabs(items: [CliTermMode.observe, .control], title: { $0 == .observe ? "只看" : "操作" }, selection: mode).frame(maxWidth: 140)
-            Text(text).font(.caption).foregroundStyle(Theme.muted)
-            if let code = controller.state.errorCode { Text(CliErrorText.byCode[code] ?? "终端出错").font(.caption).foregroundStyle(Theme.danger) }
-            Spacer()
-            if status == .closed { Button("重新连接") { controller.reconnect() }.font(.caption).buttonStyle(.bordered) }
+        let dims = controller.state.cols > 0 && controller.state.rows > 0 ? "\(controller.state.cols)×\(controller.state.rows)" : ""
+        return HStack(spacing: 8) {
+            PillTabs(items: [CliTermMode.control, .observe], title: { $0 == .control ? "控制" : "只看" }, selection: mode)
+                .frame(maxWidth: 120)
+
+            HStack(spacing: 5) {
+                Circle().fill(statusColor(status)).frame(width: 7, height: 7)
+                Text(status.text).font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+                if !dims.isEmpty {
+                    Text(dims).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted.opacity(0.85)).lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            HStack(spacing: 4) {
+                toolbarIcon("keyboard", label: showKeyBar ? "隐藏快捷键栏" : "显示快捷键栏", active: showKeyBar) {
+                    showKeyBar.toggle()
+                }
+                toolbarIcon("slider.horizontal.3", label: "终端设置", active: showSettings) {
+                    showSettings = true
+                }
+                toolbarIcon("arrow.clockwise", label: "重新连接", active: false) {
+                    controller.reconnect()
+                }
+            }
         }
         .padding(.horizontal, 14).padding(.bottom, 8)
+    }
+
+    private func toolbarIcon(_ symbol: String, label: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(active ? Theme.nexAgentAccent : Theme.muted)
+                .frame(width: 28, height: 28)
+                .background(active ? Theme.nexAgentSoft : SwiftUI.Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+
+    @ViewBuilder
+    private func banners(_ controller: CliTerminalController) -> some View {
+        let status = controller.status
+        if status == .reconnecting {
+            bannerRow("正在重新连接…", tone: .warn, button: "立即重试") { controller.reconnect() }
+        }
+        if status == .closed {
+            let reason = controller.state.errorCode.flatMap { CliErrorText.byCode[$0] } ?? CliTermState.closeReasonText(controller.state.reason)
+            bannerRow(reason.isEmpty ? "终端已断开" : reason, tone: .danger, button: "重新连接") { controller.reconnect() }
+        }
+        if status == .observing && controller.controlDeclined {
+            bannerRow("暂未取得终端控制权", tone: .warn, button: "重新接管") { controller.reconnect(mode: .control) }
+        }
+        if let uploadingText {
+            bannerRow(uploadingText, tone: .info, button: nil, action: nil)
+        }
+    }
+
+    private enum BannerTone { case info, warn, danger }
+
+    private func bannerRow(_ text: String, tone: BannerTone, button: String?, action: (() -> Void)?) -> some View {
+        HStack(spacing: 8) {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(tone == .danger ? Theme.danger : Theme.foreground)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if let button, let action {
+                Button(button, action: action)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .background(Theme.nexAgentSolid, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(tone == .danger ? Theme.danger.opacity(0.45) : tone == .warn ? Theme.approval.opacity(0.45) : Theme.border)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+    }
+
+    private func transformInput(_ raw: Data, _ appCursor: Bool) -> Data {
+        guard mods.active else { return raw }
+        if let keyName = CliTermKeyEncoder.keyName(for: raw),
+           let encoded = CliTermKeyEncoder.encode(mods.apply(keyName), appCursor: appCursor) {
+            mods.pressed()
+            return encoded
+        }
+        if let str = String(data: raw, encoding: .utf8), str.count == 1, let ch = str.first {
+            let mapped = mods.typed(ch)
+            mods.pressed()
+            if let key = mapped.key, let encoded = CliTermKeyEncoder.encode(key, appCursor: appCursor) { return encoded }
+            if let text = mapped.text { return Data(text.utf8) }
+        }
+        return raw
+    }
+
+    private func pasteClipboard(_ controller: CliTerminalController) {
+        guard controller.status == .controlling else {
+            showToast("请先切换到控制模式", error: true)
+            return
+        }
+        #if os(macOS)
+        let pb = NSPasteboard.general
+        if let text = pb.string(forType: .string), !text.isEmpty {
+            submitPaste(text, controller: controller)
+            return
+        }
+        if let png = pb.data(forType: .png) {
+            Task { await uploadData([(name: "image.png", data: png)], controller: controller) }
+            return
+        }
+        if let tiff = pb.data(forType: .tiff),
+           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            Task { await uploadData([(name: "image.png", data: png)], controller: controller) }
+            return
+        }
+        #else
+        if let text = UIPasteboard.general.string, !text.isEmpty {
+            submitPaste(text, controller: controller)
+            return
+        }
+        if let img = UIPasteboard.general.image?.pngData() {
+            Task { await uploadData([(name: "image.png", data: img)], controller: controller) }
+            return
+        }
+        #endif
+        showToast("剪贴板为空", error: true)
+    }
+
+    private func submitPaste(_ text: String, controller: CliTerminalController) {
+        if CliTermPaste.lineCount(text) > 1 {
+            pendingPaste = text
+        } else {
+            controller.sendInput(CliTermPaste.pasteData(text))
+        }
+    }
+
+    #if os(macOS)
+    private func handleFileDrop(_ providers: [NSItemProvider], controller: CliTerminalController) -> Bool {
+        let matching = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !matching.isEmpty else { return false }
+        let expected = matching.count
+        let (stream, continuation) = AsyncStream<URL?>.makeStream()
+        for provider in matching {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    continuation.yield(url)
+                } else if let url = item as? URL {
+                    continuation.yield(url)
+                } else {
+                    continuation.yield(nil)
+                }
+            }
+        }
+        Task { @MainActor in
+            var urls: [URL] = []
+            var seen = 0
+            for await url in stream {
+                if let url { urls.append(url) }
+                seen += 1
+                if seen >= expected { break }
+            }
+            continuation.finish()
+            if !urls.isEmpty { await uploadURLs(urls, controller: controller) }
+        }
+        return true
+    }
+    #endif
+
+    private func uploadURLs(_ urls: [URL], controller: CliTerminalController) async {
+        var files: [(name: String, data: Data)] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            if let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]) {
+                if values.isDirectory == true {
+                    showToast("不支持直接上传文件夹", error: true)
+                    continue
+                }
+                if let size = values.fileSize, size > CoreClient.cliMaxAttachBytes {
+                    showToast("附件不能超过 8 MB", error: true)
+                    continue
+                }
+            }
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), !data.isEmpty else {
+                showToast("无法读取文件 \(url.lastPathComponent)", error: true)
+                continue
+            }
+            files.append((name: url.lastPathComponent, data: data))
+        }
+        if !files.isEmpty { await uploadData(files, controller: controller) }
+    }
+
+    private func uploadData(_ files: [(name: String, data: Data)], controller: CliTerminalController) async {
+        guard controller.status == .controlling else {
+            showToast("请先切换到控制模式再上传文件", error: true)
+            return
+        }
+        uploadingText = files.count == 1 ? "正在上传 \(files[0].name)…" : "正在上传 \(files[0].name) 等 \(files.count) 个文件…"
+        defer { uploadingText = nil }
+        var paths: [String] = []
+        for file in files {
+            do {
+                let remotePath = try await model.attachTerminalFile(key, name: file.name, data: file.data)
+                paths.append(remotePath)
+            } catch {
+                showToast("\(file.name) 上传失败：\(CliErrorText.text(for: error))", error: true)
+            }
+        }
+        guard !paths.isEmpty else { return }
+        guard controller.status == .controlling else {
+            showToast("终端控制已结束，文件未填入", error: true)
+            return
+        }
+        controller.sendInput(CliTermPaste.pasteData(CliTermPaste.pastedPaths(paths)))
+    }
+
+    private func showToast(_ text: String, error: Bool = false) {
+        toastTask?.cancel()
+        toastText = text
+        toastError = error
+        toastTask = Task {
+            try? await Task.sleep(for: .seconds(2.4))
+            guard !Task.isCancelled else { return }
+            toastText = nil
+        }
     }
 }
 

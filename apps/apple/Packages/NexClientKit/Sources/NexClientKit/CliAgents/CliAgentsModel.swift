@@ -374,6 +374,10 @@ public final class CliAgentsModel {
         try await clientProvider().cliDownloadImage(path, workspaceID: cacheScope())
     }
 
+    public func attachTerminalFile(_ key: CliSessionKey, name: String, data: Data) async throws -> String {
+        try await clientProvider().cliAttachFile(key: key, name: name, data: data)
+    }
+
     public func translateReply(_ key: CliSessionKey, item: CliItem) async throws -> String? {
         let scope = cacheScope()
         let cacheKey = "translation:zh:v1:" + key + ":" + item.id + ":" + LocalContentCache.digest(item.text)
@@ -387,8 +391,6 @@ public final class CliAgentsModel {
     }
 
     public func interrupt(_ key: CliSessionKey) async throws { try await clientProvider().cliInterrupt(key: key) }
-
-    public func openLocal(_ key: CliSessionKey) async throws { try await clientProvider().cliOpenLocal(key: key) }
 
     /// Resumes a stopped session. The new key is selected.
     @discardableResult

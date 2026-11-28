@@ -22,11 +22,19 @@ vi.mock("@xterm/xterm", () => ({
     cols = 100;
     rows = 30;
     options = {};
+    modes = { applicationCursorKeysMode: false };
     unicode = { activeVersion: "6" };
     loadAddon() {}
     open() {}
     onData() { return { dispose() {} }; }
     onBinary() { return { dispose() {} }; }
+    onSelectionChange() { return { dispose() {} }; }
+    attachCustomKeyEventHandler() {}
+    hasSelection() { return false; }
+    getSelection() { return ""; }
+    clearSelection() {}
+    selectAll() {}
+    paste() {}
     write(_data: Uint8Array, done?: () => void) { done?.(); }
     reset() {}
     resize() {}
@@ -35,7 +43,17 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions() { return { cols: 120, rows: 40 }; } fit() {} } }));
-vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
+vi.mock("@xterm/addon-unicode-graphemes", () => ({ UnicodeGraphemesAddon: class {} }));
+vi.mock("@xterm/addon-search", () => ({
+  SearchAddon: class {
+    onDidChangeResults() { return { dispose() {} }; }
+    findNext() { return false; }
+    findPrevious() { return false; }
+    clearDecorations() {}
+  },
+}));
+vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
+vi.mock("@xterm/addon-clipboard", () => ({ ClipboardAddon: class {} }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("../AgentDesktop", () => ({ RichText: ({ value }: { value: string }) => createElement("p", null, value) }));
 

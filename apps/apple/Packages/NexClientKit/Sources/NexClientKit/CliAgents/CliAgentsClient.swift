@@ -66,6 +66,7 @@ extension CoreClient {
     static let cliBase = "/api/cli-agents"
     /// Core refuses a message over this many UTF-8 bytes.
     public static let cliMaxSendBytes = 32 * 1024
+    public static let cliMaxAttachBytes = 8 * 1024 * 1024
     public static let cliPageSize = 40
 
     /// `GET /api/cli-agents`: computers, sessions and pending requests. A malformed row is dropped, not fatal.
@@ -180,6 +181,20 @@ extension CoreClient {
         }
     }
 
+    /// Uploads a file directly to the session's computer and returns its local path for pasting into the terminal.
+    public func cliAttachFile(key: CliSessionKey, name: String, data: Data) async throws -> String {
+        guard !data.isEmpty else { throw CoreError(kind: .http, message: "空文件无法上传", status: 400) }
+        guard data.count <= Self.cliMaxAttachBytes else {
+            throw CoreError(kind: .http, message: "附件不能超过 8 MB", status: 413, code: "too_large")
+        }
+        let safeName = String((name.isEmpty ? "file" : name).suffix(200))
+        var upload = try request(Self.cliBase + "/attach", query: [("key", key), ("name", safeName)], body: data, timeout: 120)
+        upload.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let result: CliImageResult = try await send(upload, as: CliImageResult.self)
+        guard !result.path.isEmpty else { throw CoreError(kind: .http, message: "附件上传结果格式不对") }
+        return result.path
+    }
+
     public func cliUploadImage(key: CliSessionKey, image: CliImageUpload) async throws -> String {
         guard !image.data.isEmpty, image.data.count <= ChatAttachment.maxBytes else {
             throw CoreError(kind: .http, message: "图片不能超过 5 MB", status: 413)
@@ -227,8 +242,6 @@ extension CoreClient {
         let r: CliOutcomeResult = try await post(Self.cliBase + "/interrupt", body: CliKeyBody(key: key))
         _ = r
     }
-
-    public func cliOpenLocal(key: CliSessionKey) async throws { try await post(Self.cliBase + "/open-local", body: CliKeyBody(key: key), timeout: 30) }
 
     public func cliHide(key: CliSessionKey, hidden: Bool) async throws { try await post(Self.cliBase + "/hide", body: CliHideBody(key: key, hidden: hidden)) }
 

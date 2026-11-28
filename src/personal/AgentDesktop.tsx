@@ -312,6 +312,7 @@ export function AgentDesktop() {
     return () => { active = false; unsubscribe?.(); stop?.(); };
   }, [updater]);
   useEffect(() => desktop?.onClipboardImage?.((image) => {
+    if (pageRef.current !== "agent") return;
     const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
     if (!bytes.byteLength || !image.type.startsWith("image/")) return;
     const blob = new ArrayBuffer(bytes.byteLength);

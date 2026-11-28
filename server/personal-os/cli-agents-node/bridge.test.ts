@@ -11,7 +11,6 @@ import { CliAgentBridge, type CliAgentBridgeOptions } from "./bridge.ts";
 import { FakeHc } from "./fake-hc.ts";
 import { codexReceipt } from "./codex-first-input.ts";
 import type { CommandRunner } from "./liveness.ts";
-import type { OpenLocalPlan } from "./open-local.ts";
 
 const CID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const XID = (n: number) => `019a0000-0000-7000-8000-${String(n).padStart(12, "0")}`;
@@ -87,7 +86,6 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
 function setup(extra: Partial<CliAgentBridgeOptions> = {}, options: { writer?: "yes" | "no" | "unknown" } = {}) {
   const messages: DeviceCliMessage[] = [];
   const frames: Uint8Array[] = [];
-  const launched: OpenLocalPlan[] = [];
   const bridge = new CliAgentBridge({
     dir: dataDir,
     hc,
@@ -104,8 +102,6 @@ function setup(extra: Partial<CliAgentBridgeOptions> = {}, options: { writer?: "
     },
     homedir: path.join(root, "home"),
     env: {},
-    launcher: async (plan) => void launched.push(plan),
-    hasWindowsTerminal: false,
     rowWaitMs: 500,
     settleMs: 1000,
     readerPollMs: 40,
@@ -132,7 +128,7 @@ function setup(extra: Partial<CliAgentBridgeOptions> = {}, options: { writer?: "
     bridge.link(link);
     await until(() => messages.some((m) => m.type === "cli.sessions"));
   };
-  return { bridge, messages, frames, launched, link, call, sessions, start };
+  return { bridge, messages, frames, link, call, sessions, start };
 }
 
 /** The CLI writes its transcript as soon as it starts. */
@@ -889,34 +885,6 @@ describe("pause and detach", () => {
     expect((again.result as { terminal: string }).terminal).toBe(address);
     expect(hc.runs).toHaveLength(1);
   });
-});
-
-describe("open_local", () => {
-  it.runIf(process.platform === "win32")("writes an attach file for the same session and starts a window", async () => {
-    claudeTranscript(CID(1), "open here");
-    const t = setup({ platform: "win32" });
-    await t.start();
-    const started = await t.call("continue", { ref: `claude:${CID(1)}` });
-    const address = (started.result as { terminal: string }).terminal;
-    expect(await t.call("open_local", { ref: `claude:${CID(1)}` })).toMatchObject({ ok: true });
-    expect(t.launched).toHaveLength(1);
-    const plan = t.launched[0];
-    expect(plan.command).toBe("cmd.exe");
-    const text = readFileSync(plan.file, "utf8");
-    expect(existsSync(plan.file)).toBe(true);
-    expect(text).toMatch(/set "HC_SESSION=nexbot-[0-9a-f]{8}"/);
-    expect(text).toContain(`attach ${address}`);
-    expect(text).toContain("herdr-core.exe");
-  });
-
-  it("is refused for a session that is not in a terminal", async () => {
-    claudeTranscript(CID(2), "stopped");
-    const t = setup({ platform: "win32" });
-    await t.start();
-    expect(await t.call("open_local", { ref: `claude:${CID(2)}` })).toMatchObject({ ok: false, error: { code: "stopped" } });
-    expect(t.launched).toHaveLength(0);
-  });
-
 });
 
 // ---------------------------------------------------------------------------

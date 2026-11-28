@@ -749,7 +749,6 @@ export const CLI_OPS = [
   "send",
   "steer",
   "interrupt",
-  "open_local",
   "answer",
   "git",
   "search",
@@ -800,7 +799,6 @@ export interface CliOpArgs {
    * while the session has an active turn (workbench plan section 3) */
   steer: { ref: CliSessionRef; text: string };
   interrupt: { ref: CliSessionRef };
-  open_local: { ref: CliSessionRef };
   /** answers the pending request `id`; `answers` maps a question to its chosen label(s);
    * `always` (with allow, only for a request that offered it) also allows such calls for the rest of the session */
   answer: { id: string; decision: CliAnswerDecision; answers?: Record<string, string>; message?: string; always?: boolean };
@@ -863,7 +861,6 @@ export interface CliOpResult {
   send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean; nativeQueued?: boolean };
   steer: { accepted: boolean; started?: boolean; delivery?: CliDelivery };
   interrupt: { outcome: string };
-  open_local: Record<string, never>;
   answer: { outcome: string };
   git: CliGitInfo;
   search: { hits: CliSearchHit[] };
@@ -884,7 +881,6 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   send: 70_000,
   steer: 70_000,
   interrupt: 10_000,
-  open_local: 10_000,
   answer: 10_000,
   git: 20_000,
   // the device stops scanning well before this (its own budget is ~8 s)
@@ -907,7 +903,6 @@ export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
   "send",
   "steer",
   "interrupt",
-  "open_local",
   "answer",
 ]);
 
@@ -1631,7 +1626,6 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     return { ref: ref(o.ref), text };
   },
   interrupt: (o) => ({ ref: ref(o.ref) }),
-  open_local: (o) => ({ ref: ref(o.ref) }),
   git: (o) => {
     const action = oneOf(o.action, ["info", "worktree"] as const);
     if (action === "info") return { ref: ref(o.ref), action };
@@ -1678,7 +1672,6 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
     }),
   steer: (o) => pick({ accepted: bool(o.accepted), started: optBool(o, "started"), delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined }),
   interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),
-  open_local: () => ({}),
   // a device that answers with an empty result still counts as delivered
   answer: (o) => ({ outcome: present(o, "outcome") ? str(o.outcome, CLI_LIMITS.reason) : "ok" }),
   git: (o) => {

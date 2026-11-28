@@ -596,7 +596,7 @@ describe("operations", () => {
     expect((await f.call("cli-agents/send", { key: "bad key", text: "x" })).status).toBe(400);
   });
 
-  it("starts a session and reports interrupt and open-local results", async () => {
+  it("starts a session and reports interrupt results", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "start");
     device.onOp = (message) => {
@@ -608,6 +608,8 @@ describe("operations", () => {
     expect(started).toMatchObject({ status: 200, data: { key: keyOf(device, "new1", "codex") } });
     const interrupted = await f.call("cli-agents/interrupt", { key: keyOf(device, "new1", "codex") });
     expect(interrupted).toMatchObject({ status: 200, data: { outcome: "interrupted" } });
+    const retired = await f.call("cli-agents/open-local", { key: keyOf(device, "new1", "codex") });
+    expect(retired).toMatchObject({ status: 410, data: { code: "unsupported" } });
     expect(f.app.store.all("SELECT op FROM cli_agent_ops ORDER BY rowid").map((r) => r.op)).toEqual(["start", "interrupt"]);
   });
 

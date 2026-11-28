@@ -200,6 +200,16 @@ export async function searchSessions(query: string, signal?: AbortSignal): Promi
   return hits;
 }
 
+/** Uploads any file (including screenshots) directly to the session's computer and returns its local path for pasting into the terminal. */
+export async function attachTerminalFile(key: CliSessionKey, file: File): Promise<{ path: string }> {
+  if (file.size <= 0) throw new CliApiError("空文件无法上传", "invalid", 400);
+  if (file.size > CLI_ATTACH_MAX_BYTES) throw new CliApiError("附件不能超过 8 MB", "too_large", 413);
+  const name = (file.name || "file").slice(-CLI_ATTACH_NAME_MAX);
+  const data = await call<{ path?: unknown }>(`/attach?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, file);
+  if (typeof data.path !== "string" || !data.path) throw new CliApiError("附件上传结果格式不对");
+  return { path: data.path };
+}
+
 /** Images are stored in Core. Other files use the existing device attachment route. */
 export async function uploadAttachment(key: CliSessionKey, file: File): Promise<{ path: string }> {
   const image = file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
@@ -260,7 +270,6 @@ export const withdrawQueued = (entryId: string, expectedVersion: number) =>
 export const steerQueued = (entryId: string, expectedVersion: number, options: Pick<SendOptions, "questionId" | "interruptWaiting"> = {}) =>
   call<{ entry: { status: string } }>(options.questionId || options.interruptWaiting ? "/steer-waiting" : "/queue/steer", { entryId, expectedVersion, ...options });
 export const interruptSession = (key: CliSessionKey) => call<{ outcome: string }>("/interrupt", { key });
-export const openLocal = (key: CliSessionKey) => call<{ ok: boolean }>("/open-local", { key });
 export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: boolean }>("/hide", { key, hidden });
 
 /** An answer: allow or deny, with the chosen labels for a question; `always` allows such calls for the rest of the session. */

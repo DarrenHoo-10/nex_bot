@@ -78,7 +78,6 @@ import {
 } from "./hc.ts";
 import { LaunchError, PENDING_NATIVE_ID, clearCliCache, cliVersion, codexHasNoDaemonFlag, launchEnv, planLaunch, resolveCli, terminalName, validateCwd } from "./launch.ts";
 import { CliLocalStore, type StoredReply } from "./local-store.ts";
-import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
 import { compressImagePreview, maxImageSourceBytes } from "../image-preview.ts";
 import { TranscriptReader } from "./reader.ts";
 import { searchSessions, type SearchSource } from "./search.ts";
@@ -146,8 +145,6 @@ export interface CliAgentBridgeOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   homedir?: string;
-  launcher?: (plan: OpenLocalPlan) => Promise<void>;
-  hasWindowsTerminal?: boolean;
   log?: (level: "debug" | "info" | "warn" | "error", message: string) => void;
   /** How long a new Codex terminal may wait for its session file. Default 10 minutes. */
   codexClaimMs?: number;
@@ -402,7 +399,6 @@ export class CliAgentBridge {
       awaitRow: (ref, ms) => this.awaitRow(ref, ms),
       scheduleRefresh: () => this.scheduleRefresh(),
       setAgyNeedsUpdate: (value) => { this.agyNeedsUpdate = value; },
-      openAgyLocalTerminal: (row) => this.openAgyLocalTerminal(row),
     });
     for (const driver of options.drivers ?? []) this.drivers.set(driver.id, driver);
   }
@@ -417,24 +413,6 @@ export class CliAgentBridge {
     const file = await find(engine);
     if (!file) return { available: false, version: null };
     return { available: true, version: await version(file).catch(() => null) };
-  }
-
-  private async openAgyLocalTerminal(row: CliSessionWire): Promise<string> {
-    const hc = await this.requireHc();
-    await this.refreshTerminals();
-    const existing = this.addressFor(cliRef("agy", row.nativeId));
-    if (existing) return existing;
-    const plan = await planLaunch({
-      engine: "agy", mode: "resume", nativeId: row.nativeId, key: row.nativeId,
-      cwd: row.cwd, executable: await this.cliPath("agy"),
-    }, { platform: this.platform, env: this.options.env, homedir: this.options.homedir });
-    plan.env = { ...plan.env, ...this.launchEnvironment("agy", row.configDir), ...(await this.driver("agy")?.extraEnv?.()) };
-    plan.argv.push(...this.agy.profileArgs(row.configDir));
-    await this.agy.handoff(row.nativeId, row.configDir);
-    const terminal = await this.runTerminal(hc, "agy", plan, clampTermSize(undefined, undefined));
-    this.register(terminal, "agy", row.nativeId, plan.cwd);
-    this.discovery.reapply({ flush: true });
-    return terminal.address;
   }
 
   // -- what the device tells Core about itself ---------------------------------
@@ -1277,7 +1255,6 @@ export class CliAgentBridge {
       const code: CliErrorCode = error.kind === "invalid_cwd" ? "cwd_missing" : error.kind === "cli_not_found" ? "cli_missing" : "invalid";
       return { code, message: CLI_ERROR_TEXT[code] };
     }
-    if (error instanceof OpenLocalError) return { code: error.code, message: error.message.slice(0, 200) };
     if (error instanceof InboxError || error instanceof DaemonError) return { code: error.code, message: error.message.slice(0, 200) };
     const code = hcErrorCode(error);
     return { code, message: CLI_ERROR_TEXT[code] };
@@ -1304,8 +1281,6 @@ export class CliAgentBridge {
         return this.exclusive((args as CliOpArgs["steer"]).ref, () => this.opSteer(args as CliOpArgs["steer"], Date.now() + budget));
       case "interrupt":
         return this.exclusive((args as CliOpArgs["interrupt"]).ref, () => this.opInterrupt(args as CliOpArgs["interrupt"]));
-      case "open_local":
-        return this.exclusive((args as CliOpArgs["open_local"]).ref, () => this.opOpenLocal(args as CliOpArgs["open_local"]));
       case "answer":
         return this.opAnswer(args as CliOpArgs["answer"]);
       case "git":
@@ -1990,28 +1965,6 @@ export class CliAgentBridge {
     const file = path.join(dir, `${randomBytes(4).toString("hex")}-${safeFileName(args.name)}`);
     await writeFile(file, Buffer.from(args.data, "base64"), { flag: "wx", mode: 0o600 });
     return { path: path.resolve(file) };
-  }
-
-  private async opOpenLocal(args: CliOpArgs["open_local"]): Promise<Record<string, never>> {
-    const row = this.session(args.ref);
-    let address = this.addressFor(args.ref);
-    if (!address) address = (await this.driver(row.engine)?.prepareOpenLocal?.(args.ref, row)) ?? null;
-    address ??= this.terminalOf(args.ref);
-    const scope = this.hcScope ?? this.scopeFor();
-    if (!scope.binary) throw new OpFailure("hc_unavailable");
-    await openLocal(
-      {
-        address,
-        binary: scope.binary,
-        session: scope.session,
-        socket: scope.socket,
-        dir: this.options.dir,
-        platform: this.platform,
-        ...(this.options.hasWindowsTerminal === undefined ? {} : { hasWindowsTerminal: this.options.hasWindowsTerminal }),
-      },
-      this.options.launcher,
-    );
-    return {};
   }
 
   /** Core relays the answer to a pending request; delegates to the owning harness driver, screen prompt, or hook server. */

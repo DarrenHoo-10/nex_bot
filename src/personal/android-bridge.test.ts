@@ -52,6 +52,14 @@ it("relays a NexAgent image as bytes through the Android bridge", async () => {
   expect([route, method, body]).toEqual([path, "POST", "iVBORw=="]);
   host.__nexReply(id, { status: 200, body: '{"path":"/api/cli-agents/images/12345678-0000-4000-8000-000000000000"}' });
   expect((await pending).ok).toBe(true);
+  const attachPath = "/api/cli-agents/attach?key=device%3Aclaude%3Asession&name=notes.txt";
+  const attachBlob = new Blob([new Uint8Array([104, 105])], { type: "text/plain" });
+  const attachPending = host.fetch(attachPath, { method: "POST", body: attachBlob });
+  await vi.waitFor(() => expect(native.request).toHaveBeenCalledTimes(2));
+  const [attachId, attachRoute, attachMethod, attachBody] = native.request.mock.calls[1];
+  expect([attachRoute, attachMethod, attachBody]).toEqual([attachPath, "POST", "aGk="]);
+  host.__nexReply(attachId, { status: 200, body: '{"path":"/tmp/notes.txt"}' });
+  expect((await attachPending).ok).toBe(true);
   await expect(host.fetch("/api/config", { method: "POST", body: blob })).rejects.toThrow();
 });
 

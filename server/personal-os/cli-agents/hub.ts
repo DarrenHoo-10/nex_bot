@@ -1085,11 +1085,6 @@ export class CliAgentHub {
     return this.op(actor, parsed.deviceId, key, "interrupt", { ref: parsed.ref });
   }
 
-  openLocal(actor: string, key: string) {
-    const parsed = this.requireKey(key);
-    return this.op(actor, parsed.deviceId, key, "open_local", { ref: parsed.ref });
-  }
-
   private requireKey(key: string) {
     const parsed = parseCliKey(key);
     if (!parsed) throw new CliOpError("invalid");

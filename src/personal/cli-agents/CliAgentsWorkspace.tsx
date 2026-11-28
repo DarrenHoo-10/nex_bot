@@ -253,6 +253,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
     : (entry.engine==="claude" || entry.engine==="codex" || entry.engine==="zcode" || entry.engine==="agy") && entry.online && !!devices.find(d => d.id===entry.deviceId)?.cliAgents?.engines.includes(entry.engine);
   const {draft:sideDraft,session:side}=sideChats;
   const terminalActive=sideChats.selected?.id===sideChats.terminalId;
+  const terminalMounted=sideChats.tabs.some(t=>t.id===sideChats.terminalId);
   useEffect(()=>{
     if (!review||!loaded||didSelect.current)return;
     const target=selected || sessions.find(s=>s.key===review.initial);
@@ -420,10 +421,11 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
                 </div>)}
               </div>{canSide(selected) && <button aria-label="新建侧边聊天" title="新建侧边聊天" onClick={()=>void sideChats.open(selected,"","",true)}><Plus size={15}/></button>}
               <button className="na-side-hide" aria-label={terminalActive?"收起侧边栏":"关闭侧边会话"} title="收起侧边栏" onClick={()=>sideChats.select(null)}><PanelLeftOpen size={15}/></button></header>
-              {terminalActive ? <TerminalView key={selected.key} sessionKey={selected.key} stream={stream} connected={status==="open"}/> : side ? <SessionPane key={side.key} session={side} stream={stream} compact onBranchReply={bots?.length && onOpenTopic ? itemId => setForking({ session: side, itemId }) : undefined} features={devices.find(d => d.id===side.deviceId)?.cliAgents?.features} onSideOpen={canSide(side)?(q,m)=>sideChats.open(side,q,m):undefined} onBack={()=>sideChats.select(null)} onKeyChange={sideChats.changeSession} requests={requests.store.get(side.key)} now={requests.now} onAnswer={(id,d,a,al)=>answer(side.key,id,d,a,al)}/>
+              {terminalMounted ? <TerminalView key={selected.key} sessionKey={selected.key} stream={stream} connected={status==="open"} dark={dark} hidden={!terminalActive}/> : null}
+              {!terminalActive && (side ? <SessionPane key={side.key} session={side} stream={stream} compact onBranchReply={bots?.length && onOpenTopic ? itemId => setForking({ session: side, itemId }) : undefined} features={devices.find(d => d.id===side.deviceId)?.cliAgents?.features} onSideOpen={canSide(side)?(q,m)=>sideChats.open(side,q,m):undefined} onBack={()=>sideChats.select(null)} onKeyChange={sideChats.changeSession} requests={requests.store.get(side.key)} now={requests.now} onAnswer={(id,d,a,al)=>answer(side.key,id,d,a,al)}/>
                 : sideDraft && <section className="na-side-blank"><Composer key={sideDraft.id} session={sideDraft.source} features={devices.find(d => d.id===sideDraft.source.deviceId)?.cliAgents?.features}
                   draft={{...sideDraft,busy:sideDraft.busy||sideDraft.sent,configure:(model,effort)=>sideChats.patch(sideDraft.id,{model,effort})}}
-                  onSend={text=>sideChats.send(sideDraft,text)} onInterrupt={async()=>{}}/></section>}
+                  onSend={text=>sideChats.send(sideDraft,text)} onInterrupt={async()=>{}}/></section>)}
             </aside>}
           </div>
         </main>

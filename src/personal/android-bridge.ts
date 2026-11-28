@@ -73,8 +73,11 @@ export function installAndroidBridge() {
     if (url.origin !== location.origin || !url.pathname.startsWith("/api/")) throw new Error("不支持的请求地址");
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     let body = init?.body ?? (input instanceof Request && method !== "GET" ? await input.text() : "");
-    if (body instanceof Blob && method === "POST" && url.pathname === "/api/cli-agents/images") {
-      if (body.size > 5 * 1024 * 1024) throw new Error("图片不能超过 5 MB");
+    if (body instanceof Blob && method === "POST" && (url.pathname === "/api/cli-agents/images" || url.pathname === "/api/cli-agents/attach")) {
+      const isImage = url.pathname === "/api/cli-agents/images";
+      const maxBytes = isImage ? 5 * 1024 * 1024 : 8 * 1024 * 1024;
+      if (body.size <= 0) throw new Error("空文件无法上传");
+      if (body.size > maxBytes) throw new Error(isImage ? "图片不能超过 5 MB" : "附件不能超过 8 MB");
       body = toBase64(new Uint8Array(await body.arrayBuffer()));
     }
     if (body && typeof body !== "string") throw new Error("不支持的请求格式");

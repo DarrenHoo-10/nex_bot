@@ -137,8 +137,6 @@ async function stack(bridge: Record<string, unknown>, setup: (dirs: { claudeDir:
       discovery: { claudeLive: { isAlive: () => true, start: { platform: "linux", run } }, codex: { writer: () => "no" }, coalesceMs: 0, liveMs: 100, historyMs: 200 },
       cliVersion: async () => "9.9.9",
       homedir: path.join(root, "home"),
-      launcher: async () => undefined,
-      hasWindowsTerminal: false,
       rowWaitMs: 4000,
       coalesceMs: 5,
       // the Claude plugin is off unless a test turns it on

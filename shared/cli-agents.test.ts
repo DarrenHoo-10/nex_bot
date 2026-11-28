@@ -267,13 +267,12 @@ describe("constants and tables", () => {
       send: 70_000,
       steer: 70_000,
       interrupt: 10_000,
-      open_local: 10_000,
       answer: 10_000,
       git: 20_000,
       search: 10_000,
       attach: 20_000,
     });
-    expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "continue", "interrupt", "open_local", "send", "start", "steer"]);
+    expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "continue", "interrupt", "send", "start", "steer"]);
   });
 });
 
@@ -491,7 +490,6 @@ describe("parseCliOpArgs", () => {
     expect(parseCliOpArgs("continue", { ref, cols: 80, rows: 24 })).toEqual({ ref, cols: 80, rows: 24 });
     expect(parseCliOpArgs("send", { ref, text: "你好\nworld" })).toEqual({ ref, text: "你好\nworld" });
     expect(parseCliOpArgs("interrupt", { ref })).toEqual({ ref });
-    expect(parseCliOpArgs("open_local", { ref })).toEqual({ ref });
   });
 
   it("rejects invalid args", () => {
@@ -548,7 +546,6 @@ describe("parseCliOpResult", () => {
     expect(parseCliOpResult("send", { ...queued, nativeQueued: "yes" })).toBeNull();
     expect(parseCliOpResult("send", { turn: 0, started: false, delivery: "unconfirmed", waiting: true, extra: 1 })).toEqual({ turn: 0, started: false, delivery: "unconfirmed", waiting: true });
     expect(parseCliOpResult("interrupt", { outcome: "interrupted" })).toEqual({ outcome: "interrupted" });
-    expect(parseCliOpResult("open_local", {})).toEqual({});
   });
   it("rejects invalid results", () => {
     expect(parseCliOpResult("read", { items: [], more: "no" })).toBeNull();
@@ -677,7 +674,6 @@ describe("parseCoreCliMessage", () => {
       send: { ref, text: "go" },
       steer: { ref, text: "补充一句，别改方向" },
       interrupt: { ref },
-      open_local: { ref },
       answer: { id: "req-1", decision: "allow", answers: { "Which one?": "A" }, message: "ok" },
       git: { ref, action: "info" },
       search: { query: "部署 main", limit: 20 },

@@ -25,7 +25,6 @@ const fixture = vi.hoisted(() => ({
   archiveWorkbenchSession: vi.fn(),
   deleteWorkbenchSession: vi.fn(),
   interruptSession: vi.fn(),
-  openLocal: vi.fn(),
   hideSession: vi.fn(),
   fetchNotes: vi.fn(),
   createNote: vi.fn(),
@@ -103,7 +102,7 @@ beforeEach(() => {
   localStorage.clear();
   fixture.fetchModels.mockReset();
   fixture.fetchModels.mockResolvedValue({ models: [] });
-  for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "fetchBranches", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "openLocal", "hideSession", "fetchNotes", "createNote", "updateNote", "deleteNote"] as const) fixture[key].mockReset();
+  for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "fetchBranches", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "hideSession", "fetchNotes", "createNote", "updateNote", "deleteNote"] as const) fixture[key].mockReset();
   fixture.fetchNotes.mockResolvedValue([]);
   fixture.fetchItems.mockResolvedValue({ items: [], more: false });
   fixture.fetchQueue.mockResolvedValue({ workbenchId: "wb", sessionKey: "", paused: false, entries: [] });
