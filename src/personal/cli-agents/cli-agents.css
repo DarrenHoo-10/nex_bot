@@ -100,7 +100,7 @@
 .cli-app .cli-term-overlay button { padding: 5px 12px; font-size: 12px; border-radius: 8px; background: #323b44; border: 0; color: #f0f3f6; }
 
 /* conversation */
-.cli-app .cli-transcript { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 14px 18px; }
+.cli-app .cli-transcript { flex: 1; min-width: 0; min-height: 0; max-width: 100%; overflow-x: hidden; overflow-y: auto; overscroll-behavior-x: none; padding: 14px 18px; }
 .cli-app .cli-transcript-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; max-width: 820px; margin: 0 auto; }
 .cli-app .cli-older { justify-self: center; padding: 5px 12px; font-size: 12px; border-radius: 8px; background: transparent; border: 1px solid var(--input); }
 .cli-app .cli-msg.is-user { display: grid; justify-items: end; gap: 3px; }

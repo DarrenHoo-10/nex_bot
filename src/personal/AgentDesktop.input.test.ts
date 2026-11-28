@@ -826,3 +826,79 @@ it("marks loaded messages read as soon as the window regains focus", async () =>
   await act(async () => { window.dispatchEvent(new Event("focus")); });
   expect(fixture.api).toHaveBeenCalledWith("agents/read", { botId: "agent", seq: 9, conversationId: undefined });
 });
+
+it("jumps to the earliest unread message or unread topic card on open, and offers back-to-bottom when scrolled far up", async () => {
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  const scrolled: Element[] = [];
+  const origScrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function () { scrolled.push(this); };
+  try {
+    const unreadTopic = {
+      conversationId: "topic-unread",
+      title: "更新卡住排查",
+      audience: "public",
+      sourceContext: { channel: "feishu", chatName: "反馈群" },
+      last_activity_at: 300,
+      message_count: 3,
+      messages: [{ id: "tm-2", role: "assistant", content: "查到了。**NexBot macOS** 已定位" }],
+      read_seq: 10,
+      unread_count: 2,
+      activeTask: null,
+    };
+    const topicMessages = [
+      { id: "tm-0", seq: 10, role: "assistant", kind: "message", content: "旧回复", conversation_id: "topic-unread", created_at: 100 },
+      { id: "tm-1", seq: 11, role: "assistant", kind: "message", content: "最早未读话题回复", conversation_id: "topic-unread", created_at: 200 },
+      { id: "tm-2", seq: 12, role: "assistant", kind: "message", content: "最新话题回复", conversation_id: "topic-unread", created_at: 300 },
+    ];
+    const mainMessages = [
+      { id: "mm-1", seq: 1, role: "assistant", kind: "message", content: "历史消息", created_at: 100 },
+      { id: "mm-2", seq: 2, role: "assistant", kind: "message", content: "主对话已读", created_at: 400 },
+    ];
+    const topicBotState: State = {
+      ...state,
+      bots: [{ id: "agent", name: "开发专家", instructions: "", read_seq: 2, topic_count: 1, topic_unread_count: 2, unread_count: 2 }],
+    };
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route.startsWith("state?view=workspace")) return topicBotState;
+      if (route === "agents/finance") return { botId: "other-finance" };
+      if (route.startsWith("agents/topics?")) return { topics: [unreadTopic] };
+      if (route.startsWith("agents/messages?")) {
+        if (route.includes("conversationId=topic-unread")) return { messages: /[?&]after=[1-9]/.test(route) ? [] : topicMessages, sync, streaming: [], hasMore: false };
+        return { messages: /[?&]after=[1-9]/.test(route) ? [] : mainMessages, sync, streaming: [], hasMore: false };
+      }
+      return {};
+    });
+    await act(async () => { root.render(createElement(AgentDesktop, { key: "unread-topic-jump" })); });
+
+    const topicTarget = container.querySelector<HTMLElement>('[data-unread-target="true"] [data-topic-id="topic-unread"]');
+    expect(topicTarget).toBeTruthy();
+    expect(topicTarget?.textContent).toContain("查到了。NexBot macOS 已定位");
+    expect(topicTarget?.textContent).not.toContain("**");
+    expect(scrolled.some((el) => el.getAttribute("data-unread-target") === "true" && el.querySelector('[data-topic-id="topic-unread"]'))).toBe(true);
+
+    // Entering the unread sub-conversation jumps to its earliest unread message (tm-1) with an unread divider.
+    scrolled.length = 0;
+    await act(async () => { topicTarget!.querySelector<HTMLButtonElement>(".topic-bubble")!.click(); });
+    const unreadMsgRow = container.querySelector<HTMLElement>('[data-unread-target="true"]');
+    expect(unreadMsgRow?.querySelector('[data-message-id="tm-1"]')).toBeTruthy();
+    expect(unreadMsgRow?.querySelector(".unread-divider")?.textContent).toBe("以下为未读消息");
+    expect(scrolled).toContain(unreadMsgRow);
+
+    // Scrolling far up (> 220px) shows the floating "回到底部" capsule even with only 3 messages; clicking it returns to bottom.
+    const scroller = container.querySelector<HTMLDivElement>(".transcript")!;
+    let scrollTop = 400;
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => 1200 });
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
+    scroller.scrollTo = ((options?: ScrollToOptions) => { if (options && typeof options.top === "number") scrollTop = options.top; }) as typeof scroller.scrollTo;
+    await act(async () => { scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -80 })); });
+    const pill = container.querySelector<HTMLButtonElement>(".scroll-pill");
+    expect(pill).toBeTruthy();
+    expect(pill?.textContent).toContain("回到底部");
+    await act(async () => { pill!.click(); });
+    expect(scrollTop).toBe(1200);
+    expect(container.querySelector(".scroll-pill")).toBeNull();
+  } finally {
+    Element.prototype.scrollIntoView = origScrollIntoView;
+  }
+});

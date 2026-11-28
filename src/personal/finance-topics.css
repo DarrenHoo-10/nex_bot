@@ -1,7 +1,10 @@
-.rk-workspace .topic-bubble{display:grid;gap:6px;text-align:left;max-width:100%;min-width:0;overflow-wrap:anywhere}
-.topic-bubble strong{white-space:normal}
-.topic-bubble small,.topic-context small{font-size:12px;opacity:.78}
+.rk-workspace .topic-bubble{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;text-align:left;max-width:100%;min-width:0;box-sizing:border-box;overflow-wrap:anywhere}
+.topic-bubble strong{min-width:0;white-space:normal}
+.topic-bubble small,.topic-context small{font-size:12px;opacity:.86}
+.topic-bubble .topic-meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
+.topic-bubble .topic-unread-badge{display:inline-flex;align-items:center;padding:1px 7px;border-radius:999px;background:rgba(255,255,255,.22);color:#fff;font-size:11px;font-weight:600;line-height:1.45;font-variant-numeric:tabular-nums}
+.topic-bubble .topic-chevron{margin-left:auto;opacity:.85}
 .topic-context{display:flex;flex:none;align-items:center;gap:10px;flex-wrap:wrap;width:100%;max-width:720px;align-self:center;padding:12px 10px 0;box-sizing:border-box}
 .topic-context strong,.topic-context small{min-width:0;overflow-wrap:anywhere}
 @media(max-width:720px){.topic-context{padding:8px 12px 0}}
-.topic-preview{display:block;max-width:min(48ch,100%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;opacity:.88}
+.topic-preview{display:block;min-width:0;max-width:min(48ch,100%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;opacity:.88}

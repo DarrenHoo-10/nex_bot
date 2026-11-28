@@ -229,6 +229,12 @@
   }
 
   /* ---------- 2. Base Typography & Controls ---------- */
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
   body {
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
@@ -239,6 +245,8 @@
 
   .workspace-stage,
   .workspace-stage > .app.rk-workspace {
+    width: 100%;
+    max-width: 100%;
     height: 100dvh;
     max-height: 100dvh;
     overflow: clip;
@@ -512,6 +520,151 @@
   }
   .rk-workspace .message-tools button {
     font-size: 12px;
+  }
+
+  /* Strict horizontal containment inside the transcript so mobile & desktop stay fixed-width */
+  .rk-workspace .transcript {
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-x: none;
+    max-width: 100%;
+  }
+  .rk-workspace .transcript-inner {
+    min-width: 0;
+    max-width: min(700px, 100%);
+    box-sizing: border-box;
+  }
+  .rk-workspace .transcript-inner:has(.html-preview) {
+    max-width: min(1200px, 100%);
+  }
+  .rk-workspace .transcript-inner > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .rk-workspace .message,
+  .rk-workspace .message-body,
+  .rk-workspace .bubble,
+  .rk-workspace .doc,
+  .rk-workspace .doc-body,
+  .rk-workspace .job-card {
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  .rk-workspace .message.job-report .message-body {
+    max-width: min(680px, calc(100% - 34px));
+  }
+  .rk-workspace .job-card {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .rk-workspace .markdown {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .rk-workspace .markdown img {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Unread jump anchor & divider (NexBot Bright Blue) */
+  .rk-workspace [data-unread-target="true"] {
+    scroll-margin-top: 24px;
+  }
+  .rk-workspace .unread-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 18px 0 8px;
+  }
+  .rk-workspace .unread-divider::before,
+  .rk-workspace .unread-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--brand) 34%, transparent), transparent);
+  }
+  .rk-workspace .unread-divider span {
+    flex: none;
+    padding: 3px 12px;
+    border-radius: 9999px;
+    background: var(--brand-soft);
+    border: 1px solid color-mix(in srgb, var(--brand) 22%, transparent);
+    color: var(--brand-ink);
+    font-size: 11.5px;
+    font-weight: 550;
+    letter-spacing: 0.01em;
+    line-height: 1.4;
+  }
+  .rk-workspace [data-unread-target="true"] .topic-bubble {
+    box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--brand-ring), 0 6px 20px rgba(45, 96, 229, 0.28);
+  }
+
+  /* Floating "回到底部" glass capsule docked cleanly above the composer's right edge */
+  .rk-workspace .scroll-pill {
+    position: absolute;
+    left: auto;
+    right: 16px;
+    top: auto;
+    bottom: calc(100% + 10px);
+    transform: none;
+    z-index: 5;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    height: 36px;
+    padding: 0 14px 0 11px;
+    margin: 0;
+    border-radius: 9999px;
+    border: 1px solid var(--border-strong);
+    background: var(--glass-strong);
+    -webkit-backdrop-filter: blur(22px) saturate(1.4);
+    backdrop-filter: blur(22px) saturate(1.4);
+    color: var(--foreground);
+    font-size: 12.5px;
+    font-weight: 550;
+    line-height: 1;
+    white-space: nowrap;
+    box-shadow: 0 8px 24px rgba(20, 42, 86, 0.12), 0 1px 3px rgba(20, 42, 86, 0.06), inset 0 1px 0 var(--surface-highlight);
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.14s ease, color 0.15s ease;
+    animation: nex-scroll-pill-in 0.16s ease-out;
+  }
+  .rk-workspace .scroll-pill svg {
+    flex: none;
+    color: var(--brand);
+  }
+  .rk-workspace .scroll-pill:hover {
+    background: var(--card);
+    border-color: color-mix(in srgb, var(--brand) 38%, var(--border-strong));
+    box-shadow: 0 10px 28px rgba(45, 96, 229, 0.16), 0 2px 6px rgba(20, 42, 86, 0.08), inset 0 1px 0 var(--surface-highlight);
+    transform: translateY(-1px);
+  }
+  .rk-workspace .scroll-pill:active {
+    transform: scale(0.97);
+  }
+  .rk-workspace .scroll-pill.has-new {
+    border-color: color-mix(in srgb, var(--brand) 42%, transparent);
+    background: color-mix(in srgb, var(--brand-soft) 72%, var(--card));
+    color: var(--brand-ink);
+  }
+  .rk-workspace[data-dark="1"] .scroll-pill {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.46), 0 2px 6px rgba(0, 0, 0, 0.28), inset 0 1px 0 var(--surface-highlight);
+  }
+  .rk-workspace[data-dark="1"] .scroll-pill:hover {
+    border-color: color-mix(in srgb, var(--brand) 50%, var(--border-strong));
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.56), 0 0 0 1px color-mix(in srgb, var(--brand) 25%, transparent);
+  }
+  @keyframes nex-scroll-pill-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   /* Restore & refine Markdown typography (counteracting Tailwind v4 Preflight resets) */
@@ -2323,11 +2476,29 @@
     .create-bot-picker-actions {
       padding: 12px 20px max(12px, env(safe-area-inset-bottom));
     }
+    .rk-workspace > main {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      overflow-x: clip;
+    }
+    .rk-workspace > main > header,
+    .rk-workspace .composer-dock {
+      max-width: 100%;
+      min-width: 0;
+    }
     .rk-workspace .transcript {
       scrollbar-width: none;
     }
     .rk-workspace .transcript::-webkit-scrollbar {
       display: none;
+    }
+    .rk-workspace .scroll-pill {
+      right: 12px;
+      bottom: calc(100% + 8px);
+      height: 34px;
+      padding: 0 12px 0 10px;
+      font-size: 12px;
     }
     .rk-workspace[data-page="settings"] > main {
       border-radius: 0;

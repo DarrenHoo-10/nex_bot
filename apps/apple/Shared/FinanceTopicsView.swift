@@ -32,6 +32,12 @@ struct FinanceTopicsView: View {
     @State private var editingMessageID:String?
     @State private var modelOpen=false
     @State private var taskRetryIDs:[String:String]=[:]
+    @State private var unreadTopicAnchor: String?
+    @State private var didAutoScrollTopics = false
+    @State private var pendingTopicReadSeq: Int?
+    @State private var unreadMessageAnchor: String?
+    @State private var scrolledUnreadMessageKey = ""
+    @State private var atBottom = true
     private var current: FinanceTopic? { topics.first { $0.id == selected } }
     private var draft: Binding<String> { Binding(get: { drafts[selected ?? "new"] ?? "" },set: { drafts[selected ?? "new"] = $0 }) }
     var body: some View {
@@ -43,7 +49,7 @@ struct FinanceTopicsView: View {
                 if let onClose {
                     Button("关闭", action: onClose)
                 } else {
-                    Button("新对话",systemImage:"plus") { selected = nil; messages = []; hasOlder = false;editingMessageID=nil;taskRows=[]; generation += 1 }
+                    Button("新对话",systemImage:"plus") { selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; pendingTopicReadSeq = nil; unreadMessageAnchor = nil; scrolledUnreadMessageKey = ""; atBottom = true; generation += 1 }
                         .disabled(sending || pending != nil)
                 }
             }
@@ -53,7 +59,7 @@ struct FinanceTopicsView: View {
                     HStack(alignment: .top) {
                         if conversationID == nil {
                             Button("返回聊天") {
-                                selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; generation += 1
+                                selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; pendingTopicReadSeq = nil; unreadMessageAnchor = nil; scrolledUnreadMessageKey = ""; atBottom = true; generation += 1
                             }
                         }
                         VStack(alignment: .leading, spacing: 2) {
@@ -63,14 +69,50 @@ struct FinanceTopicsView: View {
                         Spacer(minLength: 0)
                     }
                 }
-                ScrollView {
-                    LazyVStack(alignment:.leading,spacing:12) {
-                        if conversationID != nil {
-                            if let current { topicCard(current) }
-                        } else {
-                            ForEach(topics) { topic in topicCard(topic) }
-                            if topics.isEmpty { Text("新建一段对话").foregroundStyle(.secondary) }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment:.leading,spacing:12) {
+                            if conversationID != nil {
+                                if let current { topicCard(current).id(current.id) }
+                            } else {
+                                ForEach(topics) { topic in topicCard(topic).id(topic.id) }
+                                if topics.isEmpty { Text("新建一段对话").foregroundStyle(.secondary) }
+                            }
+                            Color.clear.frame(height: 1).id("topic-bottom")
+                                .onAppear { atBottom = true }
+                                .onDisappear { atBottom = false }
                         }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if selected != nil && !atBottom && !messages.isEmpty {
+                            Button {
+                                atBottom = true
+                                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("topic-bottom", anchor: .bottom) }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "arrow.down").font(.system(size: 12.5, weight: .semibold))
+                                        .foregroundStyle(Theme.brand)
+                                    Text("回到底部").font(.system(size: 12.5, weight: .medium))
+                                        .foregroundStyle(Theme.foreground)
+                                }
+                                .padding(.horizontal, 12).frame(height: 34)
+                                .glass(Capsule(), strong: true, lift: .card)
+                            }
+                            .buttonStyle(.plain).accessibilityLabel("回到底部")
+                            .padding(.trailing, 4).padding(.bottom, 8)
+                        }
+                    }
+                    .onChange(of: unreadTopicAnchor) { _, target in
+                        guard selected == nil, let target else { return }
+                        DispatchQueue.main.async { proxy.scrollTo(target, anchor: .top) }
+                    }
+                    .onChange(of: unreadMessageAnchor) { _, target in
+                        guard let topicID = selected, let target else { return }
+                        let key = "\(topicID):\(target)"
+                        guard scrolledUnreadMessageKey != key else { return }
+                        scrolledUnreadMessageKey = key
+                        atBottom = false
+                        DispatchQueue.main.async { proxy.scrollTo(target, anchor: .top) }
                     }
                 }
                 if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
@@ -118,10 +160,23 @@ struct FinanceTopicsView: View {
             if selected == topic.id && hasOlder {Button("加载更早的消息") {Task {await loadOlder(topic.id)}}}
             ForEach(selected == topic.id ? messages : topic.messages) { message in
                 VStack(alignment:.leading,spacing:3) {
+                    if selected == topic.id && message.id == unreadMessageAnchor {
+                        HStack(spacing: 8) {
+                            Rectangle().fill(Theme.brand.opacity(0.24)).frame(height: 1)
+                            Text("以下为未读消息")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Theme.brand)
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(Theme.brandSoft, in: Capsule())
+                            Rectangle().fill(Theme.brand.opacity(0.24)).frame(height: 1)
+                        }
+                        .padding(.vertical, 4)
+                    }
                     Text(message.role == "user" ? "我" : workspace.bot(botID)?.name ?? "金融助手").font(.caption).foregroundStyle(.secondary)
                     MarkdownText(source:message.content)
                     if selected == topic.id && message.row.string("input_status") == "pending" && pending == nil {Button("编辑待运行消息"){editingMessageID=message.id;drafts[topic.id]=message.content}.font(.caption)}
                 }
+                .id(message.id)
             }
             if selected == topic.id {
                 ForEach(workspace.approvals.filter {approval in taskRows.contains {$0.id==approval.taskID}}) {approval in
@@ -142,9 +197,18 @@ struct FinanceTopicsView: View {
         }
         .padding(14).frame(maxWidth:.infinity,alignment:.leading)
         .background(.quaternary,in:RoundedRectangle(cornerRadius:14))
+        .overlay {
+            if selected == nil && topic.id == unreadTopicAnchor {
+                RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.brand.opacity(0.55), lineWidth: 1.5).allowsHitTesting(false)
+            }
+        }
     }
     private func selectTopic(_ id: String) {
         guard selected != id else { return }
+        let chosen = topics.first { $0.id == id }
+        pendingTopicReadSeq = (chosen?.unread ?? 0) > 0 ? (chosen?.readSeq ?? 0) : nil
+        unreadMessageAnchor = nil
+        scrolledUnreadMessageKey = ""
         selected = id; editingMessageID = nil; taskRows = []; hasOlder = false
         messages = workspace.cachedTopicMessages(botID: botID, topicID: id)
         generation += 1
@@ -156,7 +220,13 @@ struct FinanceTopicsView: View {
         do {
             let result=try await workspace.client.financeTopics(botID:botID, conversationID: conversationID)
             guard epoch==generation,workspace.connection == .connected,!Task.isCancelled else{return}
-            topics=result;await loadSelected()
+            topics=result
+            if selected == nil && !didAutoScrollTopics {
+                didAutoScrollTopics = true
+                // Topics arrive newest-first; the last unread entry is the earliest unread topic.
+                unreadTopicAnchor = result.last(where: { $0.unread > 0 })?.id
+            }
+            await loadSelected()
         } catch { if epoch==generation {errorText=error.localizedDescription} }
     }
     private func loadSelected() async {
@@ -169,6 +239,15 @@ struct FinanceTopicsView: View {
             let tasks=try await workspace.client.topicTasks(botID:botID,conversationID:id)
             guard epoch==generation,id==selected,workspace.connection == .connected,
                   workspace.sync?.sameGeneration(as: feed.sync) == true,!Task.isCancelled else{return}
+            if pendingTopicReadSeq == nil, unreadMessageAnchor == nil, let topic = topics.first(where: { $0.id == id }), topic.unread > 0 {
+                pendingTopicReadSeq = topic.readSeq
+            }
+            if let baseline = pendingTopicReadSeq {
+                pendingTopicReadSeq = nil
+                unreadMessageAnchor = history.first {
+                    $0.seq > baseline && $0.role != "user" && !($0.row.string("source_key")?.hasPrefix("stock-history:") ?? false)
+                }?.id
+            }
             messages=history;taskRows=tasks;hasOlder=feed.hasOlder ?? false
             workspace.updateTopicLiveReplies(feed.streaming, botID: botID, conversationID: id)
             workspace.rememberTopicMessages(history, botID: botID, topicID: id, generation: feed.sync)
