@@ -19,27 +19,23 @@ struct ContactsView: View {
         NavigationStack(path: $nav.path) {
             VStack(spacing: 0) {
                 header
-                Button { nav.push(.todos) } label: {
-                    HStack { Label("待办", systemImage: "checklist"); Spacer(); Image(systemName: "chevron.right").font(.caption) }
-                        .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
-                        .padding(14).glass(RoundedRectangle(cornerRadius: 16))
-                }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
-                Button { nav.push(.agentSessions) } label: {
-                    HStack {
-                        Label("Agent 会话", systemImage: "terminal"); Spacer()
-                        if agents.waitingCount > 0 {
-                            Text("\(agents.waitingCount)").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 7).padding(.vertical, 2).background(Theme.approval, in: Capsule())
-                        }
-                        Image(systemName: "chevron.right").font(.caption)
+                if nav.agentMode {
+                    AgentSessionsView(model: agents, workspace: workspace) { id in
+                        nav.agentMode = false
+                        workspace.select(id)
+                        nav.openChat(id)
                     }
-                    .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
-                    .padding(14).glass(RoundedRectangle(cornerRadius: 16))
-                }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
-                if let finance = workspace.financeBotID {
-                    Button { nav.openChat(finance) } label: { HStack { Label(workspace.bot(finance)?.name ?? "金融助手",systemImage:"bubble.left.and.bubble.right");Spacer();Image(systemName:"chevron.right") }.padding(14) }.buttonStyle(.plain).padding(.horizontal,16)
+                } else {
+                    Button { nav.push(.todos) } label: {
+                        HStack { Label("待办", systemImage: "checklist"); Spacer(); Image(systemName: "chevron.right").font(.caption) }
+                            .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
+                            .padding(14).glass(RoundedRectangle(cornerRadius: 16))
+                    }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
+                    if let finance = workspace.financeBotID {
+                        Button { nav.openChat(finance) } label: { HStack { Label(workspace.bot(finance)?.name ?? "金融助手",systemImage:"bubble.left.and.bubble.right");Spacer();Image(systemName:"chevron.right") }.padding(14) }.buttonStyle(.plain).padding(.horizontal,16)
+                    }
+                    content
                 }
-                content
             }
             .background { WorkspaceSurface(kind: .stage) }
             .toolbar(.hidden, for: .navigationBar)
@@ -166,19 +162,59 @@ struct ContactsView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            BrandMark(size: 28)
-            Text("NexBot").font(.headline.weight(.bold))
-            Spacer()
-            Button { showCreate = true } label: {
-                Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36).glass(Circle(), lift: .card)
+            modeSwitcher
+            Spacer(minLength: 4)
+            if !nav.agentMode {
+                Button { showCreate = true } label: {
+                    Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36).glass(Circle(), lift: .card)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("添加 Agent")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("添加 Agent")
             Button { nav.showMenu = true } label: { AccountAvatar(size: 32, initial: accountInitial(workspace)) }
                 .buttonStyle(.plain)
                 .accessibilityLabel("账号菜单")
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    private var modeSwitcher: some View {
+        HStack(spacing: 2) {
+            modePill(title: "NexBot", agent: false, active: !nav.agentMode, badge: 0) {
+                nav.agentMode = false
+            }
+            modePill(title: "NexAgent", agent: true, active: nav.agentMode, badge: !nav.agentMode ? agents.waitingCount : 0) {
+                nav.agentMode = true
+            }
+        }
+        .padding(3)
+        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .disabled(workspace.state == nil)
+    }
+
+    private func modePill(title: String, agent: Bool, active: Bool, badge: Int, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                BrandMark(size: 17, agent: agent)
+                Text(title)
+                    .font(.system(size: 13, weight: active ? .semibold : .medium))
+                    .foregroundStyle(active ? (agent ? Theme.nexAgentAccent : Theme.foreground) : Theme.muted)
+                    .lineLimit(1)
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Theme.approval, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .background(active ? Theme.card : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .shadow(color: active ? Theme.shadowInk.opacity(0.06) : .clear, radius: 3, y: 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("切换到 \(title)")
     }
 
     private var searchField: some View {

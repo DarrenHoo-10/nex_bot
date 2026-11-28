@@ -19,6 +19,8 @@ enum AgentDetailTab: String, CaseIterable { case work = "工作", settings = "�
 final class Navigation {
     enum Route: Hashable { case chat(String), approvals, settings, settingsCategory(SettingsCategory), agentDetail(String), todos, agentSessions }
     var path: [Route] = []
+    /// Top-level dual-brand mode (`NexBot` vs `NexAgent`), matching Android/Web and Mac.
+    var agentMode = false
     /// The account menu sheet.
     var showMenu = false
     /// The last selected Settings category (kept for deep links & debug hooks).

@@ -1478,11 +1478,11 @@ function workbenchSession(value: unknown): CliWorkbenchSessionView {
   const o = rec(value);
   return pick({
     id: str(o.id, 128, 1),
-    sessionKey: present(o, "sessionKey") ? key(o.sessionKey) : null,
-    deviceId: present(o, "deviceId") ? deviceIdOf(o.deviceId) : null,
-    engine: present(o, "engine") ? oneOf(o.engine, CLI_ENGINES) : null,
+    sessionKey: present(o, "sessionKey") && o.sessionKey !== null ? key(o.sessionKey) : null,
+    deviceId: present(o, "deviceId") && o.deviceId !== null ? deviceIdOf(o.deviceId) : null,
+    engine: present(o, "engine") && o.engine !== null ? oneOf(o.engine, CLI_ENGINES) : null,
     cwd: str(o.cwd, CLI_LIMITS.cwd),
-    parentId: present(o, "parentId") ? str(o.parentId, 128, 1) : null,
+    parentId: present(o, "parentId") && o.parentId !== null ? str(o.parentId, 128, 1) : null,
     kind: oneOf(o.kind, ["main", "fork", "side"] as const),
     title: str(o.title, CLI_LIMITS.title),
     archived: bool(o.archived),
